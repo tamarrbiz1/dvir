@@ -66,18 +66,24 @@ function InvoiceDrawer({ inv, onClose }) {
   const gross = num(inv, ['סכום ברוטו', 'ברוטו', 'פדיון ברוטו']);
   const weight = num(inv, ['משקל']);
   const cartons = num(inv, ['כמות קרטונים', 'קרטונים']);
+  const pallets = num(inv, ['מספר משטחים', 'משטחים']);
+  const discount = num(inv, ['ניכוי משווק בפועל', 'ניכוי משווק']);
+  const transport = num(inv, ['עלות הובלה', 'עלות הובלה-AI']);
 
   // פירוק "סיכום יומי"
   const daily = useMemo(() => parseDaily(inv['סיכום יומי'] || inv['סיכום יומי-AI']), [inv]);
-  const chart = daily.map((d) => ({ label: shortDate(d.date ?? d['תאריך']), kרטונים: Number(d.cartons ?? d['קרטונים']) || 0, משקל: Number(d.weight ?? d['משקל']) || 0, פדיון: Math.round(Number(d.value ?? d['פדיון']) || 0) }));
+  const chart = daily.map((d) => ({ label: shortDate(d.date ?? d['תאריך']), קרטונים: Number(d.cartons ?? d['קרטונים']) || 0, משקל: Number(d.weight ?? d['משקל']) || 0, פדיון: Math.round(Number(d.value ?? d['פדיון']) || 0) }));
 
   const byZan = useMemo(() => {
     const b = {};
     daily.forEach((d) => {
       const z = d.var ?? d['זן'] ?? 'אחר';
-      b[z] = (b[z] || 0) + (Number(d.weight ?? d['משקל']) || 0);
+      b[z] = b[z] || { weight: 0, revenue: 0, cartons: 0 };
+      b[z].weight += (Number(d.weight ?? d['משקל']) || 0);
+      b[z].revenue += (Number(d.value ?? d['פדיון']) || 0);
+      b[z].cartons += (Number(d.cartons ?? d['קרטונים']) || 0);
     });
-    return Object.entries(b).map(([k, v]) => ({ name: k, value: Math.round(v) }));
+    return Object.entries(b).map(([k, v]) => ({ name: k, ...v }));
   }, [daily]);
 
   const kpis = [
@@ -85,6 +91,9 @@ function InvoiceDrawer({ inv, onClose }) {
     { l: 'נטו', v: formatMoney(net), c: 'var(--profit)' },
     { l: 'משקל', v: `${formatNumber(weight)} ק"ג`, c: 'var(--weight)' },
     { l: 'קרטונים', v: formatNumber(cartons), c: 'var(--cartons)' },
+    { l: 'משטחים', v: formatNumber(pallets), c: 'var(--pallets)' },
+    { l: 'ניכוי', v: formatMoney(discount), c: 'var(--expense)' },
+    { l: 'הובלה', v: formatMoney(transport), c: 'var(--text-secondary)' },
   ];
 
   return (
@@ -139,26 +148,58 @@ function InvoiceDrawer({ inv, onClose }) {
                     </tbody>
                   </table>
                 </div>
-                <div className="section-title">גרף פדיון לפי יום</div>
-                <div style={{ direction: 'ltr' }}>
-                  <ResponsiveContainer width="100%" height={180}>
-                    <BarChart data={chart} margin={CHART_MARGIN_ROTATED}>
-                      <CartesianGrid {...GRID_PROPS} />
-                      <XAxis dataKey="label" {...xAxisProps(chart.length, { rotate: chart.length > 7 })} />
-                      <YAxis {...yAxisProps({ money: true })} />
-                      <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
-                      <Bar dataKey="פדיון" fill="#08A878" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px,1fr))', gap: 12 }}>
+                  <div>
+                    <div className="section-title">פדיון לפי יום</div>
+                    <div style={{ direction: 'ltr' }}>
+                      <ResponsiveContainer width="100%" height={160}>
+                        <BarChart data={chart} margin={CHART_MARGIN_ROTATED}>
+                          <CartesianGrid {...GRID_PROPS} />
+                          <XAxis dataKey="label" {...xAxisProps(chart.length, { rotate: chart.length > 7 })} />
+                          <YAxis {...yAxisProps({ money: true })} />
+                          <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
+                          <Bar dataKey="פדיון" fill="#08A878" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="section-title">משקל לפי יום</div>
+                    <div style={{ direction: 'ltr' }}>
+                      <ResponsiveContainer width="100%" height={160}>
+                        <BarChart data={chart} margin={CHART_MARGIN_ROTATED}>
+                          <CartesianGrid {...GRID_PROPS} />
+                          <XAxis dataKey="label" {...xAxisProps(chart.length, { rotate: chart.length > 7 })} />
+                          <YAxis {...yAxisProps()} />
+                          <Tooltip {...TOOLTIP_STYLE} formatter={(v) => `${formatNumber(v)} ק"ג`} />
+                          <Bar dataKey="משקל" fill="#2878D0" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="section-title">קרטונים לפי יום</div>
+                    <div style={{ direction: 'ltr' }}>
+                      <ResponsiveContainer width="100%" height={160}>
+                        <BarChart data={chart} margin={CHART_MARGIN_ROTATED}>
+                          <CartesianGrid {...GRID_PROPS} />
+                          <XAxis dataKey="label" {...xAxisProps(chart.length, { rotate: chart.length > 7 })} />
+                          <YAxis {...yAxisProps()} />
+                          <Tooltip {...TOOLTIP_STYLE} />
+                          <Bar dataKey="קרטונים" fill="#8B5CF6" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
                 </div>
-                <div className="section-title">גרף משקל לפי זן</div>
+                <div className="section-title">פדיון לפי זן</div>
                 {byZan.length ? (
                   <ResponsiveContainer width="100%" height={160}>
                     <PieChart>
-                      <Pie data={byZan} dataKey="value" nameKey="name" innerRadius={40} outerRadius={65}>
+                      <Pie data={byZan} dataKey="revenue" nameKey="name" innerRadius={40} outerRadius={65}>
                         {byZan.map((_, i) => <Cell key={i} fill={['#2878D0', '#09A7B2', '#8B5CF6', '#F59E0B', '#F04444'][i % 5]} />)}
                       </Pie>
-                      <Tooltip {...TOOLTIP_STYLE} />
+                      <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
                       <Legend wrapperStyle={LEGEND_STYLE} />
                     </PieChart>
                   </ResponsiveContainer>

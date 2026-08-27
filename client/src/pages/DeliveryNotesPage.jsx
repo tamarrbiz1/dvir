@@ -76,8 +76,19 @@ function DeliveryDrawer({ note, onClose }) {
   const weight = num(note, ['משקל כולל', 'משקל']);
   const cartons = num(note, ['כמות קרטונים', 'קרטונים']);
 
-  const daysChart = total.days.map((d) => ({ label: shortDate(d.date), value: Math.round(Number(d.weight) || 0) }));
-  const byZan = Object.entries(total.products).map(([k, v]) => ({ name: k, value: Math.round(Number(v.weight ?? v) || 0) }));
+  const daysChart = total.days.map((d) => ({
+    label: shortDate(d.date),
+    משקל: Math.round(Number(d.weight ?? d['משקל']) || 0),
+    קרטונים: Math.round(Number(d.cartons ?? d['קרטונים']) || 0),
+    משטחים: Math.round(Number(d.pallets ?? d['משטחים']) || 0),
+  }));
+  const byZan = Object.entries(total.products).map(([k, v]) => ({
+    name: k,
+    משקל: Math.round(Number(v.weight) || 0),
+    קרטונים: Math.round(Number(v.cartons) || 0),
+    משטחים: Math.round(Number(v.pallets ?? v['משטחים']) || 0),
+  }));
+  const byZanPie = (key) => byZan.map((x) => ({ name: x.name, value: x[key] })).filter((x) => x.value > 0);
 
   return (
     <div className="drawer-overlay" onClick={onClose}>
@@ -121,32 +132,78 @@ function DeliveryDrawer({ note, onClose }) {
                         </tbody>
                       </table>
                     </div>
-                    <div className="section-title" style={{ marginTop: 14 }}>משקל לפי יום</div>
-                    <div style={{ direction: 'ltr' }}>
-                      <ResponsiveContainer width="100%" height={180}>
-                        <BarChart data={daysChart} margin={CHART_MARGIN_ROTATED}>
-                          <CartesianGrid {...GRID_PROPS} />
-                          <XAxis dataKey="label" {...xAxisProps(daysChart.length, { rotate: daysChart.length > 7 })} />
-                          <YAxis {...yAxisProps()} />
-                          <Tooltip {...TOOLTIP_STYLE} />
-                          <Bar dataKey="value" fill="#2878D0" radius={[4, 4, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px,1fr))', gap: 12, marginTop: 14 }}>
+                      <div>
+                        <div className="section-title" style={{ marginTop: 0 }}>משקל לפי יום</div>
+                        <div style={{ direction: 'ltr' }}>
+                          <ResponsiveContainer width="100%" height={170}>
+                            <BarChart data={daysChart} margin={CHART_MARGIN_ROTATED}>
+                              <CartesianGrid {...GRID_PROPS} />
+                              <XAxis dataKey="label" {...xAxisProps(daysChart.length, { rotate: daysChart.length > 7 })} />
+                              <YAxis {...yAxisProps()} />
+                              <Tooltip {...TOOLTIP_STYLE} />
+                              <Bar dataKey="משקל" fill="#2878D0" radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="section-title" style={{ marginTop: 0 }}>קרטונים לפי יום</div>
+                        <div style={{ direction: 'ltr' }}>
+                          <ResponsiveContainer width="100%" height={170}>
+                            <BarChart data={daysChart} margin={CHART_MARGIN_ROTATED}>
+                              <CartesianGrid {...GRID_PROPS} />
+                              <XAxis dataKey="label" {...xAxisProps(daysChart.length, { rotate: daysChart.length > 7 })} />
+                              <YAxis {...yAxisProps()} />
+                              <Tooltip {...TOOLTIP_STYLE} />
+                              <Bar dataKey="קרטונים" fill="#8B5CF6" radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
                     </div>
                   </>
                 )}
-                {byZan.length > 0 && (
+                {(byZanPie('משקל').length > 0 || byZanPie('קרטונים').length > 0) && (
                   <>
                     <div className="section-title" style={{ marginTop: 14 }}>משקל לפי זן</div>
-                    <ResponsiveContainer width="100%" height={180}>
-                      <PieChart>
-                        <Pie data={byZan} dataKey="value" nameKey="name" innerRadius={40} outerRadius={65}>
-                          {byZan.map((_, i) => <Cell key={i} fill={['#2878D0', '#09A7B2', '#8B5CF6', '#F59E0B', '#F04444'][i % 5]} />)}
-                        </Pie>
-                        <Tooltip {...TOOLTIP_STYLE} />
-                        <Legend wrapperStyle={LEGEND_STYLE} />
-                      </PieChart>
-                    </ResponsiveContainer>
+                    {byZanPie('משקל').length ? (
+                      <ResponsiveContainer width="100%" height={170}>
+                        <PieChart>
+                          <Pie data={byZanPie('משקל')} dataKey="value" nameKey="name" innerRadius={40} outerRadius={65}>
+                            {byZan.map((_, i) => <Cell key={i} fill={['#2878D0', '#09A7B2', '#8B5CF6', '#F59E0B', '#F04444'][i % 5]} />)}
+                          </Pie>
+                          <Tooltip {...TOOLTIP_STYLE} />
+                          <Legend wrapperStyle={LEGEND_STYLE} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    ) : <div className="empty-state">אין נתונים</div>}
+                    <div className="section-title" style={{ marginTop: 14 }}>קרטונים לפי זן</div>
+                    {byZanPie('קרטונים').length ? (
+                      <ResponsiveContainer width="100%" height={170}>
+                        <PieChart>
+                          <Pie data={byZanPie('קרטונים')} dataKey="value" nameKey="name" innerRadius={40} outerRadius={65}>
+                            {byZan.map((_, i) => <Cell key={i} fill={['#09A7B2', '#8B5CF6', '#F59E0B', '#F04444', '#2878D0'][i % 5]} />)}
+                          </Pie>
+                          <Tooltip {...TOOLTIP_STYLE} />
+                          <Legend wrapperStyle={LEGEND_STYLE} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    ) : <div className="empty-state">אין נתונים</div>}
+                    {byZanPie('משטחים').length > 0 && (
+                      <>
+                        <div className="section-title" style={{ marginTop: 14 }}>משטחים לפי זן</div>
+                        <ResponsiveContainer width="100%" height={170}>
+                          <PieChart>
+                            <Pie data={byZanPie('משטחים')} dataKey="value" nameKey="name" innerRadius={40} outerRadius={65}>
+                              {byZan.map((_, i) => <Cell key={i} fill={['#F59E0B', '#F04444', '#09A7B2', '#2878D0', '#8B5CF6'][i % 5]} />)}
+                            </Pie>
+                            <Tooltip {...TOOLTIP_STYLE} />
+                            <Legend wrapperStyle={LEGEND_STYLE} />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </>
+                    )}
                   </>
                 )}
               </>
