@@ -1,0 +1,277 @@
+import { useEffect, useMemo, useState } from 'react';
+import { useApp } from '../App.jsx';
+import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
+import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+
+// ============================================================
+// חריגות והתאמות (סעיף 35)
+// מקורות: שדות JSON מתוך "סיכום שבועי"
+// ============================================================
+
+const CATEGORIES = [
+  { key: 'missingInvoice', label: 'חסרה חשבונית', color: '#F04444' },
+  { key: 'missingDelivery', label: 'חסרה תעודת משלוח', color: '#F79009' },
+  { key: 'cartonDiff', label: 'אי התאמת קרטונים', color: '#F59E0B' },
+  { key: 'harvestDiff', label: 'אי התאמת קטיף', color: '#8B5CF6' },
+  { key: 'weightDiff', label: 'חריגת משקל', color: '#2878D0' },
+  { key: 'unassigned', label: 'קרטונים לא משויכים', color: '#09A7B2' },
+  { key: 'calcError', label: 'שגיאת חישוב', color: '#D92D20' },
+];
+
+export default function AlertsPage() {
+  const app = useApp();
+  const [weeks, setWeeks] = useState([]);
+  const [inventory, setInventory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [week, setWeek] = useState(null);
+
+  useEffect(() => {
+    Promise.all([
+      app.api.get('סיכום שבועי', '?maxRecords=200'),
+      app.api.get('מלאי בסיסי', '?maxRecords=200'),
+    ])
+      .then(([w, inv]) => {
+        setWeeks(Array.isArray(w) ? w : []);
+        setInventory(Array.isArray(inv) ? inv : []);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  // ניתוח חריגות מכל שבוע
+  const anomalies = useMemo(() => {
+    const out = [];
+    weeks.forEach((w) => {
+      const code = w['קוד שבוע'] || 'שבוע';
+      const daily = parseJson(w['JSON בדיקת התאמה יומית']);
+      const harvest = parseJson(w['JSON התאמת קטיף לתעודות משלוח']);
+      const status = w['סטטוס התאמה'];
+      const harvestStatus = w['סטטוס התאמת קטיף'];
+      const calcErr = w['שגיאת חישוב קג לפי מבנים'];
+      const notes = parseArray(w['רשימת הערות התאמה']);
+
+      // א. סטטוס מסמכים לא תקין
+      if (status && status !== 'תקין') {
+        out.push({ week: code, type: status, cat: 'missingInvoice', label: `מסמכים: ${status}` });
+      }
+      // ב. סטטוס קטיף לא תקין
+      if (harvestStatus && !String(harvestStatus).includes('תקין')) {
+        out.push({ week: code, type: harvestStatus, cat: 'harvestDiff', label: `קטיף: ${harvestStatus}` });
+      }
+      // ג. שגיאת חישוב
+      if (calcErr) {
+        out.push({ week: code, type: String(calcErr), cat: 'calcError', label: 'שגיאת חישוב ק"ג לפי מבנים' });
+      }
+      // ד. פריטים מה-JSON היומי
+      if (Array.isArray(daily)) {
+        daily.forEach((d) => {
+          const note = d.note || d['הערה'] || d.notes;
+          if (note && String(note).toLowerCase().includes('קרטון')) out.push({ week: code, type: String(note).slice(0, 60), cat: 'cartonDiff', label: String(note).slice(0, 60) });
+          if (note && String(note).toLowerCase().includes('משקל')) out.push({ week: code, type: String(note).slice(0, 60), cat: 'weightDiff', label: String(note).slice(0, 60) });
+        });
+      }
+      // ה. רשימת הערות נוספות
+      if (Array.isArray(notes)) {
+        notes.forEach((n) => {
+          const s = String(n);
+          if (s.includes('קרטון')) out.push({ week: code, type: s.slice(0, 60), cat: 'cartonDiff', label: s.slice(0, 60) });
+          else if (s.includes('חשבונית')) out.push({ week: code, type: s.slice(0, 60), cat: 'missingInvoice', label: s.slice(0, 60) });
+          else out.push({ week: code, type: s.slice(0, 60), cat: 'harvestDiff', label: s.slice(0, 60) });
+        });
+      }
+    });
+    return out;
+  }, [weeks]);
+
+  // צבירה לפי קטגוריה
+  const byCategory = useMemo(() => {
+    const b = {};
+    anomalies.forEach((a) => { b[a.cat] = (b[a.cat] || 0) + 1; });
+    return CATEGORIES.map((c) => ({ name: c.label, value: b[c.key] || 0, color: c.color }));
+  }, [anomalies]);
+
+  // צבירה לפי שבוע
+  const byWeek = useMemo(() => {
+    const b = {};
+    anomalies.forEach((a) => { b[a.week] = (b[a.week] || 0) + 1; });
+    return Object.entries(b).map(([k, v]) => ({ label: k, value: v }));
+  }, [anomalies]);
+
+  // מלאי נמוך (לא התריא מהאיפיון אבל שימושי; נציג כפי שהיה)
+  const lowStock = inventory.filter((i) => Number(i['מלאי נוכחי']) <= Number(i['מלאי מינימום']));
+
+  return (
+    <div>
+      <div className="page-header"><h2>חריגות והתאמות</h2></div>
+
+      {loading ? (
+        <div className="skeleton skeleton-card" />
+      ) : (
+        <>
+          {/* KPI */}
+          <div className="kpi-grid">
+            <div className="kpi-card">
+              <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--warning-soft)' }}>⚠️</div><span className="kpi-label">סה"כ חריגות</span></div>
+              <div className="kpi-value" style={{ color: 'var(--warning)' }}>{anomalies.length}</div>
+            </div>
+            <div className="kpi-card">
+              <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--error-soft)' }}>🔴</div><span className="kpi-label">שבועות לא תקינים</span></div>
+              <div className="kpi-value" style={{ color: 'var(--error)' }}>{new Set(anomalies.map((a) => a.week)).size}</div>
+            </div>
+          </div>
+
+          {/* גרפי חריגות */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, marginTop: 20 }}>
+            <div className="card">
+              <div className="section-title" style={{ marginTop: 0 }}>חריגות לפי סוג</div>
+              {byCategory.length ? (
+                <ResponsiveContainer width="100%" height={220}>
+                  <PieChart>
+                    <Pie data={byCategory} dataKey="value" nameKey="name" innerRadius={50} outerRadius={75}>
+                      {byCategory.map((c, i) => <Cell key={i} fill={c.color} />)}
+                    </Pie>
+                    <Tooltip {...TOOLTIP_STYLE} />
+                    <Legend wrapperStyle={LEGEND_STYLE} />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : <div className="empty-state">אין חריגות</div>}
+            </div>
+            <div className="card">
+              <div className="section-title" style={{ marginTop: 0 }}>חריגות לפי שבוע</div>
+              {byWeek.length ? (
+                <div style={{ direction: 'ltr' }}>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart data={byWeek} margin={CHART_MARGIN_ROTATED}>
+                      <CartesianGrid {...GRID_PROPS} />
+                      <XAxis dataKey="label" {...xAxisProps(byWeek.length, { rotate: true })} />
+                      <YAxis {...yAxisProps({ width: 48, allowDecimals: false })} />
+                      <Tooltip {...TOOLTIP_STYLE} />
+                      <Bar dataKey="value" fill="#F79009" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : <div className="empty-state">אין חריגות</div>}
+            </div>
+          </div>
+
+          {/* רשימת חריגות */}
+          <div className="card" style={{ marginTop: 20 }}>
+            <div className="section-title" style={{ marginTop: 0 }}>רשימת חריגות מפורטת</div>
+            {anomalies.length === 0 ? (
+              <div className="empty-state">
+                <div className="icon">✅</div>אין חריגות פעילות
+              </div>
+            ) : (
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>שבוע</th><th>קטגוריה</th><th>תיאור</th></tr></thead>
+                  <tbody>
+                    {anomalies.map((a, i) => {
+                      const cat = CATEGORIES.find((c) => c.key === a.cat);
+                      return (
+                        <tr key={i} onClick={() => a.week && setWeek(weeks.find((w) => w['קוד שבוע'] === a.week))}>
+                          <td><b>{a.week}</b></td>
+                          <td><span className="badge" style={{ background: (cat?.color || '#888') + '22', color: cat?.color }}>{cat?.label || a.cat}</span></td>
+                          <td style={{ fontSize: 13 }}>{a.type}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* מלאי נמוך */}
+          <div style={{ marginTop: 22 }}>
+            <div className="section-title">מלאי נמוך (השלמה)</div>
+            {lowStock.length === 0 ? (
+              <div className="empty-state">אין פריטי מלאי מתחת למינימום</div>
+            ) : (
+              <div className="grid">
+                {lowStock.map((item) => (
+                  <div key={item.id} className="card" style={{ borderRight: '4px solid var(--warning)' }}>
+                    <b>⚠️ {item['קטגוריה']}</b>
+                    <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 6 }}>
+                      נוכחי: {Number(item['מלאי נוכחי']) || 0} · מינימום: {Number(item['מלאי מינימום']) || 0}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {week && <WeekDrawer week={week} onClose={() => setWeek(null)} />}
+    </div>
+  );
+}
+
+// Drawer עם פרטי התאמה מלאים של שבוע
+function WeekDrawer({ week, onClose }) {
+  const daily = parseJson(week['JSON בדיקת התאמה יומית']);
+  const harvest = parseJson(week['JSON התאמת קטיף לתעודות משלוח']);
+  const income = parseJson(week['JSON הכנסה לפי מבנים']);
+  const yieldByStruct = parseJson(week['JSON קג בפועל לפי ימים ומבנים']);
+  const notes = parseArray(week['רשימת הערות התאמה']);
+
+  return (
+    <div className="drawer-overlay" onClick={onClose}>
+      <div className="drawer" onClick={(e) => e.stopPropagation()}>
+        <div className="drawer-header">
+          <span>שבוע {week['קוד שבוע']}</span>
+          <button className="drawer-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="drawer-body">
+          <div className="card" style={{ marginBottom: 14 }}>
+            <div className="section-title" style={{ marginTop: 0 }}>כללי</div>
+            <div>שליחת: {formatDate(week['תאריך התחלה'])} – {formatDate(week['תאריך סיום'])}</div>
+            <div>סטטוס התאמה: <b>{week['סטטוס התאמה'] || 'לא זמין'}</b></div>
+            <div>סטטוס קטיף: <b>{week['סטטוס התאמת קטיף'] || 'לא זמין'}</b></div>
+          </div>
+
+          {notes.length > 0 && (
+            <div className="card" style={{ marginBottom: 14 }}>
+              <div className="section-title" style={{ marginTop: 0 }}>הערות התאמה</div>
+              {notes.map((n, i) => <div key={i} style={{ padding: '4px 0' }}>• {n}</div>)}
+            </div>
+          )}
+          {daily.length > 0 && (
+            <div className="card" style={{ marginBottom: 14 }}>
+              <div className="section-title" style={{ marginTop: 0 }}>בדיקת התאמה יומית</div>
+              <div style={{ fontSize: 13 }}>{daily.length} פריטי התאמה — תוצאות מסוכמות ב"סטטוס התאמה" (אין כאן תצוגת JSON גולמי)</div>
+            </div>
+          )}
+          {harvest.length > 0 && (
+            <div className="card" style={{ marginBottom: 14 }}>
+              <div className="section-title" style={{ marginTop: 0 }}>התאמת קטיף לתעודות משלוח</div>
+              <div style={{ fontSize: 13 }}>{harvest.length} פריטי התאמה — תוצאות מסוכמות ב"סטטוס התאמת קטיף"</div>
+            </div>
+          )}
+          {!daily.length && !harvest.length && !notes.length && (
+            <div className="empty-state">אין נתוני התאמה לשדה זה</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function parseJson(v) {
+  if (!v) return [];
+  try {
+    const p = typeof v === 'string' ? JSON.parse(v) : v;
+    if (Array.isArray(p)) return p;
+    return [];
+  } catch { return []; }
+}
+function parseArray(v) {
+  if (!v) return [];
+  if (Array.isArray(v)) return v;
+  try {
+    const p = JSON.parse(v);
+    return Array.isArray(p) ? p : [String(p)];
+  } catch { return [String(v)]; }
+}

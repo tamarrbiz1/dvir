@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(try { $r = Invoke-RestMethod -Uri \"http://localhost:4000/api/meta/הוצאות\" -TimeoutSec 4; \"הוצאות: \" + \\($r.fields -join \" | \"\\); $c = Invoke-RestMethod -Uri \"http://localhost:4000/api/meta/חשבוניות\" -TimeoutSec 4; \"`nחשבוניות: \" + \\($c.fields -join \" | \"\\) } catch { \"NOT_RUNNING: $\\($_.Exception.Message\\)\" })",
+      "PowerShell($env:PORT=\"4000\"; Start-Process -FilePath \"node\" -ArgumentList \"c:\\\\Users\\\\user\\\\Desktop\\\\project-dvir\\\\server\\\\src\\\\server.js\" -WindowStyle Hidden; Start-Sleep -Seconds 8; try { $r = Invoke-RestMethod -Uri \"http://localhost:4000/api/tables\" -TimeoutSec 6; if \\($r -is [System.Array]\\) { \"OK: \" + $r.Count + \" tables\" } else { \"UP but unexpected\" } } catch { \"DOWN: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(Get-Content \"C:\\\\Users\\\\user\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-user-Desktop-project-dvir\\\\fb406883-81d0-4dc6-ab48-28ebd1b13320\\\\tasks\\\\beilvxyjl.output\" -Tail 20 -Wait)",
+      "PowerShell($env:PORT=\"4000\"; Start-Process -FilePath \"node\" -ArgumentList \"c:\\\\Users\\\\user\\\\Desktop\\\\project-dvir\\\\server\\\\src\\\\server.js\" -WindowStyle Hidden; Start-Sleep -Seconds 6; try { $r = Invoke-RestMethod -Uri \"http://localhost:4000/api/tables\" -TimeoutSec 5; \"SERVER UP: \" + \\($r | Measure-Object\\).Count + \" tables\" } catch { \"DOWN: $\\($_.Exception.Message\\)\" })"
+    ]
+  }
+}

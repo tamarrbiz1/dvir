@@ -1,0 +1,47 @@
+# ============================================================
+# Zite — .gitignore
+# ============================================================
+
+# Environment variables (secret)
+.env
+.env.local
+.env.production
+.env.*.local
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Build output
+client/dist/
+server/dist/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Uploads (runtime data)
+uploads/*
+!uploads/.gitkeep
+
+# Cache
+.cache/
+.turbo/
+
+# Temp
+tmp/
+temp/
+
+# Vite
+client/node_modules/.vite/

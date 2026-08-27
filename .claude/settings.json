@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($env:PORT=\"4000\"; Start-Process -FilePath \"node\" -ArgumentList \"c:\\\\Users\\\\user\\\\Desktop\\\\project-dvir\\\\server\\\\src\\\\server.js\" -WindowStyle Hidden; Start-Sleep -Seconds 6; try { $r = Invoke-RestMethod -Uri \"http://localhost:4000/api/tables\" -TimeoutSec 5; \"SERVER UP: \" + \\($r | Measure-Object\\).Count + \" tables\" } catch { \"DOWN: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(try { $r = Invoke-RestMethod -Uri \"http://localhost:4000/api/%D7%A8%D7%99%D7%A1%D7%95%D7%A1%D7%99%D7%9D?maxRecords=3\" -TimeoutSec 8; $r | ForEach-Object { $f = $_; \"id: $\\($f.id\\) | date: $\\($f.תאריך\\) | struct: $\\($f.מבנה\\) | mat: $\\($f.'חומר ריסוס'\\) | minun: $\\($f.'מינון '\\)\" } } catch { $_.Exception.Message })",
+      "PowerShell(Get-Process -Name \"node\" -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force -ErrorAction SilentlyContinue)",
+      "PowerShell(try { $r = Invoke-RestMethod -Uri \"http://localhost:5173\" -TimeoutSec 5; \"CLIENT UP: $\\($r.Length\\) chars\" } catch { try { Start-Process -FilePath \"npx\" -ArgumentList \"vite --port 5173\" -WorkingDirectory \"c:\\\\Users\\\\user\\\\Desktop\\\\project-dvir\\\\client\" -WindowStyle Hidden; Start-Sleep -Seconds 8; $r2 = Invoke-RestMethod -Uri \"http://localhost:5173\" -TimeoutSec 5; \"CLIENT STARTED: $\\($r2.Length\\) chars\" } catch { \"CLIENT DOWN: $\\($_.Exception.Message\\)\" } })"
+    ]
+  }
+}

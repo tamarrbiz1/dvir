@@ -1,0 +1,753 @@
+/* ============================================================
+   עיצוב פרימיום — מערכת ניהול משק
+   לפי האיפיון: Color-Coded Premium Agricultural Dashboard
+   RTL מלא. Design Tokens מרכזיים.
+   ============================================================ */
+
+:root {
+  /* רקעים ומשטחים */
+  --bg-main: #F4F6F8;
+  --bg-secondary: #F8FAFC;
+  --card-bg: #FFFFFF;
+  --border: #E5E9EF;
+  --border-strong: #E8ECF1;
+
+  /* טקסט */
+  --text-main: #26313D;
+  --text-secondary: #667085;
+  --text-muted: #98A2B3;
+
+  /* צבעים קטגוריאליים — לפי האיפיון */
+  --revenue: #08A878;
+  --revenue-sec: #27C99A;
+  --revenue-soft: #E6F8F2;
+  --expense: #F04444;
+  --expense-sec: #FF625F;
+  --expense-soft: #FEECEC;
+  --profit: #10A66A;
+  --profit-sec: #39C889;
+  --profit-soft: #E7F8EF;
+
+  --workers: #7C4DFF;
+  --workers-sec: #955CF6;
+  --workers-soft: #F1ECFF;
+  --hours: #6366F1;
+  --hours-soft: #EEF0FF;
+
+  --weight: #2878D0;
+  --weight-sec: #3D91E8;
+  --weight-soft: #EAF3FC;
+  --cartons: #09A7B2;
+  --cartons-sec: #24C3C8;
+  --cartons-soft: #E6F8F8;
+  --pallets: #8B5CF6;
+  --pallets-soft: #F1ECFE;
+
+  --planting: #E8B20B;
+  --planting-soft: #FFF4CC;
+  --planting-border: #E5A900;
+  --harvest: #2E9B62;
+  --harvest-soft: #DCF7E7;
+  --spray: #F59E0B;
+  --spray-soft: #FFF3D6;
+  --irrigation: #3B82F6;
+  --irrigation-soft: #E8F1FF;
+  --beneficial: #22A06B;
+  --beneficial-soft: #E5F7EE;
+
+  --inventory: #078B8D;
+  --inventory-soft: #E4F5F5;
+  --docs: #4A90E2;
+  --docs-soft: #EAF4FE;
+
+  --warning: #F79009;
+  --warning-soft: #FFF3E0;
+  --error: #D92D20;
+  --error-soft: #FEECEB;
+  --ok: #12B76A;
+  --ok-soft: #E8F8F0;
+
+  /* רבעונים */
+  --q1: #DCEEFF;
+  --q2: #DFF5E5;
+  --q3: #FFE7CC;
+  --q4: #E9DDF7;
+
+  /* צפוי / בפועל */
+  --planned: #3578E5;
+  --actual: #168A55;
+
+  /* אפקטים */
+  --shadow: 0 4px 14px rgba(20,35,50,0.07);
+  --shadow-hover: 0 8px 22px rgba(20,35,50,0.11);
+  --radius: 14px;
+  --radius-lg: 18px;
+
+  --accent-top: #3976D8;
+
+  /* טיפוגרפיה */
+  --font-main: 'Segoe UI', 'Assistant', 'Heebo', system-ui, -apple-system, sans-serif;
+
+  --fs-page: 30px;
+  --fs-section: 21px;
+  --fs-card: 17px;
+  --fs-kpi: 34px;
+  --fs-body: 15px;
+  --fs-label: 13px;
+  --fs-badge: 12px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg-main);
+  color: var(--text-main);
+  font-family: var(--font-main);
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  direction: rtl;
+}
+
+/* ============================ כרטיסים ============================ */
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px 24px;
+  transition: box-shadow 180ms ease, transform 180ms ease;
+}
+
+.card.clickable {
+  cursor: pointer;
+}
+.card.clickable:hover {
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-2px);
+}
+
+/* ============================ KPI ============================ */
+.kpi-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.kpi-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px 20px 0;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.kpi-card .kpi-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.kpi-card .kpi-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+}
+
+.kpi-card .kpi-label {
+  font-size: var(--fs-label);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.kpi-card .kpi-value {
+  font-size: var(--fs-kpi);
+  font-weight: 800;
+  color: var(--text-main);
+  line-height: 1.2;
+  margin-bottom: 8px;
+  direction: ltr;
+  text-align: right;
+}
+
+.kpi-card .kpi-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.kpi-card .kpi-footer {
+  margin: 0 -20px;
+  margin-top: auto;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  color: #fff;
+  font-weight: 700;
+  font-size: var(--fs-label);
+  cursor: pointer;
+}
+
+/* Highlight KPI — רקע soft */
+.kpi-card.highlight {
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+}
+
+/* ============================ כפתורים ============================ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  font-family: var(--font-main);
+  cursor: pointer;
+  transition: background 180ms ease, opacity 180ms ease;
+  min-height: 42px;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: var(--accent-top);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) {
+  background: #2f64ba;
+}
+.btn-success {
+  background: var(--revenue);
+  color: #fff;
+}
+.btn-danger {
+  background: var(--error);
+  color: #fff;
+}
+.btn-ghost {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+}
+.btn-ghost:hover {
+  background: var(--bg-secondary);
+}
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 13px;
+  min-height: 32px;
+}
+
+/* ============================ Badge ============================ */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: var(--fs-badge);
+  font-weight: 600;
+}
+.badge-ok { background: var(--ok-soft); color: var(--ok); }
+.badge-warn { background: var(--warning-soft); color: var(--warning); }
+.badge-error { background: var(--error-soft); color: var(--error); }
+.badge-workers { background: var(--workers-soft); color: var(--workers); }
+
+/* ============================ טבלאות ============================ */
+.table-wrap {
+  overflow-x: auto;
+}
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.data-table thead th {
+  background: var(--bg-secondary);
+  text-align: right;
+  padding: 12px 16px;
+  font-size: var(--fs-label);
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.data-table tbody td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-body);
+}
+.data-table tbody tr:hover {
+  background: #F9FAFB;
+  cursor: pointer;
+}
+
+/* ============================ Tab ============================ */
+.tabs {
+  display: flex;
+  gap: 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px;
+  width: fit-content;
+}
+.tab {
+  padding: 10px 18px;
+  border-radius: 9px;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  font-family: var(--font-main);
+  transition: background 180ms ease, color 180ms ease;
+}
+.tab.active {
+  background: #fff;
+  color: var(--text-main);
+  box-shadow: var(--shadow);
+}
+
+/* ============================ Sidebar ============================ */
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+.sidebar {
+  width: 250px;
+  background: var(--card-bg);
+  border-left: 1px solid var(--border);
+  padding: 20px 14px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.sidebar .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px 20px;
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--text-main);
+}
+.sidebar .group-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 14px 12px 4px;
+}
+.sidebar .nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 180ms ease, color 180ms ease;
+  margin-bottom: 2px;
+}
+.sidebar .nav-item:hover {
+  background: var(--bg-secondary);
+}
+.sidebar .nav-item.active {
+  background: var(--bg-main);
+  color: var(--accent-top);
+  font-weight: 700;
+  border-right: 3px solid var(--accent-top);
+}
+.sidebar .nav-icon {
+  width: 20px;
+  text-align: center;
+  font-size: 18px;
+}
+
+/* ============================ Main area ============================ */
+.main-area {
+  flex: 1;
+  padding: 24px 28px;
+  min-width: 0;
+}
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0 22px;
+}
+.topbar h1 {
+  font-size: var(--fs-page);
+  font-weight: 700;
+}
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.page-header h2 {
+  font-size: var(--fs-section);
+  font-weight: 700;
+}
+
+/* ============================ Filter bar ============================ */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 20px;
+}
+.select,
+.input {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: var(--fs-body);
+  font-family: var(--font-main);
+  background: #fff;
+  color: var(--text-main);
+  min-height: 42px;
+  min-width: 120px;
+}
+.select:focus, .input:focus {
+  outline: none;
+  border-color: var(--accent-top);
+}
+
+/* ============================ Cards grid ============================ */
+.grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+.grid-2 {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+}
+
+/* ============================ טבלאות עזר ============================ */
+.section-title {
+  font-size: var(--fs-card);
+  font-weight: 700;
+  margin: 22px 0 12px;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-muted);
+  font-size: var(--fs-body);
+}
+.empty-state .icon {
+  font-size: 40px;
+  margin-bottom: 8px;
+}
+
+/* ============================ Loading ============================ */
+.skeleton {
+  background: linear-gradient(90deg, #eef1f5 25%, #f6f8fa 50%, #eef1f5 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: 10px;
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.skeleton-card {
+  height: 120px;
+}
+.skeleton-chart {
+  height: 260px;
+}
+
+/* ============================ Drawer ============================ */
+.drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 24, 40, 0.45);
+  z-index: 50;
+  display: flex;
+  justify-content: flex-start;
+}
+.drawer {
+  background: #fff;
+  width: 620px;
+  max-width: 92vw;
+  height: 100%;
+  box-shadow: -4px 0 24px rgba(0,0,0,0.12);
+  display: flex;
+  flex-direction: column;
+  animation: slideIn 220ms ease;
+}
+.drawer.ltr-anim { animation: slideInLeft 220ms ease; }
+@keyframes slideIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@keyframes slideInLeft {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+.drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-section);
+  font-weight: 700;
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 2;
+}
+.drawer-body {
+  padding: 22px;
+  overflow-y: auto;
+  flex: 1;
+}
+.drawer-close {
+  background: transparent;
+  border: none;
+  font-size: 22px;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+/* ============================ Modal ============================ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 24, 40, 0.5);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.modal {
+  background: #fff;
+  border-radius: var(--radius-lg);
+  padding: 26px;
+  width: 480px;
+  max-width: 92vw;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+  animation: fadeScale 180ms ease;
+}
+@keyframes fadeScale {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+.modal h3 {
+  font-size: var(--fs-section);
+  margin-bottom: 18px;
+}
+
+/* ============================ Forms ============================ */
+.form-group {
+  margin-bottom: 16px;
+}
+.form-group label {
+  display: block;
+  font-size: var(--fs-label);
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+}
+.form-group .required::after {
+  content: ' *';
+  color: var(--error);
+}
+.form-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+/* ============================ Language switch ============================ */
+.lang-switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  overflow: hidden;
+}
+.lang-switch button {
+  border: none;
+  background: transparent;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-family: var(--font-main);
+}
+.lang-switch button.active {
+  background: var(--accent-top);
+  color: #fff;
+}
+
+/* ============================ Responsive ============================ */
+@media (max-width: 900px) {
+  .sidebar {
+    display: none;
+  }
+  .main-area {
+    padding: 16px 14px;
+  }
+  .fs-kpi { font-size: 28px; }
+  .grid-2 { grid-template-columns: 1fr; }
+}
+
+/* ============================ אפליקציית עובד (Mobile-first) ============================ */
+.worker-shell {
+  min-height: 100vh;
+  max-width: 560px;
+  margin: 0 auto;
+  background: var(--bg-main);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  padding-bottom: 74px; /* מרווח לתחתית תפריט הניווט */
+}
+
+.worker-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(120deg, var(--accent-top) 0%, #4A90E2 100%);
+  color: #fff;
+}
+
+.worker-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.worker-body {
+  flex: 1;
+  padding: 18px 16px;
+}
+
+.worker-greeting {
+  font-size: var(--fs-section);
+  font-weight: 800;
+  margin-bottom: 16px;
+}
+
+.worker-tabs {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 560px;
+  height: 64px;
+  background: var(--card-bg);
+  border-top: 1px solid var(--border);
+  display: flex;
+  z-index: 30;
+  box-shadow: 0 -4px 14px rgba(20,35,50,0.06);
+}
+
+.worker-tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-main);
+}
+
+.worker-tab-icon {
+  font-size: 20px;
+}
+
+.worker-tab.active {
+  color: var(--accent-top);
+}
+
+/* מתג שפה קומפקטי לראש באפליקציית עובד */
+.worker-header .lang-switch button {
+  color: #EAF1FF;
+  background: rgba(255,255,255,0.12);
+}
+.worker-header .lang-switch button.active {
+  background: #fff;
+  color: var(--accent-top);
+}
+
+/* Drawer רחב יותר לעובדים/מבנים */
+.worker-drawer {
+  width: 680px;
+  max-width: 96vw;
+}
+.struct-drawer {
+  width: 680px;
+  max-width: 96vw;
+}
+.dashboard-drawer {
+  width: 700px;
+  max-width: 96vw;
+}
+
+/* textarea */
+textarea.input {
+  resize: vertical;
+  min-height: 70px;
+}
+
