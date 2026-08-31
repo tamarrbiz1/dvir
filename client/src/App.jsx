@@ -2,6 +2,7 @@ import { Routes, Route, Navigate, NavLink } from 'react-router-dom';
 import { useState, useEffect, createContext, useContext } from 'react';
 import { t, setLang } from './i18n.js';
 import LanguageSwitcher from './components/LanguageSwitcher.jsx';
+import { NAV_GROUPS, INITIAL_ROUTE, canSee, NavigationProvider } from './utils/navigation.jsx';
 
 // ============================================================
 // אפליקציית עובד (Mobile-first)
@@ -16,6 +17,7 @@ import StructuresPage from './pages/StructuresPage.jsx';
 import PlantingPlanPage from './pages/PlantingPlanPage.jsx';
 import WorkersPage from './pages/WorkersPage.jsx';
 import TeamCrewPage from './pages/TeamCrewPage.jsx';
+import WorkerRequestsPage from './pages/WorkerRequestsPage.jsx';
 import PricingPage from './pages/PricingPage.jsx';
 import CropsPage from './pages/CropsPage.jsx';
 import NonWorkDaysPage from './pages/NonWorkDaysPage.jsx';
@@ -32,6 +34,7 @@ import WeeklySummaryPage from './pages/WeeklySummaryPage.jsx';
 import AlertsPage from './pages/AlertsPage.jsx';
 import UploadDocumentPage from './pages/UploadDocumentPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
+import FinancialForecastPage from './pages/FinancialForecastPage.jsx';
 
 // ============================================================
 // הקשר גלובלי: שפה, משתמש, נתוני מטה
@@ -61,6 +64,7 @@ const NAV_TEST = [
     items: [
       { to: '/crew', icon: '👷', labelKey: 'crew' },
       { to: '/workers', icon: '👥', labelKey: 'workers' },
+      { to: '/requests', icon: '🗣️', labelKey: 'requests' },
     ],
   },
   {
@@ -74,6 +78,7 @@ const NAV_TEST = [
     group: 'finance',
     items: [
       { to: '/finance', icon: '💰', labelKey: 'finance' },
+      { to: '/finance-forecast', icon: '📈', labelKey: 'financeForecast' },
       { to: '/pricing', icon: '🏷️', labelKey: 'pricing' },
       { to: '/invoices', icon: '🧾', labelKey: 'invoices' },
       { to: '/delivery-notes', icon: '📄', labelKey: 'deliveryNotes' },
@@ -100,7 +105,7 @@ const INITIAL_ROUTE = (role) => {
 };
 
 // כתובות שמותרות למנהל עבודה (owner רואה הכל)
-const OPERATIONS = ['/structures', '/planting', '/harvests', '/spraying', '/treatments', '/workers', '/crew', '/spray-reports'];
+const OPERATIONS = ['/structures', '/planting', '/harvests', '/spraying', '/treatments', '/workers', '/crew', '/requests', '/spray-reports'];
 
 function canSee(role, to) {
   if (role === 'owner') return true;
@@ -163,10 +168,11 @@ export default function App() {
   const [lang, setUI] = useState('he');
   const [loadingTables, setLoadingTables] = useState(true);
 
-  // מעדכן שפה: גם state וגם מודול i18n
+  // מעדכן שפה: state, מודול i18n, ומאפיין data-lang לסקיילינג CSS בתאילנדית
   const setAppLang = (l) => {
     setUI(l);
     setLang(l);
+    try { document.documentElement.setAttribute('data-lang', l); } catch {}
   };
 
   // טעינת המטא-נתונים (רשימת טבלאות) מהשרת
@@ -267,12 +273,14 @@ export default function App() {
             <Route path="/crops" element={<CropsPage />} />
             <Route path="/crew" element={<TeamCrewPage />} />
             <Route path="/workers" element={<WorkersPage />} />
+            <Route path="/requests" element={<WorkerRequestsPage />} />
             <Route path="/harvests" element={<HarvestsPage />} />
             <Route path="/spraying" element={<SprayingPage />} />
             <Route path="/treatments" element={<TreatmentsPage />} />
             <Route path="/inventory" element={<InventoryPage />} />
             <Route path="/suppliers" element={<SuppliersPage />} />
             <Route path="/finance" element={<FinancePage />} />
+            <Route path="/finance-forecast" element={<FinancialForecastPage />} />
             <Route path="/pricing" element={<PricingPage />} />
             <Route path="/delivery-notes" element={<DeliveryNotesPage />} />
             <Route path="/invoices" element={<InvoicesPage />} />

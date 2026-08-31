@@ -1,25 +1,40 @@
 import { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatNumber, formatMoney, formatDate, safeValue } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
+import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
-import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 
 const TABS = ['סקירה', 'תוכנית שתילה', 'עבודות', 'קטיפים', 'ריסוסים', 'תפוקה', 'כספים', 'מסמכים'];
 
 export default function StructuresPage() {
   const app = useApp();
+  const location = useLocation();
   const [structures, setStructures] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [drawer, setDrawer] = useState(null);
+  const [form, setForm] = useState(null); // {} = חדש, רשומה = עריכה
+  const canEdit = (app.user?.role || 'owner') === 'owner'; // CRUD למנהל ראשי בלבד
+
+  const load = () => app.api.get('מבנים', '?maxRecords=200')
+    .then((d) => {
+      const arr = Array.isArray(d) ? d : [];
+      setStructures(arr);
+      return arr;
+    })
+    .catch(() => []);
 
   useEffect(() => {
-    app.api.get('מבנים', '?maxRecords=200')
-      .then((d) => setStructures(Array.isArray(d) ? d : []))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+    load().then((arr) => {
+      // אם קפצנו מהדשבורד עם מבנה נבחר — פותחים את הפירוט שלו
+      const open = location.state?.openStructure;
+      if (open) setDrawer(arr.find((s) => s.id === open.id) || open);
+    }).finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [app.api, location.state]);
 
   const filtered = structures.filter((s) => {
     if (!search) return true;
@@ -31,7 +46,10 @@ export default function StructuresPage() {
     <div>
       <div className="page-header">
         <h2>מבנים</h2>
-        <input className="input" placeholder="חיפוש מבנה..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input className="input" placeholder="חיפוש מבנה..." value={search} onChange={(e) => setSearch(e.target.value)} />
+          {canEdit && <button className="btn btn-primary" onClick={() => setForm({})}>+ מבנה חדש</button>}
+        </div>
       </div>
 
       {loading ? (
@@ -54,22 +72,61 @@ export default function StructuresPage() {
                 <div>גמלונים: {formatNumber(s['מספר גמלונים'])}</div>
                 {displayLinks(s['גידולים']) && <div style={{ marginTop: 8 }}>גידולים: {displayLinks(s['גידולים'])}</div>}
               </div>
+              {canEdit && (
+                <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+                  <button className="btn btn-sm btn-ghost" aria-label="פתח פרטים" title="פתח פרטים" onClick={(e) => { e.stopPropagation(); setDrawer(s); }}>👁</button>
+                  <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={(e) => { e.stopPropagation(); setForm(s); }}>✎</button>
+                  <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      try { if (await removeRecord(app.api, 'מבנים', s.id, s['מספר מבנה'] || 'המבנה')) await load(); }
+                      catch (err) { window.alert(`המחיקה נכשלה: ${err.message || err}`); }
+                    }}>🗑</button>
+                </div>
+              )}
             </div>
           ))}
         </div>
       )}
 
       {drawer && <StructureDetails structure={drawer} api={app.api} onClose={() => setDrawer(null)} />}
+
+      {form !== null && (
+        <RecordForm
+          api={app.api} table="מבנים"
+          title={form.id ? `עריכת ${form['מספר מבנה'] || 'מבנה'}` : 'מבנה חדש'}
+          record={form.id ? form : null}
+          fields={STRUCTURE_FORM_FIELDS}
+          onClose={() => setForm(null)}
+          onSaved={async () => { setForm(null); await load(); }}
+        />
+      )}
     </div>
   );
 }
+
+// שדות הטופס — שדות קלט בלבד (לא Formula/Lookup/Rollup)
+const STRUCTURE_FORM_FIELDS = [
+  { name: 'מספר מבנה', label: 'מספר מבנה', type: 'text', required: true },
+  { name: 'סוג מבנה', label: 'סוג מבנה', type: 'select' },
+  { name: 'סטטוס המבנה', label: 'סטטוס המבנה', type: 'select' },
+  { name: 'סוג כיסוי', label: 'סוג כיסוי', type: 'select' },
+  { name: 'סוג רשת', label: 'סוג רשת', type: 'select' },
+  { name: 'שטח בדונם', label: 'שטח בדונם', type: 'number' },
+  { name: 'מספר גמלונים', label: 'מספר גמלונים', type: 'number' },
+  { name: 'רוחב גמלון במטרים', label: 'רוחב גמלון (מ׳)', type: 'number' },
+  { name: 'מספר שורות במבנה', label: 'מספר שורות', type: 'number' },
+  { name: 'אורך שורה במטרים', label: 'אורך שורה (מ׳)', type: 'number' },
+  { name: 'מספר שלוחות טפטוף בגמלון', label: 'שלוחות טפטוף בגמלון', type: 'number' },
+  { name: 'הערות', label: 'הערות', type: 'textarea' },
+];
 
 // ============================================================
 // כרטיס מבנה — Tabs (סעיף 11)
 // ============================================================
 function StructureDetails({ structure, api, onClose }) {
   const [tab, setTab] = useState('סקירה');
-  const [data, setData] = useState({ works: [], harvests: [], sprays: [], planting: [] });
+  const [data, setData] = useState({ works: [], harvests: [], sprays: [], planting: [], invoices: [] });
   const [loading, setLoading] = useState(true);
 
   const structId = structure.id;
@@ -82,8 +139,9 @@ function StructureDetails({ structure, api, onClose }) {
       api.get('קטיפים', '?maxRecords=1500'),
       api.get('ריסוסים', '?maxRecords=1500'),
       api.get('תוכניות שתילה', '?maxRecords=500'),
+      api.get('חשבוניות', '?maxRecords=200&raw=1'),
     ])
-      .then(([w, h, s, p]) => {
+      .then(([w, h, s, p, inv]) => {
         const byStruct = (arr, fld) => (Array.isArray(arr) ? arr : []).filter((r) => {
           const v = r[fld];
           if (Array.isArray(v)) return v.some((x) => String(x?.id ?? x) === sid);
@@ -94,16 +152,12 @@ function StructureDetails({ structure, api, onClose }) {
           harvests: byStruct(h, 'מבנה'),
           sprays: byStruct(s, 'מבנה'),
           planting: byStruct(p, 'מבנה'),
+          invoices: Array.isArray(inv) ? inv : [],
         });
       })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [structId]);
-
-  const sumHours = data.works.reduce((s, r) => s + (Number(r['סכום שעות'] ?? r['שעות']) || 0), 0);
-  const sumPaid = data.works.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0);
-  const sumKg = data.harvests.reduce((s, r) => s + (Number(r['כמות ק"ג']) || 0), 0);
-  const sumCartons = data.harvests.reduce((s, r) => s + (Number(r['מספר קרטונים']) || 0), 0);
 
   return (
     <div className="drawer-overlay" onClick={onClose}>
@@ -136,7 +190,7 @@ function StructureDetails({ structure, api, onClose }) {
           ) : tab === 'תפוקה' ? (
             <TabYield harvests={data.harvests} />
           ) : tab === 'כספים' ? (
-            <TabFinance works={data.works} />
+            <TabFinance works={data.works} invoices={data.invoices} />
           ) : (
             <div className="empty-state">📄 אין מסמכים שמורים למבנה זה</div>
           )}
@@ -316,18 +370,41 @@ function TabYield({ harvests }) {
   );
 }
 
-function TabFinance({ works }) {
+function TabFinance({ works, invoices }) {
+  const invNum = (inv, f) => Number(inv[f]) || 0;
+  const neto = invoices.reduce((s, inv) => s + invNum(inv, 'סכום נטו'), 0);
+  const bruto = invoices.reduce((s, inv) => s + invNum(inv, 'סכום ברוטו'), 0);
+  const kg = invoices.reduce((s, inv) => s + invNum(inv, 'משקל'), 0);
+  const cartons = invoices.reduce((s, inv) => s + invNum(inv, 'כמות קרטונים'), 0);
+  const labor = works.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0);
+
   return (
-    <div className="card">
-      <div className="section-title" style={{ marginTop: 0 }}>עלות עבודה</div>
-      <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--workers)' }}>
-        {formatMoney(works.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0))}
+    <div>
+      <div className="card">
+        <div className="section-title" style={{ marginTop: 0 }}>עלות עבודה</div>
+        <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--workers)' }}>
+          {formatMoney(labor)}
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+          מתוך {works.length} עבודות
+        </div>
       </div>
-      <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-        מתוך {works.length} עבודות
+
+      <div className="card" style={{ marginTop: 14 }}>
+        <div className="section-title" style={{ marginTop: 0 }}>הכנסות (פדיון)</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 14 }}>
+          <span style={{ color: 'var(--text-secondary)' }}>פדיון ברוטו</span><b>{formatMoney(bruto)}</b>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 14 }}>
+          <span style={{ color: 'var(--text-secondary)' }}>פדיון נטו</span><b>{formatMoney(neto)}</b>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 14 }}>
+          <span style={{ color: 'var(--text-secondary)' }}>ק"ג / קרטונים</span><b>{formatNumber(kg)} ק"ג · {formatNumber(cartons)} קרטונים</b>
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
+          סך כל חשבוניות הפרויקט. החשבוניות אינן מקושרות לרמת מבנה ספציפי, לכן הפדיון מוצג בטוטאל ואינו מפולח למבנה.
+        </div>
       </div>
-      <div className="section-title">הכנסה</div>
-      <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>מקור: "JSON הכנסה לפי מבנים" — לא זמין עדיין בכרטיס זה.</div>
     </div>
   );
 }

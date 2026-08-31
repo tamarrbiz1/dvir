@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
+import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { formatNumber, formatMoney, formatDate, safeValue } from '../utils/format.js';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
@@ -71,7 +72,8 @@ export default function CropsPage() {
       {loading ? (
         <div className="skeleton skeleton-card" />
       ) : tab === 'גידולים' ? (
-        <CropsTab crops={crops} />
+        <CropsTab crops={crops} api={app.api} canEdit={(app.user?.role || 'owner') === 'owner'}
+          onChanged={() => app.api.get('גידולים', '?maxRecords=200').then((c) => setCrops(Array.isArray(c) ? c : [])).catch(() => {})} />
       ) : tab === 'מחירי גידול' ? (
         <PricesTab prices={prices} />
       ) : tab === 'תפוקה רבעונית' ? (
@@ -83,20 +85,55 @@ export default function CropsPage() {
   );
 }
 
-// ---------- גידולים ----------
-function CropsTab({ crops }) {
-  if (!crops.length) return <div className="empty-state">אין נתונים לתקופה זו</div>;
+// ---------- גידולים (כולל CRUD למנהל ראשי) ----------
+const CROP_FORM_FIELDS = [
+  { name: 'שם גידול', label: 'שם גידול', type: 'text', required: true },
+  { name: 'קוד גידול', label: 'קוד גידול', type: 'text' },
+  { name: 'תיאור', label: 'תיאור', type: 'textarea' },
+];
+
+function CropsTab({ crops, api, canEdit, onChanged }) {
+  const [form, setForm] = useState(null);
   return (
-    <div className="grid">
-      {crops.map((c) => (
-        <div key={c.id} className="card">
-          <div style={{ fontWeight: 700, fontSize: 17, marginBottom: 6 }}>🌱 {c['שם גידול'] || 'גידול'}</div>
-          <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-            {c['קוד גידול'] && <div>קוד: {c['קוד גידול']}</div>}
-            {c['תיאור'] && <div>{c['תיאור']}</div>}
-          </div>
+    <div>
+      {canEdit && (
+        <div style={{ marginBottom: 14 }}>
+          <button className="btn btn-primary" onClick={() => setForm({})}>+ גידול חדש</button>
         </div>
-      ))}
+      )}
+      {!crops.length ? <div className="empty-state">אין נתונים לתקופה זו</div> : (
+        <div className="grid">
+          {crops.map((c) => (
+            <div key={c.id} className="card">
+              <div style={{ fontWeight: 700, fontSize: 17, marginBottom: 6 }}>🌱 {c['שם גידול'] || 'גידול'}</div>
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+                {c['קוד גידול'] && <div>קוד: {c['קוד גידול']}</div>}
+                {c['תיאור'] && <div>{c['תיאור']}</div>}
+              </div>
+              {canEdit && (
+                <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+                  <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={() => setForm(c)}>✎</button>
+                  <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
+                    onClick={async () => {
+                      try { if (await removeRecord(api, 'גידולים', c.id, c['שם גידול'] || 'הגידול')) await onChanged(); }
+                      catch (err) { window.alert(`המחיקה נכשלה: ${err.message || err}`); }
+                    }}>🗑</button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {form !== null && (
+        <RecordForm
+          api={api} table="גידולים"
+          title={form.id ? `עריכת ${form['שם גידול'] || 'גידול'}` : 'גידול חדש'}
+          record={form.id ? form : null}
+          fields={CROP_FORM_FIELDS}
+          onClose={() => setForm(null)}
+          onSaved={async () => { setForm(null); await onChanged(); }}
+        />
+      )}
     </div>
   );
 }

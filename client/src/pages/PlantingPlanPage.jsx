@@ -6,6 +6,7 @@ import {
 import { useApp } from '../App.jsx';
 import { formatDate, formatMoney, formatNumber } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
+import { holidayInfo, KIND_STYLE } from '../utils/holidays.js';
 import {
   CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE,
   xAxisProps, yAxisProps, yCategoryProps,
@@ -27,6 +28,7 @@ const HARVEST = { key: 'קטיף', bg: '#DCF7E7', border: '#2E9B62', label: 'ק�
 const UPDATED_ACCENT = '#3578E5';
 const PLANNED_COLOR = '#3578E5';
 const ACTUAL_COLOR = '#168A55';
+const KG_PER_CARTON = 12.3; // משקל ממוצע לקרטון (ק"ג)
 
 const QUARTERS = [
   { q: 1, months: [0, 1, 2], color: '#DCEEFF', label: 'רבעון 1', short: 'Q1' },
@@ -179,8 +181,9 @@ export default function PlantingPlanPage() {
   // ============================================================
   // טעינת נתונים
   // ============================================================
-  const load = useCallback(async () => {
-    setLoading(true);
+  // רענון אחרי פעולה אינו מציג שלד ואינו מאפס טאב/לוח — נשארים באותו מקום
+  const load = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     setLoadError('');
     try {
       const [p, pe, f, s, c, nw] = await Promise.all([
@@ -340,7 +343,7 @@ export default function PlantingPlanPage() {
     const map = new Map();
     for (const d of nonWorkDays) {
       const parsed = parseDate(d['תאריך']);
-      if (parsed) map.set(dateKey(parsed), d['סוג החג'] || 'יום אי עבודה');
+      if (parsed) map.set(dateKey(parsed), d);
     }
     return map;
   }, [nonWorkDays]);
@@ -401,7 +404,7 @@ export default function PlantingPlanPage() {
     setActionError('');
     try {
       await fn();
-      await load(); // בהצלחה — קרא מחדש מ-Airtable
+      await load({ silent: true }); // בהצלחה — קרא מחדש מ-Airtable בלי לקפוץ מהמסך
       setBusy(false);
       return true;
     } catch (e) {
@@ -744,6 +747,9 @@ export default function PlantingPlanPage() {
             <LegendSwatch bg={PLANT.bg} border={PLANT.border} label="שתילה" />
             <LegendSwatch bg={HARVEST.bg} border={HARVEST.border} label="קטיף" />
             {QUARTERS.map((q) => <LegendSwatch key={q.q} bg={q.color} border={q.color} label={q.short} />)}
+            <LegendSwatch bg={KIND_STYLE.shabbat.bg} border={KIND_STYLE.shabbat.border} label="שבת" />
+            <LegendSwatch bg={KIND_STYLE.jewish.bg} border={KIND_STYLE.jewish.border} label="חג יהודי" />
+            <LegendSwatch bg={KIND_STYLE.thai.bg} border={KIND_STYLE.thai.border} label="חג תאילנדי" />
             <span style={{ color: 'var(--text-muted)' }}>עבר מוצג בשקיפות · היום במסגרת בולטת</span>
           </div>
         </div>
@@ -812,6 +818,11 @@ export default function PlantingPlanPage() {
           const match = cropOptions.find(([, n]) => n === name);
           if (match) setCropFilter(match[0]);
         }} onQuarter={(q) => setQuarterFilter(String(q))} />
+      )}
+
+      {/* ================= טבלת אקסל — תכנון מול ביצוע (סעיף 4.3) ================= */}
+      {tab === 'dash' && weeks.length > 0 && (
+        <ExcelTable weeks={weeks} weekTotals={weekTotals} />
       )}
 
       {/* ================= כרטיס תוכנית ================= */}
@@ -1006,17 +1017,22 @@ export default function PlantingPlanPage() {
             <div className="drawer-body">
               <div className="table-wrap">
                 <table className="data-table">
-                  <thead><tr><th>תאריך</th><th>סוג החג</th></tr></thead>
+                  <thead><tr><th>תאריך</th><th>חג</th><th>סוג החג</th></tr></thead>
                   <tbody>
                     {nonWorkDays
                       .filter((d) => String(d['תאריך'] || '').slice(0, 4) === String(year))
                       .sort((a, b) => String(a['תאריך']).localeCompare(String(b['תאריך'])))
-                      .map((d) => (
-                        <tr key={d.id}>
-                          <td>{formatDate(d['תאריך'])}</td>
-                          <td>{d['סוג החג'] || 'לא זמין'}</td>
-                        </tr>
-                      ))}
+                      .map((d) => {
+                        const parsed = parseDate(d['תאריך']);
+                        const info = parsed ? holidayInfo(parsed, d) : null;
+                        return (
+                          <tr key={d.id}>
+                            <td>{formatDate(d['תאריך'])}</td>
+                            <td>{info?.name.he || 'לא זמין'}</td>
+                            <td>{info ? <span className="badge" style={{ background: info.style.bg, color: info.style.border }}>{d['סוג החג'] || 'לא זמין'}</span> : (d['סוג החג'] || 'לא זמין')}</td>
+                          </tr>
+                        );
+                      })}
                   </tbody>
                 </table>
               </div>
@@ -1064,20 +1080,29 @@ function CalendarGrid({ days, leadingBlanks, tall, eventsOnDate, nonWorkByKey, o
         const dayEvents = eventsOnDate(day);
         const isToday = day.getTime() === today.getTime();
         const isPast = day < today;
-        const holiday = nonWorkByKey.get(dateKey(day));
+        // שבת / חג — כל רקע התא מודגש, בצבע לפי הסוג, עם שם החג (שלב 5)
+        const holiday = holidayInfo(day, nonWorkByKey.get(dateKey(day)));
 
         return (
-          <div key={dateKey(day)} style={{
+          <div key={dateKey(day)} title={holiday ? holiday.name.he : undefined} style={{
             minHeight, padding: 4, borderLeft: '1px solid var(--border)', borderBottom: '1px solid var(--border)',
-            background: holiday ? '#FAFAFA' : '#fff',
+            background: holiday ? holiday.style.bg : '#fff',
+            boxShadow: holiday ? `inset 4px 0 0 ${holiday.style.border}` : 'none',
             outline: isToday ? '2px solid var(--accent-top, #3578E5)' : 'none',
             outlineOffset: '-2px',
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4 }}>
               <span style={{ fontWeight: isToday ? 800 : 500, color: isToday ? UPDATED_ACCENT : 'inherit' }}>
                 {day.getDate()}
               </span>
-              {holiday && <span title={holiday} style={{ fontSize: 9, color: 'var(--text-muted)' }}>🕯️</span>}
+              {holiday && (
+                <span style={{
+                  fontSize: 9.5, fontWeight: 700, color: holiday.style.border, whiteSpace: 'nowrap',
+                  overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '80%',
+                }}>
+                  {holiday.name.he}
+                </span>
+              )}
             </div>
 
             {dayEvents.map((e) => (
@@ -1496,6 +1521,130 @@ function WeekTooltip({ active, payload, label }) {
       <div style={{ color: PLANNED_COLOR }}>ק"ג צפוי: {formatNumber(row.expected, 0)}</div>
       <div style={{ color: ACTUAL_COLOR }}>
         ק"ג בפועל: {row.actual === null ? 'טרם התקבל ביצוע' : formatNumber(row.actual, 0)}
+      </div>
+    </div>
+  );
+}
+function ExcelTable({ weeks, weekTotals }) {
+  const fmt = (v) => formatNumber(v, 0);
+  const money = (v) => formatMoney(v, 0);
+
+  // ---- חישוב נתוני כל שבוע (כולל קרטונים והכנסה בפועל) ----
+  const weekRows = weeks.map((w) => {
+    const t = weekTotals(w.rows);
+    let actualRevenue = 0;
+    let anyActual = false;
+    let actualKgSum = 0;
+    for (const row of w.rows) {
+      const a = actualKg(row);
+      if (!a.received) continue;
+      actualKgSum += a.value;
+      const price = num(row['מחיר לקג מעודכן'])
+        ?? num(row['מחיר משוער לקג (from מחירי גידול משוערים)']) ?? 0;
+      actualRevenue += a.value * price;
+      anyActual = true;
+    }
+    return {
+      key: w.key,
+      month: w.start.getMonth(),
+      label: formatDate(w.start).slice(0, 5),
+      expectedKg: t.expected,
+      actualKg: actualKgSum,
+      expectedCartons: t.expected / KG_PER_CARTON,
+      actualCartons: actualKgSum / KG_PER_CARTON,
+      expectedRevenue: t.revenue,
+      actualRevenue: anyActual ? actualRevenue : null,
+      hasActual: anyActual,
+    };
+  });
+
+  // ---- קיבוץ לסיכום חודשי ----
+  const byMonth = new Map();
+  const now = new Date();
+  for (const r of weekRows) {
+    const key = `${r.month}-${now.getFullYear()}`;
+    if (!byMonth.has(key)) byMonth.set(key, {
+      label: now.toLocaleDateString('he-IL', { month: 'long' }),
+      expectedKg: 0, actualKg: 0, expectedRevenue: 0, actualRevenue: 0, hasActual: false,
+    });
+    const m = byMonth.get(key);
+    m.expectedKg += r.expectedKg;
+    m.actualKg += r.actualKg;
+    m.expectedRevenue += r.expectedRevenue;
+    if (r.actualRevenue !== null) { m.actualRevenue += r.actualRevenue; m.hasActual = true; }
+  }
+
+  // ---- סה"כ שנתי ----
+  const totals = weekRows.reduce((acc, r) => {
+    acc.expectedKg += r.expectedKg;
+    acc.actualKg += r.actualKg;
+    acc.expectedRevenue += r.expectedRevenue;
+    if (r.actualRevenue !== null) acc.actualRevenue += r.actualRevenue;
+    return acc;
+  }, { expectedKg: 0, actualKg: 0, expectedRevenue: 0, actualRevenue: 0 });
+
+  const showActual = weekRows.some((r) => r.hasActual);
+  const actualCell = (val, has) => (has ? fmt(val) : 'טרם בוצע');
+
+  const head = ['שבוע', 'ק"ג צפוי', 'ק"ג בפועל', 'קרטונים צפוי', 'קרטונים בפועל', 'הכנסה צפויה', 'הכנסה בפועל'];
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div className="section-title" style={{ marginTop: 0 }}>
+        טבלת נתונים — תכנון מול ביצוע {showActual ? '' : '(חסר ביצוע)'}
+      </div>
+      <div className="table-wrap" style={{ maxHeight: 420, overflow: 'auto' }}>
+        <table className="data-table" style={{ minWidth: 860 }}>
+          <thead>
+            <tr>{head.map((h) => <th key={h}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {weekRows.map((r) => (
+              <tr key={r.key}>
+                <td>שבוע {r.label}</td>
+                <td style={{ color: PLANNED_COLOR, fontWeight: 600 }}>{fmt(r.expectedKg)}</td>
+                <td style={{ color: r.hasActual ? ACTUAL_COLOR : 'var(--text-muted)', fontWeight: 600 }}>
+                  {r.hasActual ? fmt(r.actualKg) : 'טרם'}
+                </td>
+                <td>{fmt(r.expectedCartons)}</td>
+                <td style={{ color: r.hasActual ? ACTUAL_COLOR : 'var(--text-muted)' }}>
+                  {r.hasActual ? fmt(r.actualCartons) : 'טרם'}
+                </td>
+                <td>{money(r.expectedRevenue)}</td>
+                <td>{r.actualRevenue !== null ? money(r.actualRevenue) : '—'}</td>
+              </tr>
+            ))}
+
+            {/* סיכום חודשי */}
+            {[...byMonth.entries()].map(([key, m]) => (
+              <tr key={key} style={{ background: 'var(--bg-secondary)', fontWeight: 700 }}>
+                <td>{m.label}</td>
+                <td>{fmt(m.expectedKg)}</td>
+                <td style={{ color: m.hasActual ? ACTUAL_COLOR : 'var(--text-muted)' }}>
+                  {m.hasActual ? fmt(m.actualKg) : 'טרם'}
+                </td>
+                <td>{fmt(m.expectedKg / KG_PER_CARTON)}</td>
+                <td>{m.hasActual ? fmt(m.actualKg / KG_PER_CARTON) : 'טרם'}</td>
+                <td>{money(m.expectedRevenue)}</td>
+                <td>{m.hasActual ? money(m.actualRevenue) : '—'}</td>
+              </tr>
+            ))}
+
+            {/* סה"כ שנתי */}
+            <tr style={{ background: 'var(--docs-soft)', fontWeight: 800 }}>
+              <td>סה"כ שנתי</td>
+              <td>{fmt(totals.expectedKg)}</td>
+              <td style={{ color: ACTUAL_COLOR }}>{fmt(totals.actualKg)}</td>
+              <td>{fmt(totals.expectedKg / KG_PER_CARTON)}</td>
+              <td>{fmt(totals.actualKg / KG_PER_CARTON)}</td>
+              <td>{money(totals.expectedRevenue)}</td>
+              <td>{totals.actualRevenue ? money(totals.actualRevenue) : '—'}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
+        קרטונים מחושבים: ק"ג ÷ {KG_PER_CARTON} (משקל ממוצע לקרטון). הכנסה בפועל = ק"ג בפועל × מחיר לק"ג.
       </div>
     </div>
   );

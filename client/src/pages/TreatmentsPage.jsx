@@ -1,249 +1,551 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
-import { formatDate, safeValue } from '../utils/format.js';
-import { pick, num } from '../utils/field.js';
-import { displayName } from '../utils/resolve.js';
+import { formatDate, formatNumber } from '../utils/format.js';
+import { pick } from '../utils/field.js';
+import { displayName, firstId } from '../utils/resolve.js';
 
 // ============================================================
-// תכנון טיפולים — לוח שנה + תצוגת שבוע + רשימה (סעיף 22)
+// תכנון טיפולים — סעיפים 22 ו-25 באיפיון
+//
+// מקור הנתונים: טבלת "ריסוסים". Airtable מחשב כמות/מחיר; המסך מציג,
+// יוצר ומעדכן בלבד. "תאריך" מגיע כ-ISO ("2026-08-04T10:03:00.000Z")
+// או כטווח טקסטואלי ("16/07/2026-23/07/2026") — שני הפורמטים נתמכים.
 // ============================================================
 
 const MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר'];
 const DAYS = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'];
 
-const TYPE_COLORS = {
-  'ריסוס': { bg: '#FFF3D6', border: '#E5A900', label: 'ריסוס' },
-  'הגמעה': { bg: '#D6E9FF', border: '#3B82F6', label: 'הגמעה' },
-  'פיזור מועילים': { bg: '#DFF5E5', border: '#168A55', label: 'פיזור מועילים' },
+const TYPES = {
+  'ריסוס': { bg: '#FFF3D6', border: '#F59E0B', label: 'ריסוס' },
+  'הגמעה': { bg: '#E8F1FF', border: '#3B82F6', label: 'הגמעה' },
+  'פיזור מועילים': { bg: '#E5F7EE', border: '#22A06B', label: 'פיזור מועילים' },
+  'אחר': { bg: '#F1ECFE', border: '#8B5CF6', label: 'אחר' },
 };
+const TODAY_BG = '#FFF4CC';
+const TODAY_BORDER = '#E5A900';
 
+const DOSAGE_FIELDS = ['מינון ', 'מינון']; // השדה החי נקרא "מינון " (עם רווח בסוף)
+const RANGE_RE = /^(\d{1,2}\/\d{1,2}\/\d{4})\s*-\s*(\d{1,2}\/\d{1,2}\/\d{4})$/;
+
+// ---------- תאריכים ----------
+function parseDMY(s) {
+  const [d, m, y] = String(s).split('/').map(Number);
+  if (!d || !m || !y) return null;
+  const date = new Date(y, m - 1, d);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+function parseISO(s) {
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+/** מחזיר {start,end} של הטיפול, או null */
+function treatmentRange(raw) {
+  const v = raw['תאריך'];
+  if (!v) return null;
+  const s = String(v).trim();
+  const m = s.match(RANGE_RE);
+  if (m) {
+    const start = parseDMY(m[1]);
+    const end = parseDMY(m[2]);
+    return start && end ? { start, end: end < start ? start : end } : null;
+  }
+  const single = s.includes('/') ? parseDMY(s) : parseISO(s);
+  return single ? { start: single, end: single } : null;
+}
+const dateKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const toISO = dateKey;
+const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
+
+function inferType(t) {
+  const tag = [t['סוג טיפול'], t['סוג מרסס'], t['בסיס מינון'], displayName(t['חומר ריסוס'], '')].join(' ').toLowerCase();
+  if (tag.includes('הגמע') || tag.includes('טפטוף')) return 'הגמעה';
+  if (tag.includes('מועיל')) return 'פיזור מועילים';
+  if (tag.includes('ריסוס') || tag.includes('מרסס')) return 'ריסוס';
+  return 'ריסוס';
+}
+
+/** תג "היום / מתחיל היום / יום אחרון" (סעיף 22 — Highlight) */
+function todayBadge(ev) {
+  const today = startOfToday();
+  if (ev.start > today || ev.end < today) return null;
+  if (ev.start.getTime() === today.getTime() && ev.end.getTime() !== today.getTime()) return 'מתחיל היום';
+  if (ev.end.getTime() === today.getTime() && ev.start.getTime() !== today.getTime()) return 'יום אחרון';
+  return 'היום';
+}
+
+// ============================================================
 export default function TreatmentsPage() {
   const app = useApp();
   const [treatments, setTreatments] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [structures, setStructures] = useState([]);
+  const [workers, setWorkers] = useState([]);
+  const [plans, setPlans] = useState([]);
+  const [options, setOptions] = useState({ status: [], sprayer: [], basis: [] });
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState('calendar');
-  const [year, setYear] = useState(new Date().getFullYear());
-  const [month, setMonth] = useState(new Date().getMonth());
-  const [selectedDate, setSelectedDate] = useState(null);
-  const [inset, setInset] = useState(null);
+  const [loadError, setLoadError] = useState('');
 
+  const [view, setView] = useState('calendar');
+  const now = new Date();
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth());
+  const [weekStart, setWeekStart] = useState(() => { const d = startOfToday(); d.setDate(d.getDate() - d.getDay()); return d; });
+  const [fStructure, setFStructure] = useState('');
+  const [fCrop, setFCrop] = useState('');
+  const [fVariety, setFVariety] = useState('');
+  const [fType, setFType] = useState('');
+
+  const [dayDrawer, setDayDrawer] = useState(null);
+  const [form, setForm] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState('');
+
+  const load = useCallback(async () => {
+    setLoadError('');
+    try {
+      const [t, m, s, w, p] = await Promise.all([
+        app.api.get('ריסוסים', '?maxRecords=1000'),
+        app.api.get('חומרי ריסוס', '?maxRecords=300'),
+        app.api.get('מבנים', '?maxRecords=300'),
+        app.api.get('עובדים', '?maxRecords=300'),
+        app.api.get('תוכניות שתילה', '?maxRecords=500'),
+      ]);
+      setTreatments(Array.isArray(t) ? t : []);
+      setMaterials(Array.isArray(m) ? m : []);
+      setStructures(Array.isArray(s) ? s : []);
+      setWorkers(Array.isArray(w) ? w : []);
+      setPlans(Array.isArray(p) ? p : []);
+    } catch (e) {
+      setLoadError(e.message || 'לא ניתן היה לטעון את הנתונים מ-Airtable.');
+    }
+    setLoading(false);
+  }, [app.api]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // אפשרויות singleSelect — נטענות מהמטא כדי לא לכתוב ערך שאינו ברשימה
   useEffect(() => {
-    app.api.get('ריסוסים', '?maxRecords=500')
-      .then((d) => setTreatments(Array.isArray(d) ? d : []))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    const fetchChoices = (field) =>
+      fetch(`/api/select-options/${encodeURIComponent('ריסוסים')}/${encodeURIComponent(field)}`)
+        .then((r) => (r.ok ? r.json() : { choices: [] }))
+        .then((d) => (Array.isArray(d.choices) ? d.choices : []))
+        .catch(() => []);
+    Promise.all([fetchChoices('סטטוס'), fetchChoices('סוג מרסס'), fetchChoices('בסיס מינון')])
+      .then(([status, sprayer, basis]) => setOptions({ status, sprayer, basis }));
   }, []);
 
-  // פירוק תאריכי טווח (16/07/2026-23/07/2026) לאירועים מרובי ימים
+  // ---------- אירועים מועשרים ----------
   const events = useMemo(() => {
-    const evts = [];
-    treatments.forEach((t) => {
-      const ds = t['תאריך'];
-      if (!ds) return;
-      let dates = [];
-      // טווח
-      if (typeof ds === 'string' && ds.includes('-')) {
-        const parts = ds.split('-').filter(Boolean);
-        if (parts.length === 2) {
-          const start = parseDate(parts[0]);
-          const end = parseDate(parts[1]);
-          if (start && end) {
-            for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-              dates.push(new Date(d));
-            }
-          }
-        }
-      } else {
-        // יום בודד
-        const d = parseDate(ds);
-        if (d) dates.push(d);
-      }
-      dates.forEach((d) => {
-        const key = dateKey(d);
-        evts.push({
-          date: d,
-          dateKey: key,
-          id: t.id,
-          material: displayName(t['חומר ריסוס'], 'טיפול'),
-          structure: displayName(t['מבנה']),
-          dosage: safeValue(t['מינון']),
-          type: inferType(t),
-          raw: t,
-        });
-      });
+    return treatments.map((t) => {
+      const range = treatmentRange(t);
+      if (!range) return null;
+      const structs = Array.isArray(t['מבנה']) ? t['מבנה'] : (t['מבנה'] ? [t['מבנה']] : []);
+      const structNames = structs.map((x) => (x && typeof x === 'object' ? x.name : String(x))).filter(Boolean);
+      const structIds = structs.map((x) => (x && typeof x === 'object' ? x.id : String(x)));
+      const planId = firstId(t['תוכנית שתילה']);
+      const plan = plans.find((p) => p.id === planId);
+      const crop = plan ? (displayName(plan['גידולים'], '') || displayName(plan['סוג גידול'], '')) : '';
+      const variety = plan ? displayName(plan['זן'], '') : '';
+      return {
+        id: t.id, raw: t, ...range,
+        type: inferType(t),
+        material: displayName(t['חומר ריסוס'], 'לא זמין'),
+        structNames, structIds,
+        crop: crop || 'לא זמין',
+        variety: variety || '',
+        number: t['מספר ריסוס'],
+        dosage: pick(t, DOSAGE_FIELDS),
+        basis: t['בסיס מינון'] || '',
+        executor: displayName(t['מבצע'], ''),
+        status: t['סטטוס'] || '',
+        done: !!t['בוצע'],
+        notes: t['הערות'] || '',
+        days: Math.round((range.end - range.start) / 86400000) + 1,
+      };
+    }).filter(Boolean);
+  }, [treatments, plans]);
+
+  const cropOptions = useMemo(() => [...new Set(events.map((e) => e.crop).filter((c) => c && c !== 'לא זמין'))].sort(), [events]);
+  const varietyOptions = useMemo(() => [...new Set(events.map((e) => e.variety).filter(Boolean))].sort(), [events]);
+
+  const filtered = useMemo(() => events.filter((e) => {
+    if (fStructure && !e.structIds.includes(fStructure)) return false;
+    if (fCrop && e.crop !== fCrop) return false;
+    if (fVariety && e.variety !== fVariety) return false;
+    if (fType && e.type !== fType) return false;
+    return true;
+  }), [events, fStructure, fCrop, fVariety, fType]);
+
+  const onDate = useCallback((d) => filtered.filter((e) => e.start <= d && e.end >= d), [filtered]);
+
+  // ---------- KPI (סעיף 25) ----------
+  const kpi = useMemo(() => {
+    const today = startOfToday();
+    const ws = new Date(today); ws.setDate(today.getDate() - today.getDay());
+    const we = new Date(ws); we.setDate(ws.getDate() + 6);
+    return {
+      total: filtered.length,
+      week: filtered.filter((e) => e.start <= we && e.end >= ws).length,
+      today: filtered.filter((e) => e.start <= today && e.end >= today).length,
+      done: filtered.filter((e) => e.done).length,
+    };
+  }, [filtered]);
+
+  // ---------- כתיבה ל-Airtable ----------
+  const runAction = async (fn) => {
+    if (busy) return false;
+    setBusy(true); setActionError('');
+    try { await fn(); await load(); setBusy(false); return true; }
+    catch (e) { setActionError(`לא ניתן היה להשלים את הפעולה. הנתונים לא עודכנו. (${e.message || e})`); setBusy(false); return false; }
+  };
+
+  const openForm = (ev) => {
+    setActionError('');
+    const r = ev?.raw;
+    setForm({
+      id: ev?.id || null,
+      from: ev ? toISO(ev.start) : toISO(startOfToday()),
+      to: ev ? toISO(ev.end) : toISO(startOfToday()),
+      structures: ev ? ev.structIds : [],
+      material: r ? firstId(r['חומר ריסוס']) || '' : '',
+      executor: r ? firstId(r['מבצע']) || '' : '',
+      plan: r ? firstId(r['תוכנית שתילה']) || '' : '',
+      sprayer: r?.['סוג מרסס'] || '',
+      sprayerSize: r?.['גודל מרסס בליטר'] || '',
+      basis: r?.['בסיס מינון'] || '',
+      dosage: r ? (pick(r, DOSAGE_FIELDS) ?? '') : '',
+      status: r?.['סטטוס'] || '',
+      notes: r?.['הערות'] || '',
+      done: !!r?.['בוצע'],
     });
-    return evts;
-  }, [treatments]);
+  };
 
-  const now = new Date();
-  const today = dateKey(now);
+  const saveForm = async () => {
+    const f = form;
+    if (!f.structures.length) { setActionError('חסר שדה חובה: מבנה'); return; }
+    if (!f.material) { setActionError('חסר שדה חובה: חומר ריסוס'); return; }
+    // יום בודד נשמר כ-ISO (שדה תאריך); טווח נשמר בפורמט הטקסטואלי של האפיון
+    const fmt = (iso) => { const [y, m, d] = iso.split('-'); return `${d}/${m}/${y}`; };
+    const dateValue = f.from === f.to ? f.from : `${fmt(f.from)}-${fmt(f.to)}`;
+    const fields = {
+      'תאריך': dateValue,
+      'מבנה': f.structures,
+      'חומר ריסוס': [f.material],
+      'מבצע': f.executor ? [f.executor] : [],
+      'תוכנית שתילה': f.plan ? [f.plan] : [],
+      'סוג מרסס': f.sprayer || null,
+      'גודל מרסס בליטר': f.sprayerSize || null,
+      'בסיס מינון': f.basis || null,
+      'מינון ': f.dosage === '' ? null : Number(f.dosage),
+      'סטטוס': f.status || null,
+      'הערות': f.notes || null,
+      'בוצע': !!f.done,
+    };
+    Object.keys(fields).forEach((k) => { if (fields[k] === null) delete fields[k]; });
+    const ok = await runAction(async () => {
+      if (f.id) await app.api.update('ריסוסים', f.id, fields);
+      else await app.api.create('ריסוסים', fields);
+    });
+    if (ok) { setForm(null); setDayDrawer(null); }
+  };
 
-  const prevMonth = () => { if (month === 0) { setYear(year - 1); setMonth(11); } else { setMonth(month - 1); } };
-  const nextMonth = () => { if (month === 11) { setYear(year + 1); setMonth(0); } else { setMonth(month + 1); } };
+  const toggleDone = (ev) => runAction(() => app.api.update('ריסוסים', ev.id, { 'בוצע': !ev.done }));
+  const removeTreatment = async (ev) => {
+    if (!window.confirm(`למחוק את הטיפול ${ev.material} (${formatDate(ev.start)})?`)) return;
+    const ok = await runAction(() => app.api.remove('ריסוסים', ev.id));
+    if (ok) setDayDrawer(null);
+  };
 
-  // אירועים בחודש זה
-  const monthEvents = events.filter((e) => e.date.getFullYear() === year && e.date.getMonth() === month);
+  // ---------- ניווט ----------
+  const prevMonth = () => { if (month === 0) { setYear(year - 1); setMonth(11); } else setMonth(month - 1); };
+  const nextMonth = () => { if (month === 11) { setYear(year + 1); setMonth(0); } else setMonth(month + 1); };
+  const stepWeek = (n) => { const d = new Date(weekStart); d.setDate(d.getDate() + n * 7); setWeekStart(d); };
+  const goToday = () => { const t = startOfToday(); setYear(t.getFullYear()); setMonth(t.getMonth()); const d = new Date(t); d.setDate(t.getDate() - t.getDay()); setWeekStart(d); };
+  const goWeekOfMonth = (n) => { const d = new Date(year, month, 1 + (n - 1) * 7); d.setDate(d.getDate() - d.getDay()); setWeekStart(d); setView('week'); };
+
+  const years = useMemo(() => {
+    const set = new Set(events.flatMap((e) => [e.start.getFullYear(), e.end.getFullYear()]));
+    set.add(now.getFullYear());
+    return [...set].sort();
+  }, [events]);
+
+  const filtersActive = fStructure || fCrop || fVariety || fType;
+
+  if (loading) {
+    return <div><div className="page-header"><h2>תכנון טיפולים</h2></div><div className="skeleton skeleton-chart" /></div>;
+  }
 
   return (
     <div>
-      <div className="page-header"><h2>תכנון טיפולים</h2></div>
-
-      <div className="tabs" style={{ marginBottom: 18 }}>
-        <button className={`tab ${view === 'calendar' ? 'active' : ''}`} onClick={() => setView('calendar')}>📋 לוח שנה</button>
-        <button className={`tab ${view === 'week' ? 'active' : ''}`} onClick={() => setView('week')}>🗓️ שבוע</button>
-        <button className={`tab ${view === 'list' ? 'active' : ''}`} onClick={() => setView('list')}>📄 רשימה</button>
+      <div className="page-header">
+        <h2>תכנון טיפולים</h2>
+        <button className="btn btn-primary" onClick={() => openForm(null)}>+ טיפול חדש</button>
       </div>
 
-      {loading ? (
-        <div className="skeleton skeleton-card" />
-      ) : view === 'calendar' ? (
-        <div>
-          <div className="card" style={{ maxWidth: 480, margin: '0 auto' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <button className="btn btn-ghost btn-sm" onClick={prevMonth}>◀</button>
-              <b style={{ fontSize: 16 }}>{MONTHS[month]} {year}</b>
-              <button className="btn btn-ghost btn-sm" onClick={nextMonth}>▶</button>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', textAlign: 'center', fontWeight: 700, marginBottom: 6, fontSize: 12, color: 'var(--text-muted)' }}>
-              {DAYS.map((d) => <div key={d}>{d}</div>)}
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2 }}>
-              {buildGrid(year, month).map((cell, i) => {
-                const ev = cell.date ? monthEvents.filter((e) => e.dateKey === dateKey(cell.date)) : [];
-                const isToday = cell.date && dateKey(cell.date) === today;
-                const isSelected = cell.date && selectedDate && dateKey(cell.date) === dateKey(selectedDate);
-                return (
-                  <div
-                    key={i}
-                    onClick={() => { setSelectedDate(cell.date || null); if (ev.length) setInset(ev); else setInset(null); }}
-                    style={{
-                      aspectRatio: '1', minHeight: 44, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                      borderRadius: 8, cursor: cell.date ? 'pointer' : 'default',
-                      background: isSelected ? 'var(--accent-top)' : isToday ? '#FFF9DB' : 'transparent',
-                      color: isSelected ? '#fff' : (cell.otherMonth ? 'var(--text-muted)' : 'var(--text-main)'),
-                      border: isToday && !isSelected ? '2px solid #F59E0B' : 'none',
-                      fontSize: 13,
-                    }}
-                  >
-                    <span style={{ fontWeight: isToday ? 800 : 500 }}>{cell.label}</span>
-                    {ev.length > 0 && <div style={{ display: 'flex', gap: 2, marginTop: 2 }}>{ev.slice(0, 4).map((e) => <div key={e.id} style={{ width: 6, height: 6, borderRadius: '50%', background: getColor(e.type).border }} />)}</div>}
-                  </div>
-                );
-              })}
-            </div>
+      {loadError && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {loadError}</div>}
+      {actionError && !form && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {actionError}</div>}
+
+      {/* KPI — סעיף 25 */}
+      <div className="kpi-grid" style={{ marginBottom: 16 }}>
+        {[
+          { l: 'מספר טיפולים', v: kpi.total, c: 'var(--spray)', i: '🧴' },
+          { l: 'טיפולים השבוע', v: kpi.week, c: 'var(--irrigation)', i: '🗓️' },
+          { l: 'טיפולים היום', v: kpi.today, c: TODAY_BORDER, i: '⭐' },
+          { l: 'טיפולים שהושלמו', v: kpi.done, c: 'var(--ok)', i: '✅' },
+        ].map((k) => (
+          <div key={k.label || k.l} className="kpi-card">
+            <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--spray-soft)' }}>{k.i}</div><span className="kpi-label">{k.l}</span></div>
+            <div className="kpi-value" style={{ color: k.c }}>{formatNumber(k.v, 0)}</div>
           </div>
-          {inset && <EventDrawer events={inset} onClose={() => setInset(null)} />}
+        ))}
+      </div>
+
+      {/* פילטרים — סעיף 22 */}
+      <div className="filter-bar" style={{ alignItems: 'flex-end' }}>
+        <Sel label="שנה" value={year} onChange={(v) => setYear(Number(v))} options={years.map((y) => [y, y])} />
+        <Sel label="חודש" value={month} onChange={(v) => setMonth(Number(v))} options={MONTHS.map((m, i) => [i, m])} />
+        <Sel label="שבוע" value="" onChange={(v) => v && goWeekOfMonth(Number(v))} options={[['', 'בחר...'], ...[1, 2, 3, 4, 5].map((n) => [n, `שבוע ${n} בחודש`])]} />
+        <Sel label="מבנה" value={fStructure} onChange={setFStructure}
+          options={[['', 'הכל'], ...structures.map((s) => [s.id, s['מספר מבנה'] ? `מבנה ${s['מספר מבנה']}` : 'מבנה'])]} />
+        <Sel label="גידול" value={fCrop} onChange={setFCrop} options={[['', 'הכל'], ...cropOptions.map((c) => [c, c])]} />
+        <Sel label="זן" value={fVariety} onChange={setFVariety} options={[['', 'הכל'], ...varietyOptions.map((c) => [c, c])]} />
+        <Sel label="סוג טיפול" value={fType} onChange={setFType} options={[['', 'הכל'], ...Object.keys(TYPES).map((k) => [k, k])]} />
+        {filtersActive && <button className="btn btn-sm btn-ghost" onClick={() => { setFStructure(''); setFCrop(''); setFVariety(''); setFType(''); }}>✕ נקה פילטר</button>}
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+        <div className="tabs">
+          {[['calendar', '📋 לוח שנה'], ['week', '🗓️ שבוע'], ['list', '📄 רשימה']].map(([k, l]) => (
+            <button key={k} className={`tab ${view === k ? 'active' : ''}`} onClick={() => setView(k)}>{l}</button>
+          ))}
         </div>
-      ) : view === 'week' ? (
-        <WeekView events={events} today={today} />
-      ) : (
-        <ListView events={events} />
+        <div style={{ flex: 1 }} />
+        <div style={{ display: 'flex', gap: 14, fontSize: 12, flexWrap: 'wrap' }}>
+          {Object.values(TYPES).map((t) => (
+            <span key={t.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 12, height: 12, background: t.bg, border: `2px solid ${t.border}`, borderRadius: 3 }} />{t.label}
+            </span>
+          ))}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 12, height: 12, background: TODAY_BG, border: `2px solid ${TODAY_BORDER}`, borderRadius: 3 }} />פעיל היום
+          </span>
+        </div>
+      </div>
+
+      {view === 'calendar' && (
+        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 18px', borderBottom: '1px solid var(--border)' }}>
+            <button className="btn btn-ghost btn-sm" onClick={prevMonth}>‹ קודם</button>
+            <button className="btn btn-ghost btn-sm" onClick={goToday}>היום</button>
+            <button className="btn btn-ghost btn-sm" onClick={nextMonth}>הבא ›</button>
+            <b style={{ fontSize: 16, marginRight: 10 }}>{MONTHS[month]} {year}</b>
+          </div>
+          <MonthGrid year={year} month={month} onDate={onDate} onOpen={(d, evs) => setDayDrawer({ date: d, events: evs })} />
+        </div>
+      )}
+
+      {view === 'week' && (
+        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 18px', borderBottom: '1px solid var(--border)' }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => stepWeek(-1)}>‹ קודם</button>
+            <button className="btn btn-ghost btn-sm" onClick={goToday}>היום</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => stepWeek(1)}>הבא ›</button>
+            <b style={{ fontSize: 16, marginRight: 10 }}>
+              שבוע {formatDate(weekStart)} – {formatDate(new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 6))}
+            </b>
+          </div>
+          <WeekGrid weekStart={weekStart} onDate={onDate} onOpen={(ev) => setDayDrawer({ date: ev.start, events: [ev] })} />
+        </div>
+      )}
+
+      {view === 'list' && <ListView events={filtered} onOpen={(ev) => setDayDrawer({ date: ev.start, events: [ev] })} />}
+
+      {dayDrawer && (
+        <DayDrawer
+          date={dayDrawer.date} events={dayDrawer.events} busy={busy} error={actionError}
+          onClose={() => setDayDrawer(null)} onEdit={openForm} onToggle={toggleDone} onDelete={removeTreatment}
+        />
+      )}
+
+      {form && (
+        <TreatmentForm
+          form={form} setForm={setForm} busy={busy} error={actionError}
+          structures={structures} materials={materials} workers={workers} plans={plans} options={options}
+          onCancel={() => setForm(null)} onSave={saveForm}
+        />
       )}
     </div>
   );
 }
 
-// ---------- View: Week ----------
-function WeekView({ events, today }) {
-  const [weekOffset, setWeekOffset] = useState(0);
-  const startOfWeek = new Date();
-  startOfWeek.setDate(startOfWeek.getDate() + weekOffset * 7 - startOfWeek.getDay());
-  const days = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(startOfWeek);
-    d.setDate(d.getDate() + i);
-    const key = dateKey(d);
-    const dayEvents = events.filter((e) => e.dateKey === key);
-    return { date: d, key, events: dayEvents, isToday: key === today };
-  });
-
+// ============================================================
+// רכיבי תצוגה
+// ============================================================
+function Sel({ label, value, onChange, options }) {
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'center', gap: 16, alignItems: 'center', marginBottom: 18 }}>
-        <button className="btn btn-ghost btn-sm" onClick={() => setWeekOffset(weekOffset - 1)}>◀</button>
-        <b>שבוע {weekOffset === 0 ? 'נוכחי' : `+${weekOffset}`}</b>
-        <button className="btn btn-ghost btn-sm" onClick={() => setWeekOffset(weekOffset + 1)}>▶</button>
-        <button className="btn btn-ghost btn-sm" onClick={() => setWeekOffset(0)}>היום</button>
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 8 }}>
-        {days.map((d) => (
-          <div key={d.key} className="card" style={{ padding: '10px 8px', minHeight: 100, background: d.isToday ? '#FFF9DB' : 'var(--card-bg)' }}>
-            <div style={{ fontWeight: 700, fontSize: 12, textAlign: 'center', marginBottom: 6, color: d.isToday ? '#F59E0B' : 'var(--text-main)' }}>
-              {DAYS[d.date.getDay()]}<br />{d.date.getDate()}/{d.date.getMonth() + 1}
-            </div>
-            {d.events.slice(0, 6).map((e) => {
-              const c = getColor(e.type);
-              return (
-                <div key={e.id} style={{ fontSize: 10, padding: '3px 4px', marginBottom: 3, borderRadius: 4, background: c.bg, border: `1px solid ${c.border}` }}>
-                  <div style={{ fontWeight: 600 }}>{e.material}</div>
-                  <div style={{ fontSize: 9, color: 'var(--text-secondary)' }}>{e.structure}</div>
-                </div>
-              );
-            })}
-            {d.events.length > 6 && <div style={{ fontSize: 10, color: 'var(--text-muted)', textAlign: 'center' }}>+{d.events.length - 6} עוד</div>}
-          </div>
-        ))}
-      </div>
+      <label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>{label}</label>
+      <select className="select" value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map(([v, l]) => <option key={String(v)} value={v}>{l}</option>)}
+      </select>
     </div>
   );
 }
 
-// ---------- View: List ----------
-function ListView({ events }) {
-  const today = dateKey(new Date());
-  const sorted = [...events].sort((a, b) => a.date - b.date);
-  const [macro, setMacro] = useState(100);
+/** פס אירוע בתוך תא לוח — צבע לפי סוג, הדגשה כשפעיל היום */
+function EventChip({ ev, compact, onClick }) {
+  const c = TYPES[ev.type] || TYPES['אחר'];
+  const badge = todayBadge(ev);
+  return (
+    <div onClick={(e) => { e.stopPropagation(); onClick?.(ev); }}
+      title={`${c.label} · ${ev.material} · ${ev.structNames.join(', ')}`}
+      style={{
+        background: badge ? TODAY_BG : c.bg, borderRight: `4px solid ${c.border}`,
+        border: badge ? `2px solid ${TODAY_BORDER}` : `1px solid ${c.border}`, borderRightWidth: 4, borderRightColor: c.border,
+        borderRadius: 6, padding: compact ? '2px 5px' : '5px 7px', marginTop: 3, fontSize: compact ? 10.5 : 12, cursor: 'pointer',
+        opacity: ev.done ? 0.65 : 1,
+      }}>
+      <div style={{ fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {ev.done ? '✓ ' : ''}{ev.material}
+      </div>
+      {!compact && <div style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ev.structNames.join(', ') || 'לא זמין'}</div>}
+      {badge && <span className="badge" style={{ background: TODAY_BORDER, color: '#fff', fontSize: 10, padding: '1px 7px', marginTop: 2 }}>{badge}</span>}
+    </div>
+  );
+}
+
+function MonthGrid({ year, month, onDate, onOpen }) {
+  const today = startOfToday();
+  const count = new Date(year, month + 1, 0).getDate();
+  const lead = new Date(year, month, 1).getDay();
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', fontSize: 12 }}>
+      {DAYS.map((d) => <div key={d} style={{ padding: 6, textAlign: 'center', background: 'var(--bg-secondary)', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>{d}</div>)}
+      {Array.from({ length: lead }).map((_, i) => <div key={`b${i}`} style={{ minHeight: 92, background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }} />)}
+      {Array.from({ length: count }, (_, i) => new Date(year, month, i + 1)).map((day) => {
+        const evs = onDate(day);
+        const isToday = day.getTime() === today.getTime();
+        return (
+          <div key={dateKey(day)} onClick={() => evs.length && onOpen(day, evs)}
+            style={{
+              minHeight: 92, padding: 4, borderLeft: '1px solid var(--border)', borderBottom: '1px solid var(--border)',
+              background: isToday ? '#FFFBEB' : '#fff', cursor: evs.length ? 'pointer' : 'default',
+              outline: isToday ? `2px solid ${TODAY_BORDER}` : 'none', outlineOffset: -2,
+            }}>
+            <div style={{ fontWeight: isToday ? 800 : 500, color: isToday ? TODAY_BORDER : 'inherit' }}>{day.getDate()}</div>
+            {evs.slice(0, 3).map((ev) => <EventChip key={ev.id} ev={ev} compact onClick={() => onOpen(day, evs)} />)}
+            {evs.length > 3 && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>+{evs.length - 3} עוד</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function WeekGrid({ weekStart, onDate, onOpen }) {
+  const today = startOfToday();
+  const days = Array.from({ length: 7 }, (_, i) => new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', fontSize: 12 }}>
+      {days.map((day) => {
+        const evs = onDate(day);
+        const isToday = day.getTime() === today.getTime();
+        return (
+          <div key={dateKey(day)} style={{ minHeight: 220, padding: 6, borderLeft: '1px solid var(--border)', background: isToday ? '#FFFBEB' : '#fff', outline: isToday ? `2px solid ${TODAY_BORDER}` : 'none', outlineOffset: -2 }}>
+            <div style={{ textAlign: 'center', fontWeight: 700, marginBottom: 4, color: isToday ? TODAY_BORDER : 'inherit' }}>
+              {DAYS[day.getDay()]} {day.getDate()}/{day.getMonth() + 1}
+            </div>
+            {evs.length === 0 && <div style={{ color: 'var(--text-muted)', textAlign: 'center', fontSize: 11, marginTop: 10 }}>—</div>}
+            {evs.map((ev) => <EventChip key={ev.id} ev={ev} onClick={onOpen} />)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ListView({ events, onOpen }) {
+  const [limit, setLimit] = useState(100);
+  const sorted = [...events].sort((a, b) => a.start - b.start);
+  if (!sorted.length) return <div className="card empty-state">אין טיפולים לפילטרים שנבחרו.</div>;
   return (
     <div className="card">
       <div className="table-wrap">
         <table className="data-table">
-          <thead><tr><th>תאריך</th><th>סוג טיפול</th><th>מבנה</th><th>חומר</th><th>מינון</th></tr></thead>
+          <thead><tr><th>תאריך</th><th>סוג טיפול</th><th>מבנה</th><th>גידול</th><th>זן</th><th>חומר</th><th>מינון</th><th>מבצע</th><th>סטטוס</th></tr></thead>
           <tbody>
-            {sorted.slice(0, macro).map((e) => {
-              const c = getColor(e.type);
-              const isActive = e.dateKey === today;
+            {sorted.slice(0, limit).map((ev) => {
+              const c = TYPES[ev.type] || TYPES['אחר'];
+              const badge = todayBadge(ev);
               return (
-                <tr key={eventKey(e)} style={{ background: isActive ? '#FFF9DB' : 'transparent', borderRight: isActive ? `4px solid #F59E0B` : 'none' }}>
-                  <td><b>{formatDate(e.date)}</b>{isActive && <span className="badge badge-warn" style={{ fontSize: 10, marginRight: 6 }}>היום</span>}</td>
+                <tr key={ev.id} onClick={() => onOpen(ev)} style={{ background: badge ? TODAY_BG : undefined, borderRight: badge ? `4px solid ${TODAY_BORDER}` : undefined }}>
+                  <td>
+                    <b>{formatDate(ev.start)}{ev.days > 1 ? ` – ${formatDate(ev.end)}` : ''}</b>
+                    {badge && <span className="badge" style={{ background: TODAY_BORDER, color: '#fff', fontSize: 10, marginRight: 6 }}>{badge}</span>}
+                  </td>
                   <td><span className="badge" style={{ background: c.bg, color: c.border, border: `1px solid ${c.border}` }}>{c.label}</span></td>
-                  <td>{e.structure}</td>
-                  <td>{e.material}</td>
-                  <td>{e.dosage}</td>
+                  <td><Chips names={ev.structNames} /></td>
+                  <td>{ev.crop}</td>
+                  <td>{ev.variety || '—'}</td>
+                  <td>{ev.material}</td>
+                  <td>{ev.dosage ?? '—'}{ev.basis ? ` ${ev.basis}` : ''}</td>
+                  <td>{ev.executor || '—'}</td>
+                  <td><span className={`badge ${ev.done ? 'badge-ok' : 'badge-warn'}`}>{ev.done ? 'בוצע' : (ev.status || 'לא בוצע')}</span></td>
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
-      {sorted.length > macro && (
-        <div style={{ textAlign: 'center', marginTop: 12 }}>
-          <button className="btn btn-ghost btn-sm" onClick={() => setMacro(macro + 100)}>טען עוד ({sorted.length - macro} נותרו)</button>
-        </div>
-      )}
+      {sorted.length > limit && <div style={{ textAlign: 'center', marginTop: 12 }}><button className="btn btn-ghost btn-sm" onClick={() => setLimit(limit + 100)}>טען עוד ({sorted.length - limit} נותרו)</button></div>}
     </div>
   );
 }
 
-// ---------- Event Drawer ----------
-function EventDrawer({ events, onClose }) {
-  const unique = events.filter((e, i, a) => a.findIndex((x) => x.id === e.id) === i);
+/** מבנים מרובים — Chips (סעיף 22) */
+function Chips({ names }) {
+  if (!names.length) return 'לא זמין';
+  if (names.length === 1) return names[0];
+  return <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>{names.map((n) => <span key={n} className="badge" style={{ background: 'var(--bg-secondary)' }}>{n}</span>)}</span>;
+}
+
+// ---------- כרטיס טיפול ----------
+function DayDrawer({ date, events, busy, error, onClose, onEdit, onToggle, onDelete }) {
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="drawer-overlay" onClick={onClose}>
       <div className="drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
-          <span>טיפולים — {formatDate(events[0]?.date)}</span>
-          <button className="drawer-close" onClick={onClose}>✕</button>
+          <span>🧴 טיפולים — {formatDate(date)}</span>
+          <button className="drawer-close" onClick={onClose} aria-label="סגור">✕</button>
         </div>
         <div className="drawer-body">
-          {unique.map((e) => {
-            const c = getColor(e.type);
+          {error && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
+          {events.map((ev) => {
+            const c = TYPES[ev.type] || TYPES['אחר'];
+            const badge = todayBadge(ev);
+            const row = (l, v) => <div style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid rgba(0,0,0,0.05)', fontSize: 13 }}><span style={{ color: 'var(--text-secondary)' }}>{l}</span><b>{v}</b></div>;
             return (
-              <div key={e.id} className="card" style={{ marginBottom: 12, background: c.bg, border: `1px solid ${c.border}` }}>
-                <div style={{ fontWeight: 700, marginBottom: 4 }}>🧴 {e.material}</div>
-                <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-                  <div>מבנה: {e.structure}</div>
-                  <div>מינון: {e.dosage}</div>
-                  <div>סוג: {c.label}</div>
+              <div key={ev.id} className="card" style={{ marginBottom: 12, background: badge ? TODAY_BG : c.bg, border: `${badge ? 2 : 1}px solid ${badge ? TODAY_BORDER : c.border}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                  <span className="badge" style={{ background: '#fff', color: c.border, border: `1px solid ${c.border}` }}>{c.label}</span>
+                  {badge && <span className="badge" style={{ background: TODAY_BORDER, color: '#fff' }}>{badge}</span>}
+                  <span className={`badge ${ev.done ? 'badge-ok' : 'badge-warn'}`}>{ev.done ? 'בוצע' : (ev.status || 'לא בוצע')}</span>
+                  <div style={{ flex: 1 }} />
+                  <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" disabled={busy} onClick={() => onEdit(ev)}>✎</button>
+                  <button className="btn btn-sm btn-ghost" title={ev.done ? 'סמן כלא בוצע' : 'סמן כבוצע'} disabled={busy} onClick={() => onToggle(ev)}>{ev.done ? '↩' : '✓'}</button>
+                  <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }} disabled={busy} onClick={() => onDelete(ev)}>🗑</button>
                 </div>
+                <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 6 }}>{ev.material}</div>
+                {row('תאריך / טווח', ev.days > 1 ? `${formatDate(ev.start)} – ${formatDate(ev.end)} (${ev.days} ימים)` : formatDate(ev.start))}
+                {row('מבנה', <Chips names={ev.structNames} />)}
+                {row('גידול', ev.crop)}
+                {row('זן', ev.variety || '—')}
+                {row('מספר ריסוס', ev.number ?? '—')}
+                {row('מינון', ev.dosage != null && ev.dosage !== '' ? `${ev.dosage}${ev.basis ? ` ${ev.basis}` : ''}` : 'לא זמין')}
+                {row('מבצע', ev.executor || 'לא זמין')}
+                {row('כמות מחושבת', ev.raw['כמות מחושבת'] != null && typeof ev.raw['כמות מחושבת'] === 'number' ? formatNumber(ev.raw['כמות מחושבת']) : 'לא זמין')}
+                {ev.notes && <div style={{ fontSize: 13, marginTop: 8 }}>{ev.notes}</div>}
               </div>
             );
           })}
@@ -253,56 +555,97 @@ function EventDrawer({ events, onClose }) {
   );
 }
 
-// ---------- Helpers ----------
-function parseDate(v) {
-  if (!v) return null;
-  if (v instanceof Date && !Number.isNaN(v.getTime())) return v;
-  // DD/MM/YYYY
-  const parts = String(v).split('/');
-  if (parts.length === 3) {
-    const d = new Date(Number(parts[2]), Number(parts[1]) - 1, Number(parts[0]));
-    if (!Number.isNaN(d.getTime())) return d;
-  }
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
+// ---------- טופס יצירה / עריכה ----------
+function TreatmentForm({ form, setForm, busy, error, structures, materials, workers, plans, options, onCancel, onSave }) {
+  const set = (k, v) => setForm({ ...form, [k]: v });
+  const toggleStruct = (id) => set('structures', form.structures.includes(id) ? form.structures.filter((x) => x !== id) : [...form.structures, id]);
+  const mat = materials.find((m) => m.id === form.material);
+  const relevantPlans = plans.filter((p) => !form.structures.length || form.structures.includes(firstId(p['מבנה'])));
+  const planLabel = (p) => `תוכנית ${p['מספר תוכנית'] ?? ''} · ${displayName(p['מבנה'], '')} · ${displayName(p['גידולים'], '') || displayName(p['סוג גידול'], '')}`;
+  const withCurrent = (list, current) => (current && !list.includes(current) ? [current, ...list] : list);
 
-function dateKey(d) {
-  if (!d) return '';
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
+  return (
+    <div className="modal-overlay" onClick={() => !busy && onCancel()}>
+      <div className="modal" style={{ width: 560 }} onClick={(e) => e.stopPropagation()}>
+        <h3>{form.id ? 'עריכת טיפול' : 'טיפול חדש'}</h3>
+        {error && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
+        <form onSubmit={(e) => { e.preventDefault(); onSave(); }}>
+          <div className="grid-2" style={{ gap: 12 }}>
+            <div className="form-group"><label>מתאריך <span className="required" /></label>
+              <input className="input" type="date" required style={{ width: '100%' }} value={form.from} onChange={(e) => { const v = e.target.value; setForm({ ...form, from: v, to: form.to < v ? v : form.to }); }} /></div>
+            <div className="form-group"><label>עד תאריך</label>
+              <input className="input" type="date" style={{ width: '100%' }} min={form.from} value={form.to} onChange={(e) => set('to', e.target.value || form.from)} /></div>
+          </div>
 
-function buildGrid(year, month) {
-  const first = new Date(year, month, 1);
-  const last = new Date(year, month + 1, 0);
-  const startDay = first.getDay();
-  const days = [];
-  const prevMonth = new Date(year, month, 0);
-  for (let i = startDay - 1; i >= 0; i--) {
-    days.push({ label: prevMonth.getDate() - i, date: null, otherMonth: true });
-  }
-  for (let i = 1; i <= last.getDate(); i++) {
-    days.push({ label: i, date: new Date(year, month, i), otherMonth: false });
-  }
-  const remaining = 42 - days.length;
-  for (let i = 1; i <= remaining; i++) {
-    days.push({ label: i, date: null, otherMonth: true });
-  }
-  return days;
-}
+          <div className="form-group">
+            <label>מבנים <span className="required" /></label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {structures.map((s) => {
+                const on = form.structures.includes(s.id);
+                return (
+                  <button type="button" key={s.id} onClick={() => toggleStruct(s.id)} className="badge"
+                    style={{ cursor: 'pointer', border: `1px solid ${on ? 'var(--accent-top)' : 'var(--border)'}`, background: on ? 'var(--accent-top)' : '#fff', color: on ? '#fff' : 'var(--text-main)', padding: '6px 12px' }}>
+                    {s['מספר מבנה'] ? `מבנה ${s['מספר מבנה']}` : 'מבנה'}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
-function inferType(t) {
-  const tag = String(t['סוג טיפול'] || t['סוג מרסס'] || t['בסיס מינון'] || '').toLowerCase();
-  if (tag.includes('ריסוס')) return 'ריסוס';
-  if (tag.includes('הגמעה')) return 'הגמעה';
-  if (tag.includes('מועיל')) return 'פיזור מועילים';
-  return 'ריסוס';
-}
+          <div className="form-group"><label>חומר ריסוס <span className="required" /></label>
+            <select className="select" style={{ width: '100%' }} required value={form.material} onChange={(e) => set('material', e.target.value)}>
+              <option value="">בחר חומר...</option>
+              {materials.map((m) => <option key={m.id} value={m.id}>{m['שם חומר'] || 'חומר'}</option>)}
+            </select>
+            {mat && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>מינון מומלץ: {mat['מינון בסמ"ק'] ?? 'לא זמין'} סמ"ק · אריזה: {mat['גודל האריזה'] ?? 'לא זמין'}</div>}
+          </div>
 
-function getColor(type) {
-  return TYPE_COLORS[type] || { bg: '#E8F1FF', border: '#3B82F6', label: 'אחר' };
-}
+          <div className="form-group"><label>תוכנית שתילה (גידול / זן)</label>
+            <select className="select" style={{ width: '100%' }} value={form.plan} onChange={(e) => set('plan', e.target.value)}>
+              <option value="">ללא</option>
+              {relevantPlans.map((p) => <option key={p.id} value={p.id}>{planLabel(p)}</option>)}
+            </select>
+          </div>
 
-function eventKey(e) {
-  return `${e.id}-${e.dateKey}`;
+          <div className="grid-2" style={{ gap: 12 }}>
+            <div className="form-group"><label>מבצע</label>
+              <select className="select" style={{ width: '100%' }} value={form.executor} onChange={(e) => set('executor', e.target.value)}>
+                <option value="">לא צוין</option>
+                {workers.map((w) => <option key={w.id} value={w.id}>{`${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || 'עובד'}</option>)}
+              </select></div>
+            <div className="form-group"><label>סטטוס</label>
+              <select className="select" style={{ width: '100%' }} value={form.status} onChange={(e) => set('status', e.target.value)}>
+                <option value="">ללא</option>
+                {withCurrent(options.status, form.status).map((s) => <option key={s} value={s}>{s}</option>)}
+              </select></div>
+            <div className="form-group"><label>סוג מרסס</label>
+              <select className="select" style={{ width: '100%' }} value={form.sprayer} onChange={(e) => set('sprayer', e.target.value)}>
+                <option value="">ללא</option>
+                {withCurrent(options.sprayer, form.sprayer).map((s) => <option key={s} value={s}>{s}</option>)}
+              </select></div>
+            <div className="form-group"><label>גודל מרסס (ליטר)</label>
+              <input className="input" style={{ width: '100%' }} value={form.sprayerSize} onChange={(e) => set('sprayerSize', e.target.value)} /></div>
+            <div className="form-group"><label>בסיס מינון</label>
+              <select className="select" style={{ width: '100%' }} value={form.basis} onChange={(e) => set('basis', e.target.value)}>
+                <option value="">ללא</option>
+                {withCurrent(options.basis, form.basis).map((s) => <option key={s} value={s}>{s}</option>)}
+              </select></div>
+            <div className="form-group"><label>מינון</label>
+              <input className="input" type="number" step="any" min="0" style={{ width: '100%' }} value={form.dosage} onChange={(e) => set('dosage', e.target.value)} /></div>
+          </div>
+
+          <div className="form-group"><label>הערות</label>
+            <textarea className="input" style={{ width: '100%' }} value={form.notes} onChange={(e) => set('notes', e.target.value)} /></div>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
+            <input type="checkbox" checked={form.done} onChange={(e) => set('done', e.target.checked)} /> בוצע
+          </label>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>כמות ומחיר מחושבים ב-Airtable לאחר השמירה.</div>
+          <div className="form-actions">
+            <button type="button" className="btn btn-ghost" disabled={busy} onClick={onCancel}>ביטול</button>
+            <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'שומר...' : form.id ? 'שמור שינויים' : 'צור טיפול'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
+import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 
@@ -13,19 +14,20 @@ export default function WorkersPage() {
   const [workRecords, setWorkRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [drawer, setDrawer] = useState(null);
+  const [form, setForm] = useState(null); // {} = עובד חדש, רשומה = עריכה
+  const canEdit = (app.user?.role || 'owner') === 'owner'; // CRUD למנהל ראשי בלבד
 
-  useEffect(() => {
-    Promise.all([
-      app.api.get('עובדים', '?maxRecords=200'),
-      app.api.get('עבודות עובדים', '?maxRecords=2000'),
-    ])
-      .then(([w, wr]) => {
-        setWorkers(Array.isArray(w) ? w : []);
-        setWorkRecords(Array.isArray(wr) ? wr : []);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  const load = () => Promise.all([
+    app.api.get('עובדים', '?maxRecords=200'),
+    app.api.get('עבודות עובדים', '?maxRecords=2000'),
+  ])
+    .then(([w, wr]) => {
+      setWorkers(Array.isArray(w) ? w : []);
+      setWorkRecords(Array.isArray(wr) ? wr : []);
+    })
+    .catch(() => {});
+
+  useEffect(() => { load().finally(() => setLoading(false)); }, []);
 
   // סיוע: שעות וסכום
   const hoursOf = (arr) => arr.reduce((s, r) => s + (Number(r['סכום שעות'] ?? r['שעות']) || 0), 0);
@@ -48,7 +50,10 @@ export default function WorkersPage() {
 
   return (
     <div>
-      <div className="page-header"><h2>עובדים ועבודות</h2></div>
+      <div className="page-header">
+        <h2>עובדים ועבודות</h2>
+        {canEdit && <button className="btn btn-primary" onClick={() => setForm({})}>+ עובד חדש</button>}
+      </div>
 
       {loading ? (
         <div className="grid">
@@ -79,6 +84,18 @@ export default function WorkersPage() {
                   <div><span style={{ color: 'var(--text-muted)' }}>הרוויח החודש: </span><b style={{ color: 'var(--revenue)' }}>{formatMoney(paidOf(cur))}</b></div>
                   <div><span style={{ color: 'var(--text-muted)' }}>חודש קודם: </span><b style={{ color: 'var(--workers)' }}>{formatMoney(paidOf(prev))}</b></div>
                 </div>
+                {canEdit && (
+                  <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+                    <button className="btn btn-sm btn-ghost" aria-label="פתח פרטים" title="פתח פרטים" onClick={(e) => { e.stopPropagation(); setDrawer(w); }}>👁</button>
+                    <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={(e) => { e.stopPropagation(); setForm(w); }}>✎</button>
+                    <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        try { if (await removeRecord(app.api, 'עובדים', w.id, name)) await load(); }
+                        catch (err) { window.alert(`המחיקה נכשלה: ${err.message || err}`); }
+                      }}>🗑</button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -86,9 +103,33 @@ export default function WorkersPage() {
       )}
 
       {drawer && <WorkerDetails worker={drawer} records={recordsFor(drawer)} onClose={() => setDrawer(null)} />}
+
+      {form !== null && (
+        <RecordForm
+          api={app.api} table="עובדים"
+          title={form.id ? `עריכת ${`${form['שם פרטי'] || ''} ${form['שם משפחה'] || ''}`.trim() || 'עובד'}` : 'עובד חדש'}
+          record={form.id ? form : null}
+          fields={WORKER_FORM_FIELDS}
+          onClose={() => setForm(null)}
+          onSaved={async () => { setForm(null); await load(); }}
+        />
+      )}
     </div>
   );
 }
+
+const WORKER_FORM_FIELDS = [
+  { name: 'שם פרטי', label: 'שם פרטי', type: 'text', required: true },
+  { name: 'שם משפחה', label: 'שם משפחה', type: 'text' },
+  { name: 'טלפון', label: 'טלפון', type: 'text' },
+  { name: 'מייל', label: 'מייל', type: 'text' },
+  { name: 'כתובת', label: 'כתובת', type: 'text' },
+  { name: 'מספר דרכון', label: 'מספר דרכון', type: 'text' },
+  { name: 'תאריך תחילת עבודה', label: 'תחילת עבודה', type: 'date' },
+  { name: 'סוג עובד', label: 'סוג עובד', type: 'select' },
+  { name: 'סטטוס', label: 'סטטוס', type: 'select' },
+  { name: 'הערות', label: 'הערות', type: 'textarea' },
+];
 
 // ============================================================
 // כרטיס עובד מפורט — KPI + פילטר + 6 גרפים (סעיף 12)

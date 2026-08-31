@@ -1,26 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
-import { formatDate, safeValue } from '../utils/format.js';
+import { formatDate } from '../utils/format.js';
+import { holidayInfo, jewishHolidaysOfYear, thaiHolidaysOfYear, kindOf, KIND_STYLE, toISO } from '../utils/holidays.js';
 
 // ============================================================
-// ימי אי עבודה (סעיף 41)
+// ימי אי עבודה (סעיף 41) — רשימה + לוח שנתי
 //
 // ימי אי העבודה מנוהלים ב-Airtable ומשמשים אותו לחישובי לוחות
-// העבודה וההזזות. Zite מציג ומוסיף בלבד — אינו מחשב מחדש.
+// העבודה וההזזות. Zite מציג, מוסיף, מעדכן ומוחק — אינו מחשב מחדש.
 //
-// "סוג החג" הוא שדה singleSelect עם אפשרויות קבועות ב-Airtable.
-// כתיבת ערך שאינו ברשימה נדחית על ידי Airtable, ולכן האפשרויות
-// נטענות מהמטא ולא נכתבות בקוד.
+// "סוג החג" הוא singleSelect ב-Airtable (יהודי / תילאנדי); האפשרויות
+// נטענות מהמטא כדי שלא ייכתב ערך שאינו ברשימה.
 // ============================================================
 
 const MONTHS = [
   'ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני',
   'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר',
 ];
+const DAYS = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'];
 
-/** תאריך מקומי ל-YYYY-MM-DD, בלי הסטת אזור זמן */
-const toISO = (d) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const parseISO = (s) => {
+  const [y, m, d] = String(s || '').slice(0, 10).split('-').map(Number);
+  return y && m && d ? new Date(y, m - 1, d) : null;
+};
 
 export default function NonWorkDaysPage() {
   const app = useApp();
@@ -29,21 +31,19 @@ export default function NonWorkDaysPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
-  const [showAdd, setShowAdd] = useState(false);
-  const [addDate, setAddDate] = useState('');
-  const [addType, setAddType] = useState('');
+  const [form, setForm] = useState(null); // {id?, date, type}
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
   const [year, setYear] = useState(String(new Date().getFullYear()));
+  const [view, setView] = useState('list');
   const [importing, setImporting] = useState(false);
   const [notice, setNotice] = useState('');
 
   const load = useCallback(async () => {
-    setLoading(true);
     setLoadError('');
     try {
-      const rows = await app.api.get('ימי אי עבודה', '?maxRecords=500');
+      const rows = await app.api.get('ימי אי עבודה', '?maxRecords=1000');
       setItems(Array.isArray(rows) ? rows : []);
     } catch (e) {
       setLoadError(e.message || 'לא ניתן היה לטעון את ימי אי העבודה.');
@@ -53,47 +53,46 @@ export default function NonWorkDaysPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // אפשרויות "סוג החג" נטענות מ-Airtable — לא מקודדות בקוד
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/select-options/${encodeURIComponent('ימי אי עבודה')}/${encodeURIComponent('סוג החג')}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('meta'))))
-      .then((data) => {
-        if (cancelled) return;
-        const choices = Array.isArray(data.choices) ? data.choices : [];
-        setHolidayTypes(choices);
-        setAddType((current) => current || choices[0] || '');
-      })
+      .then((data) => { if (!cancelled) setHolidayTypes(Array.isArray(data.choices) ? data.choices : []); })
       .catch(() => {});
     return () => { cancelled = true; };
   }, []);
 
+  const jewishType = holidayTypes.find((t) => kindOf(t) === 'jewish') || '';
+  const thaiType = holidayTypes.find((t) => kindOf(t) === 'thai') || '';
+
   const yearsAvailable = useMemo(() => {
     const set = new Set(items.map((i) => String(i['תאריך'] || '').slice(0, 4)).filter(Boolean));
-    set.add(String(new Date().getFullYear()));
-    return [...set].filter(Boolean).sort();
+    const y = new Date().getFullYear();
+    [y - 1, y, y + 1].forEach((n) => set.add(String(n)));
+    return [...set].sort();
   }, [items]);
 
   const visible = useMemo(
     () => items
       .filter((i) => String(i['תאריך'] || '').slice(0, 4) === String(year))
-      .sort((a, b) => String(b['תאריך']).localeCompare(String(a['תאריך']))),
+      .sort((a, b) => String(a['תאריך']).localeCompare(String(b['תאריך']))),
     [items, year]
   );
 
-  const existingDates = useMemo(
-    () => new Set(items.map((i) => String(i['תאריך'] || '').slice(0, 10))),
-    [items]
-  );
+  const byDate = useMemo(() => {
+    const m = new Map();
+    for (const i of items) m.set(String(i['תאריך'] || '').slice(0, 10), i);
+    return m;
+  }, [items]);
 
-  const addDay = async () => {
-    if (!addDate || !addType || saving) return;
-    setSaving(true);
-    setFormError('');
+  // ---------- כתיבה ----------
+  const saveForm = async () => {
+    if (!form?.date || !form?.type || saving) return;
+    setSaving(true); setFormError('');
     try {
-      await app.api.create('ימי אי עבודה', { 'תאריך': addDate, 'סוג החג': addType });
-      setAddDate('');
-      setShowAdd(false);
+      if (form.id) await app.api.update('ימי אי עבודה', form.id, { 'תאריך': form.date, 'סוג החג': form.type });
+      else await app.api.create('ימי אי עבודה', { 'תאריך': form.date, 'סוג החג': form.type });
+      setForm(null);
       await load();
     } catch (e) {
       setFormError(`לא ניתן היה להשלים את הפעולה. הנתונים לא עודכנו. (${e.message || e})`);
@@ -101,46 +100,49 @@ export default function NonWorkDaysPage() {
     setSaving(false);
   };
 
-  /**
-   * ייבוא שבתות השנה. כל כישלון נספר ומדווח — אין לדווח הצלחה
-   * על פעולה שלא בוצעה.
-   */
-  const importSaturdays = async () => {
+  const remove = async (it) => {
+    if (saving) return;
+    const info = holidayInfo(parseISO(it['תאריך']) || new Date(), it);
+    if (!window.confirm(`למחוק את ${formatDate(it['תאריך'])} (${info?.name.he || 'יום אי עבודה'}) מימי אי העבודה?`)) return;
+    setSaving(true); setNotice('');
+    try { await app.api.remove('ימי אי עבודה', it.id); await load(); }
+    catch (e) { setNotice(`המחיקה נכשלה: ${e.message || e}`); }
+    setSaving(false);
+  };
+
+  /** ייבוא רשימת תאריכים — כל כישלון נספר ומדווח */
+  const importDates = async (list, type, label) => {
     if (importing) return;
-    const type = holidayTypes.find((t) => t.includes('יהוד')) || holidayTypes[0];
-    if (!type) {
-      setNotice('לא ניתן לייבא — רשימת סוגי החג אינה זמינה.');
-      return;
+    if (!type) { setNotice(`לא ניתן לייבא — סוג החג "${label}" אינו קיים ברשימת האפשרויות ב-Airtable.`); return; }
+    setImporting(true); setNotice('');
+    const missing = list.filter((h) => !byDate.has(h.iso));
+    let created = 0, failed = 0;
+    for (const h of missing) {
+      try { await app.api.create('ימי אי עבודה', { 'תאריך': h.iso, 'סוג החג': type }); created++; }
+      catch { failed++; }
     }
-
-    setImporting(true);
-    setNotice('');
-
-    const saturdays = [];
-    const cursor = new Date(Number(year), 0, 1);
-    while (cursor.getFullYear() === Number(year)) {
-      if (cursor.getDay() === 6) saturdays.push(toISO(cursor));
-      cursor.setDate(cursor.getDate() + 1);
-    }
-
-    const missing = saturdays.filter((iso) => !existingDates.has(iso));
-    let created = 0;
-    let failed = 0;
-    for (const iso of missing) {
-      try {
-        await app.api.create('ימי אי עבודה', { 'תאריך': iso, 'סוג החג': type });
-        created++;
-      } catch {
-        failed++;
-      }
-    }
-
     setImporting(false);
-    if (!missing.length) setNotice(`כל השבתות של ${year} כבר קיימות במערכת.`);
-    else if (failed) setNotice(`נוספו ${created} שבתות. ${failed} נכשלו ולא נשמרו.`);
-    else setNotice(`נוספו ${created} שבתות לשנת ${year}.`);
+    if (!missing.length) setNotice(`כל ${label} של ${year} כבר קיימים במערכת.`);
+    else if (failed) setNotice(`נוספו ${created} ימים (${label}). ${failed} נכשלו ולא נשמרו.`);
+    else setNotice(`נוספו ${created} ימים — ${label} ${year}.`);
     await load();
   };
+
+  const saturdaysOfYear = () => {
+    const out = [];
+    const d = new Date(Number(year), 0, 1);
+    while (d.getFullYear() === Number(year)) { if (d.getDay() === 6) out.push({ iso: toISO(d) }); d.setDate(d.getDate() + 1); }
+    return out;
+  };
+
+  const openAdd = (date = '') => { setFormError(''); setForm({ id: null, date, type: jewishType || holidayTypes[0] || '' }); };
+  const openEdit = (it) => { setFormError(''); setForm({ id: it.id, date: String(it['תאריך'] || '').slice(0, 10), type: it['סוג החג'] || '' }); };
+
+  const counts = useMemo(() => {
+    const c = { jewish: 0, thai: 0, other: 0 };
+    visible.forEach((i) => { c[kindOf(i['סוג החג'])] = (c[kindOf(i['סוג החג'])] || 0) + 1; });
+    return c;
+  }, [visible]);
 
   return (
     <div>
@@ -150,52 +152,65 @@ export default function NonWorkDaysPage() {
           <select className="select" value={year} onChange={(e) => { setYear(e.target.value); setNotice(''); }}>
             {yearsAvailable.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
-          <button className="btn btn-primary" disabled={!holidayTypes.length}
-            onClick={() => { setFormError(''); setShowAdd(true); }}>
-            + הוסף יום
+          <button className="btn btn-primary" disabled={!holidayTypes.length} onClick={() => openAdd()}>+ הוסף יום</button>
+          <button className="btn btn-ghost" disabled={importing || !jewishType} onClick={() => importDates(jewishHolidaysOfYear(Number(year)), jewishType, 'חגי ישראל')}>
+            {importing ? 'מייבא...' : `✡️ ייבא חגי ישראל ${year}`}
           </button>
-          <button className="btn btn-ghost" disabled={importing || !holidayTypes.length} onClick={importSaturdays}>
-            {importing ? 'מייבא...' : `ייבא שבתות ${year}`}
+          <button className="btn btn-ghost" disabled={importing || !thaiType} onClick={() => importDates(thaiHolidaysOfYear(Number(year)), thaiType, 'חגי תאילנד')}>
+            🇹🇭 ייבא חגי תאילנד
+          </button>
+          <button className="btn btn-ghost" disabled={importing || !jewishType} onClick={() => importDates(saturdaysOfYear(), jewishType, 'שבתות')}>
+            🕯️ ייבא שבתות
           </button>
         </div>
       </div>
 
       <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 14 }}>
-        ימים אלו משמשים את Airtable לחישוב לוחות העבודה והזזת התוכניות. Zite אינו מחשב אותם מחדש.
+        ימים אלו משמשים את Airtable לחישוב לוחות העבודה והזזת התוכניות. שבתות מודגשות בלוח גם ללא רשומה.
       </div>
 
       {loadError && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {loadError}</div>}
-      {notice && (
-        <div className="badge" style={{ marginBottom: 14, background: 'var(--docs-soft)' }}>
-          {notice}
-        </div>
-      )}
+      {notice && <div className="badge" style={{ marginBottom: 14, background: 'var(--docs-soft)' }}>{notice}</div>}
 
-      {loading ? <div className="skeleton skeleton-card" /> : (
-        <div className="card">
-          <div style={{ marginBottom: 10, fontSize: 13, color: 'var(--text-secondary)' }}>
-            {visible.length} ימי אי עבודה בשנת {year}
+      <div className="kpi-grid" style={{ marginBottom: 16 }}>
+        {[['jewish', counts.jewish], ['thai', counts.thai]].map(([k, v]) => (
+          <div key={k} className="kpi-card">
+            <div className="kpi-top"><div className="kpi-icon" style={{ background: KIND_STYLE[k].bg }}>{k === 'jewish' ? '✡️' : '🇹🇭'}</div><span className="kpi-label">{KIND_STYLE[k].label} — {year}</span></div>
+            <div className="kpi-value" style={{ color: KIND_STYLE[k].border }}>{v}</div>
           </div>
+        ))}
+        <div className="kpi-card">
+          <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--bg-secondary)' }}>🗓️</div><span className="kpi-label">סה"כ ימי אי עבודה</span></div>
+          <div className="kpi-value">{visible.length}</div>
+        </div>
+      </div>
+
+      <div className="tabs" style={{ marginBottom: 14 }}>
+        <button className={`tab ${view === 'list' ? 'active' : ''}`} onClick={() => setView('list')}>📄 רשימה</button>
+        <button className={`tab ${view === 'calendar' ? 'active' : ''}`} onClick={() => setView('calendar')}>📅 לוח שנתי</button>
+      </div>
+
+      {loading ? <div className="skeleton skeleton-card" /> : view === 'list' ? (
+        <div className="card">
           {visible.length === 0 ? (
             <div className="empty-state">אין ימי אי עבודה לשנה זו.</div>
           ) : (
             <div className="table-wrap">
               <table className="data-table">
-                <thead><tr><th>תאריך</th><th>יום</th><th>חודש</th><th>סוג החג</th></tr></thead>
+                <thead><tr><th>תאריך</th><th>יום</th><th>חג</th><th>סוג החג</th><th>פעולות</th></tr></thead>
                 <tbody>
                   {visible.map((it) => {
-                    const raw = String(it['תאריך'] || '');
-                    const [y, m, d] = raw.slice(0, 10).split('-').map(Number);
-                    const date = y && m && d ? new Date(y, m - 1, d) : null;
+                    const date = parseISO(it['תאריך']);
+                    const info = date ? holidayInfo(date, it) : null;
                     return (
-                      <tr key={it.id}>
-                        <td>{formatDate(it['תאריך'])}</td>
+                      <tr key={it.id} style={{ cursor: 'default' }}>
+                        <td><b>{formatDate(it['תאריך'])}</b></td>
                         <td>{date ? date.toLocaleDateString('he-IL', { weekday: 'long' }) : 'לא זמין'}</td>
-                        <td>{m ? MONTHS[m - 1] : 'לא זמין'}</td>
+                        <td>{info?.name.he || 'לא זמין'}</td>
+                        <td>{info ? <span className="badge" style={{ background: info.style.bg, color: info.style.border }}>{it['סוג החג'] || 'לא זמין'}</span> : 'לא זמין'}</td>
                         <td>
-                          <span className="badge" style={{ background: 'var(--q3)' }}>
-                            {safeValue(it['סוג החג'])}
-                          </span>
+                          <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" disabled={saving} onClick={() => openEdit(it)}>✎</button>
+                          <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }} disabled={saving} onClick={() => remove(it)}>🗑</button>
                         </td>
                       </tr>
                     );
@@ -205,36 +220,87 @@ export default function NonWorkDaysPage() {
             </div>
           )}
         </div>
+      ) : (
+        <YearCalendar year={Number(year)} byDate={byDate} onDay={(iso, rec) => (rec ? openEdit(rec) : openAdd(iso))} />
       )}
 
-      {showAdd && (
-        <div className="modal-overlay" onClick={() => !saving && setShowAdd(false)}>
+      {form && (
+        <div className="modal-overlay" onClick={() => !saving && setForm(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>הוסף יום אי עבודה</h3>
+            <h3>{form.id ? 'עריכת יום אי עבודה' : 'הוסף יום אי עבודה'}</h3>
             {formError && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {formError}</div>}
-            <form onSubmit={(e) => { e.preventDefault(); addDay(); }}>
+            <form onSubmit={(e) => { e.preventDefault(); saveForm(); }}>
               <div className="form-group">
-                <label>תאריך <span className="required">*</span></label>
-                <input type="date" className="input" style={{ width: '100%' }} required
-                  value={addDate} onChange={(e) => setAddDate(e.target.value)} />
+                <label>תאריך <span className="required" /></label>
+                <input type="date" className="input" style={{ width: '100%' }} required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+                {form.date && (() => { const d = parseISO(form.date); const i = d && holidayInfo(d, { 'סוג החג': form.type }); return i ? <div style={{ fontSize: 12, color: i.style.border, marginTop: 4 }}>{i.name.he}</div> : null; })()}
               </div>
               <div className="form-group">
-                <label>סוג החג <span className="required">*</span></label>
-                <select className="select" style={{ width: '100%' }} required
-                  value={addType} onChange={(e) => setAddType(e.target.value)}>
+                <label>סוג החג <span className="required" /></label>
+                <select className="select" style={{ width: '100%' }} required value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+                  <option value="">בחר...</option>
                   {holidayTypes.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
               <div className="form-actions">
-                <button type="button" className="btn btn-ghost" disabled={saving} onClick={() => setShowAdd(false)}>ביטול</button>
-                <button type="submit" className="btn btn-primary" disabled={saving || !addDate || !addType}>
-                  {saving ? 'שומר...' : 'שמור'}
-                </button>
+                {form.id && <button type="button" className="btn btn-danger" disabled={saving} onClick={() => { const it = items.find((x) => x.id === form.id); setForm(null); if (it) remove(it); }}>מחק</button>}
+                <div style={{ flex: 1 }} />
+                <button type="button" className="btn btn-ghost" disabled={saving} onClick={() => setForm(null)}>ביטול</button>
+                <button type="submit" className="btn btn-primary" disabled={saving || !form.date || !form.type}>{saving ? 'שומר...' : 'שמור'}</button>
               </div>
             </form>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** לוח שנתי — 12 חודשים, תא מלא צבוע לפי סוג החג, עם שם החג ב-tooltip */
+function YearCalendar({ year, byDate, onDay }) {
+  const today = toISO(new Date());
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 14, fontSize: 12, marginBottom: 10, flexWrap: 'wrap' }}>
+        {['shabbat', 'jewish', 'thai'].map((k) => (
+          <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 12, height: 12, background: KIND_STYLE[k].bg, border: `2px solid ${KIND_STYLE[k].border}`, borderRadius: 3 }} />{KIND_STYLE[k].label}
+          </span>
+        ))}
+        <span style={{ color: 'var(--text-muted)' }}>לחיצה על יום — הוספה / עריכה</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 14 }}>
+        {MONTHS.map((name, m) => {
+          const count = new Date(year, m + 1, 0).getDate();
+          const lead = new Date(year, m, 1).getDay();
+          return (
+            <div key={m} className="card" style={{ padding: 12 }}>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>{name}</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2, fontSize: 11 }}>
+                {DAYS.map((d) => <div key={d} style={{ textAlign: 'center', color: 'var(--text-muted)', fontWeight: 600 }}>{d}</div>)}
+                {Array.from({ length: lead }).map((_, i) => <div key={`b${i}`} />)}
+                {Array.from({ length: count }, (_, i) => new Date(year, m, i + 1)).map((d) => {
+                  const iso = toISO(d);
+                  const rec = byDate.get(iso);
+                  const info = holidayInfo(d, rec);
+                  return (
+                    <div key={iso} onClick={() => onDay(iso, rec)} title={info ? info.name.he : undefined}
+                      style={{
+                        aspectRatio: '1', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 5, cursor: 'pointer',
+                        background: info ? info.style.bg : 'transparent',
+                        border: `${rec ? 2 : 1}px solid ${info ? info.style.border : 'transparent'}`,
+                        outline: iso === today ? '2px solid var(--accent-top)' : 'none',
+                        fontWeight: info ? 700 : 400, color: info ? info.style.border : 'var(--text-main)',
+                      }}>
+                      {d.getDate()}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

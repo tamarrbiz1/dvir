@@ -4,10 +4,13 @@
 import { useEffect, useState } from 'react';
 import { t } from '../i18n.js';
 
-export default function WorkerReport({ api, worker }) {
+export default function WorkerReport({ api, worker, approvedDate = null, onDone }) {
   const [structures, setStructures] = useState([]);
   const [pricing, setPricing] = useState([]);
-  const [date, setDate] = useState(today());
+  // כלל סופי באיפיון: תאריך העבודה הוא תמיד היום ואינו ניתן לעריכה —
+  // אלא אם המנהל אישר בקשה שמאפשרת הזנה לתאריך אחר.
+  const [date, setDate] = useState(approvedDate || today());
+  useEffect(() => { setDate(approvedDate || today()); }, [approvedDate]);
   const [structure, setStructure] = useState('');
   const [workType, setWorkType] = useState('');
   const [amount, setAmount] = useState('');
@@ -82,7 +85,10 @@ export default function WorkerReport({ api, worker }) {
       <form className="card" onSubmit={submit}>
         <div className="form-group">
           <label>{t('w_date')}</label>
-          <input type="date" className="input" style={{ width: '100%' }} value={date} onChange={(e) => setDate(e.target.value)} />
+          <input type="date" className="input" style={{ width: '100%' }} value={date} readOnly disabled />
+          <div style={{ fontSize: 12, color: approvedDate ? 'var(--ok)' : 'var(--text-muted)', marginTop: 4 }}>
+            {approvedDate ? `✓ ${t('w_dateApproved')}` : t('w_dateLocked')}
+          </div>
         </div>
 
         <div className="form-group">

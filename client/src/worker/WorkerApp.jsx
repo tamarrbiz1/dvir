@@ -8,16 +8,21 @@ import { t } from '../i18n.js';
 import WorkerHome from './WorkerHome.jsx';
 import WorkerEarnings from './WorkerEarnings.jsx';
 import WorkerReport from './WorkerReport.jsx';
+import WorkerRequests from './WorkerRequests.jsx';
 
 const VIEWS = [
   { key: 'home', icon: '🏠', labelKey: 'w_home' },
   { key: 'earnings', icon: '💰', labelKey: 'w_myEarningsBtn' },
   { key: 'report', icon: '📋', labelKey: 'w_report' },
+  { key: 'requests', icon: '🗣️', labelKey: 'w_myRequests' },
 ];
 
 export default function WorkerApp() {
   const { user, logout, lang, setAppLang, api } = useApp();
   const [view, setView] = useState('home');
+  // תאריך שאושר על ידי המנהל להזנת עבודה (החריג היחיד לכלל "תאריך = היום")
+  const [approvedDate, setApprovedDate] = useState(null);
+  const enterWorkFor = (date) => { setApprovedDate(date); setView('report'); };
 
   // נתוני העובד המחובר (מההתחברות)
   const worker = user?.record || {};
@@ -40,7 +45,8 @@ export default function WorkerApp() {
       <main className="worker-body">
         {view === 'home' && <WorkerHome api={api} worker={worker} />}
         {view === 'earnings' && <WorkerEarnings api={api} worker={worker} />}
-        {view === 'report' && <WorkerReport api={api} worker={worker} />}
+        {view === 'report' && <WorkerReport api={api} worker={worker} approvedDate={approvedDate} onDone={() => setApprovedDate(null)} />}
+        {view === 'requests' && <WorkerRequests api={api} worker={worker} onEnterWork={enterWorkFor} />}
       </main>
 
       {/* סרגל ניווט תחתון */}

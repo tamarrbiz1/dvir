@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
-import { formatMoney, formatNumber, formatWeight, formatDate } from '../utils/format.js';
-import { displayName } from '../utils/resolve.js';
+import { formatMoney, formatNumber } from '../utils/format.js';
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, Legend, BarChart, Bar, CartesianGrid
+  PieChart, Pie, Cell, Legend, CartesianGrid
 } from 'recharts';
 import {
   CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps,
@@ -12,7 +12,8 @@ import {
 
 export default function DashboardPage() {
   const app = useApp();
-  const [weekly, setWeekly] = useState([]);
+  const navigate = useNavigate();
+  const [invoices, setInvoices] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [structures, setStructures] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -21,12 +22,12 @@ export default function DashboardPage() {
   useEffect(() => {
     const load = async () => {
       try {
-        const [w, e, s] = await Promise.all([
-          app.api.get('סיכום שבועי', '?maxRecords=200'),
+        const [i, e, s] = await Promise.all([
+          app.api.get('חשבוניות', '?maxRecords=200&raw=1'),
           app.api.get('הוצאות', '?maxRecords=200'),
           app.api.get('מבנים', '?maxRecords=200'),
         ]);
-        setWeekly(Array.isArray(w) ? w : []);
+        setInvoices(Array.isArray(i) ? i : []);
         setExpenses(Array.isArray(e) ? e : []);
         setStructures(Array.isArray(s) ? s : []);
       } catch (err) {
@@ -36,23 +37,57 @@ export default function DashboardPage() {
       }
     };
     load();
-  }, []);
+  }, [app.api]);
 
-  // בחר רק רשומות עם קוד שבוע תקין בפורמט YYYYMMDD-YYYYMMDD
-  // (רשומות עם קוד שבור/כפול נפסלות לפי כללי אמינות הנתונים)
-  const validWeeks = weekly.filter((w) => {
-    const code = String(w['קוד שבוע'] || '');
-    return /^\d{8}-\d{8}$/.test(code);
+  // ============================================================
+  // פדיון / משקל אמיתיים מתוך טבלת החשבוניות
+  // (הנתונים האמיתיים נמצאים בחשבוניות עצמן, לא ברול־אפ של
+  //  סיכום שבועי — שגם כך לרוב אינו מאוכלס)
+  // ============================================================
+  // חילוץ תאריך מחשבונית: שדה "תאריך-AI" ואם חסר — מה"סיכום יומי"
+  const invoiceDate = (inv) => {
+    if (inv['תאריך-AI']) return inv['תאריך-AI'];
+    const sj = inv['סיכום יומי'];
+    if (typeof sj === 'string') {
+      try {
+        const parsed = JSON.parse(sj);
+        const firstDay = parsed?.days?.[0]?.date;
+        if (firstDay) return firstDay;
+      } catch {}
+    }
+    return null;
+  };
+
+  // סכום ברוטו/נטו/משקל של חשבונית — מנרמל מספרים שיורדים כמחרוזות
+  const invNum = (inv, field) => Number(inv[field]) || 0;
+
+  // פדיון נטו לפי חודש (YYYY-MM)
+  const netByMonth = {};
+  invoices.forEach((inv) => {
+    const date = invoiceDate(inv);
+    if (!date) return;
+    const mon = String(date).slice(0, 7);
+    netByMonth[mon] = (netByMonth[mon] || 0) + invNum(inv, 'סכום נטו');
   });
+  const revenueData = Object.entries(netByMonth)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([k, v]) => ({ month: k, 'פדיון נטו': Math.round(v) }));
 
-  // חישוב השנים מתוך הרשומות התקינות בלבד
-  const yearsAvailable = [...new Set(validWeeks.map((w) => String(w['קוד שבוע']).slice(0, 4)))].sort();
+  // ============================================================
+  // שנים זמינות מתוך תאריכי החשבוניות
+  // ============================================================
+  const yearsAvailable = [...new Set(
+    invoices.map(invoiceDate).filter(Boolean).map((d) => String(d).slice(0, 4)),
+  )].sort();
   const selectedYear = year || (yearsAvailable.length ? yearsAvailable[yearsAvailable.length - 1] : String(new Date().getFullYear()));
 
-  // סינון לפי שנה — חישוב ישיר ללא useEffect (מונע לולאת אינסוף)
-  const filtered = !selectedYear || selectedYear === 'הכל'
-    ? validWeeks
-    : validWeeks.filter((w) => String(w['קוד שבוע']).slice(0, 4) === selectedYear);
+  // סינון חשבוניות לפי שנה נבחר (לפדיון)
+  const filteredInvoices = !selectedYear || selectedYear === 'הכל'
+    ? invoices
+    : invoices.filter((inv) => String(invoiceDate(inv) || '').slice(0, 4) === selectedYear);
+  const fNet = filteredInvoices.reduce((s, inv) => s + invNum(inv, 'סכום נטו'), 0);
+  const fBruto = filteredInvoices.reduce((s, inv) => s + invNum(inv, 'סכום ברוטו'), 0);
+  const fWeight = filteredInvoices.reduce((s, inv) => s + invNum(inv, 'משקל'), 0);
 
   if (loading) {
     return (
@@ -66,26 +101,13 @@ export default function DashboardPage() {
     );
   }
 
-  // KPI חישובים — מתוך רשומות מסונן (תקין + שנה נבחרת)
-  const sumBruto = filtered.reduce((s, w) => s + (Number(w['סכום ברוטו Rollup (from חשבוניות)']) || 0), 0);
-  const sumNeto = filtered.reduce((s, w) => s + (Number(w['סכום נטוRollup (from חשבוניות)']) || 0), 0);
-  const sumWeight = filtered.reduce((s, w) => s + (Number(w['משקל Rollup (from חשבוניות)']) || 0), 0);
+  // KPI חישובים — מתוך החשבוניות המסוננות לפי שנה
+  const sumBruto = fBruto;
+  const sumNeto = fNet;
+  const sumWeight = fWeight;
   const sumExpenses = expenses.reduce((s, e) => s + (Number(e['סכום כולל-AI']) || 0), 0);
   const profit = sumNeto - sumExpenses;
-  const activeStructures = structures.filter((s) => s['סטטוס המבנה'] === 'פעיל').length;
-
-  // נתונים לגרף: פדיון לאורך זמן לפי חודש (לפי קוד שבוע)
-  const revenueByMonth = {};
-  filtered.forEach((w) => {
-    const code = String(w['קוד שבוע'] || '');
-    const month = code.slice(4, 6); // MM
-    const key = month ? `${code.slice(0, 4)}-${month}` : 'לא ידוע';
-    const amt = Number(w['סכום נטוRollup (from חשבוניות)']) || 0;
-    revenueByMonth[key] = (revenueByMonth[key] || 0) + amt;
-  });
-  const revenueData = Object.entries(revenueByMonth)
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([k, v]) => ({ month: k, net: Math.round(v) }));
+  const activeStructures = structures.filter((s) => String(s['סטטוס המבנה'] || '').startsWith('חלקה שתולה')).length;
 
   // נתוני עוגה: הוצאות לפי קטגוריה
   const expenseByCat = {};
@@ -94,12 +116,6 @@ export default function DashboardPage() {
     expenseByCat[cat] = (expenseByCat[cat] || 0) + (Number(e['סכום כולל-AI']) || 0);
   });
   const donutData = Object.entries(expenseByCat).map(([k, v]) => ({ name: k, value: Math.round(v) }));
-
-  const CAT_COLORS = {
-    'פדיון': '#08A878',
-    'הוצאות': '#F04444',
-    'רווח': '#10A66A',
-  };
 
   return (
     <div>
@@ -112,7 +128,7 @@ export default function DashboardPage() {
             ))}
           </select>
           <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-            {filtered.length} שבועות
+            {filteredInvoices.length} חשבוניות
           </span>
         </div>
       </div>
@@ -186,8 +202,8 @@ export default function DashboardPage() {
                 <CartesianGrid {...GRID_PROPS} />
                 <XAxis dataKey="month" {...xAxisProps(revenueData.length)} />
                 <YAxis {...yAxisProps({ money: true })} />
-                <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
-                <Area type="monotone" dataKey="net" stroke="#08A878" strokeWidth={3} fill="url(#gRev)" />
+                <Tooltip {...TOOLTIP_STYLE} formatter={(v, n) => [formatMoney(v), n]} />
+                <Area type="monotone" dataKey="פדיון נטו" stroke="#08A878" strokeWidth={3} fill="url(#gRev)" />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -225,7 +241,16 @@ export default function DashboardPage() {
         </div>
         <div style={{ marginTop: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {structures.slice(0, 12).map((s) => (
-            <span key={s.id} className="badge" style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)', padding: '8px 14px' }}>
+            <span
+              key={s.id}
+              className="badge"
+              role="button"
+              tabIndex={0}
+              title="פתיחת פרטי המבנה"
+              onClick={() => navigate('/structures', { state: { openStructure: s } })}
+              onKeyDown={(e) => { if (e.key === 'Enter') navigate('/structures', { state: { openStructure: s } }); }}
+              style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)', padding: '8px 14px', cursor: 'pointer' }}
+            >
               🏗️ {s['מספר מבנה'] || 'מבנה'}
             </span>
           ))}

@@ -131,6 +131,32 @@ function invalidateReads(table) {
   readCache.clear();
 }
 
+// ============================================================
+// טבלה שאינה קיימת ב-Base → 404 עם הודעה ברורה בעברית
+// (Airtable מחזיר לזה 403 עמום: "You are not authorized...")
+// ============================================================
+const RESERVED_PATHS = new Set(['tables', 'meta', 'select-options', 'upload-document']);
+let tableNamesCache = { at: 0, names: null };
+async function knownTableNames() {
+  if (tableNamesCache.names && Date.now() - tableNamesCache.at < 5 * 60 * 1000) return tableNamesCache.names;
+  const names = new Set((await getMeta()).map((t) => t.name));
+  tableNamesCache = { at: Date.now(), names };
+  return names;
+}
+app.use('/api/:table', async (req, res, next) => {
+  if (RESERVED_PATHS.has(req.params.table)) return next();
+  try {
+    const names = await knownTableNames();
+    if (!names.has(req.params.table)) {
+      return res.status(404).json({
+        error: `הטבלה "${req.params.table}" אינה קיימת ב-Airtable`,
+        missingTable: req.params.table,
+      });
+    }
+  } catch { /* המטא לא זמין כרגע — הנתיב עצמו ידווח על השגיאה */ }
+  next();
+});
+
 // רשומות מטבלה (עם filters / sort / limit)
 app.get('/api/:table', async (req, res) => {
   try {
