@@ -4,8 +4,11 @@ import { useApp } from '../App.jsx';
 import { formatNumber, formatMoney, formatDate, safeValue } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
+import PageHeader from '../components/PageHeader.jsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+import { useEscapeClose } from '../utils/navigation.jsx';
+import { activatable } from '../utils/a11y.js';
 
 const TABS = ['סקירה', 'תוכנית שתילה', 'עבודות', 'קטיפים', 'ריסוסים', 'תפוקה', 'כספים', 'מסמכים'];
 
@@ -44,13 +47,10 @@ export default function StructuresPage() {
 
   return (
     <div>
-      <div className="page-header">
-        <h2>מבנים</h2>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input className="input" placeholder="חיפוש מבנה..." value={search} onChange={(e) => setSearch(e.target.value)} />
-          {canEdit && <button className="btn btn-primary" onClick={() => setForm({})}>+ מבנה חדש</button>}
-        </div>
-      </div>
+      <PageHeader icon="🏗️" title="מבנים">
+        <input className="input" aria-label="חיפוש מבנה" placeholder="חיפוש מבנה..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        {canEdit && <button className="btn btn-primary" onClick={() => setForm({})}>+ מבנה חדש</button>}
+      </PageHeader>
 
       {loading ? (
         <div className="grid">
@@ -59,7 +59,7 @@ export default function StructuresPage() {
       ) : (
         <div className="grid">
           {filtered.map((s) => (
-            <div key={s.id} className="card clickable" onClick={() => setDrawer(s)}>
+            <div key={s.id} className="card clickable" {...activatable(() => setDrawer(s), `פתיחת כרטיס מבנה ${s['מספר מבנה'] || s['סוג מבנה'] || ''}`)}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                 <b style={{ fontSize: 18 }}>🏗️ {s['מספר מבנה'] || s['סוג מבנה'] || 'מבנה'}</b>
                 <span className={`badge ${s['סטטוס המבנה'] === 'פעיל' ? 'badge-ok' : 'badge-warn'}`}>
@@ -125,6 +125,7 @@ const STRUCTURE_FORM_FIELDS = [
 // כרטיס מבנה — Tabs (סעיף 11)
 // ============================================================
 function StructureDetails({ structure, api, onClose }) {
+  useEscapeClose(onClose); // סגירה במקש Escape
   const [tab, setTab] = useState('סקירה');
   const [data, setData] = useState({ works: [], harvests: [], sprays: [], planting: [], invoices: [] });
   const [loading, setLoading] = useState(true);
@@ -164,7 +165,7 @@ function StructureDetails({ structure, api, onClose }) {
       <div className="drawer struct-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
           <span>🏗️ מבנה {name}</span>
-          <button className="drawer-close" onClick={onClose}>✕</button>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
         </div>
 
         {/* TAB BAR */}

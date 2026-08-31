@@ -42,82 +42,11 @@ import FinancialForecastPage from './pages/FinancialForecastPage.jsx';
 export const AppContext = createContext(null);
 export const useApp = () => useContext(AppContext);
 
-// ============================================================
-// נתוני ניווט לפי הקבוצות (עברית)
-// ============================================================
-const NAV_TEST = [
-  { group: 'main', items: [{ to: '/', icon: '📊', labelKey: 'dashboard' }] },
-  {
-    group: 'operations',
-    items: [
-      { to: '/structures', icon: '🏗️', labelKey: 'structures' },
-      { to: '/planting', icon: '🌱', labelKey: 'planting' },
-      { to: '/crops', icon: '🌾', labelKey: 'crops' },
-      { to: '/harvests', icon: '🧺', labelKey: 'harvests' },
-      { to: '/spraying', icon: '🧴', labelKey: 'spraying' },
-      { to: '/spray-reports', icon: '📋', labelKey: 'sprayReports' },
-      { to: '/treatments', icon: '📅', labelKey: 'treatments' },
-    ],
-  },
-  {
-    group: 'human',
-    items: [
-      { to: '/crew', icon: '👷', labelKey: 'crew' },
-      { to: '/workers', icon: '👥', labelKey: 'workers' },
-      { to: '/requests', icon: '🗣️', labelKey: 'requests' },
-    ],
-  },
-  {
-    group: 'inventory',
-    items: [
-      { to: '/inventory', icon: '📦', labelKey: 'inventory' },
-      { to: '/suppliers', icon: '🚚', labelKey: 'suppliers' },
-    ],
-  },
-  {
-    group: 'finance',
-    items: [
-      { to: '/finance', icon: '💰', labelKey: 'finance' },
-      { to: '/finance-forecast', icon: '📈', labelKey: 'financeForecast' },
-      { to: '/pricing', icon: '🏷️', labelKey: 'pricing' },
-      { to: '/invoices', icon: '🧾', labelKey: 'invoices' },
-      { to: '/delivery-notes', icon: '📄', labelKey: 'deliveryNotes' },
-    ],
-  },
-  {
-    group: 'docs',
-    items: [
-      { to: '/weekly', icon: '📆', labelKey: 'weekly' },
-      { to: '/alerts', icon: '🔔', labelKey: 'alerts' },
-      { to: '/nonworkdays', icon: '🗓️', labelKey: 'nonworkdays' },
-      { to: '/upload', icon: '⬆️', labelKey: 'upload' },
-    ],
-  },
-];
-
-// ============================================================
-// הרשאות לפי תפקיד (סעיף 7 באיפיון)
-// ============================================================
-const INITIAL_ROUTE = (role) => {
-  if (role === 'worker') return '/worker';
-  if (role === 'manager') return '/workers'; // דף צוות עובדים (מנהל עבודה)
-  return '/';
-};
-
-// כתובות שמותרות למנהל עבודה (owner רואה הכל)
-const OPERATIONS = ['/structures', '/planting', '/harvests', '/spraying', '/treatments', '/workers', '/crew', '/requests', '/spray-reports'];
-
-function canSee(role, to) {
-  if (role === 'owner') return true;
-  if (role === 'manager') return OPERATIONS.includes(to);
-  return false; // worker לא מגיע כאן
-}
-
 function Sidebar() {
-  const { user, lang, setAppLang } = useApp();
+  const { user, lang, setAppLang, logout } = useApp();
   const role = user?.role || 'owner';
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" role="navigation" aria-label={t('nav_mainNav')}>
       <div className="brand">
         <img src="/assets/logo.png" alt="לוגו" style={{ width: 34, height: 34, borderRadius: 8, objectFit: 'cover' }} />
         <span>משק חקלאי</span>
@@ -132,7 +61,7 @@ function Sidebar() {
           <span>👷</span><span>מנהל עבודה</span>
         </div>
       )}
-      {NAV_TEST.map((group) => {
+      {NAV_GROUPS.map((group) => {
         const items = group.items.filter((item) => canSee(role, item.to));
         if (!items.length) return null;
         return (
@@ -153,10 +82,10 @@ function Sidebar() {
         );
       })}
       <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
-        <div className="nav-item" onClick={() => { user?.logout?.(); }}>
-          <span className="nav-icon">🚪</span>
+        <button type="button" className="nav-item" onClick={logout}>
+          <span className="nav-icon" aria-hidden="true">🚪</span>
           <span>{t('logout')}</span>
-        </div>
+        </button>
       </div>
     </aside>
   );
@@ -263,38 +192,41 @@ export default function App() {
 
   return (
     <AppContext.Provider value={appValue}>
-      <div className="app-shell">
-        <Sidebar />
-        <main className="main-area">
-          <Routes>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/structures" element={<StructuresPage />} />
-            <Route path="/planting" element={<PlantingPlanPage />} />
-            <Route path="/crops" element={<CropsPage />} />
-            <Route path="/crew" element={<TeamCrewPage />} />
-            <Route path="/workers" element={<WorkersPage />} />
-            <Route path="/requests" element={<WorkerRequestsPage />} />
-            <Route path="/harvests" element={<HarvestsPage />} />
-            <Route path="/spraying" element={<SprayingPage />} />
-            <Route path="/treatments" element={<TreatmentsPage />} />
-            <Route path="/inventory" element={<InventoryPage />} />
-            <Route path="/suppliers" element={<SuppliersPage />} />
-            <Route path="/finance" element={<FinancePage />} />
-            <Route path="/finance-forecast" element={<FinancialForecastPage />} />
-            <Route path="/pricing" element={<PricingPage />} />
-            <Route path="/delivery-notes" element={<DeliveryNotesPage />} />
-            <Route path="/invoices" element={<InvoicesPage />} />
-            <Route path="/weekly" element={<WeeklySummaryPage />} />
-            <Route path="/alerts" element={<AlertsPage />} />
-            <Route path="/nonworkdays" element={<NonWorkDaysPage />} />
-            <Route path="/spray-reports" element={<SprayReportsPage />} />
-            <Route path="/upload" element={<UploadDocumentPage />} />
-            {/* מסלול בדיקה של אפליקציית העובד (לבעל העסק) */}
-            <Route path="/worker" element={<WorkerApp />} />
-            <Route path="*" element={<Navigate to={INITIAL_ROUTE(user.role)} replace />} />
-          </Routes>
-        </main>
-      </div>
+      <NavigationProvider role={user.role}>
+        <a className="skip-link" href="#main-content">{t('nav_skipToContent')}</a>
+        <div className="app-shell">
+          <Sidebar />
+          <main className="main-area" id="main-content" tabIndex={-1}>
+            <Routes>
+              <Route path="/" element={<DashboardPage />} />
+              <Route path="/structures" element={<StructuresPage />} />
+              <Route path="/planting" element={<PlantingPlanPage />} />
+              <Route path="/crops" element={<CropsPage />} />
+              <Route path="/crew" element={<TeamCrewPage />} />
+              <Route path="/workers" element={<WorkersPage />} />
+              <Route path="/requests" element={<WorkerRequestsPage />} />
+              <Route path="/harvests" element={<HarvestsPage />} />
+              <Route path="/spraying" element={<SprayingPage />} />
+              <Route path="/treatments" element={<TreatmentsPage />} />
+              <Route path="/inventory" element={<InventoryPage />} />
+              <Route path="/suppliers" element={<SuppliersPage />} />
+              <Route path="/finance" element={<FinancePage />} />
+              <Route path="/finance-forecast" element={<FinancialForecastPage />} />
+              <Route path="/pricing" element={<PricingPage />} />
+              <Route path="/delivery-notes" element={<DeliveryNotesPage />} />
+              <Route path="/invoices" element={<InvoicesPage />} />
+              <Route path="/weekly" element={<WeeklySummaryPage />} />
+              <Route path="/alerts" element={<AlertsPage />} />
+              <Route path="/nonworkdays" element={<NonWorkDaysPage />} />
+              <Route path="/spray-reports" element={<SprayReportsPage />} />
+              <Route path="/upload" element={<UploadDocumentPage />} />
+              {/* מסלול בדיקה של אפליקציית העובד (לבעל העסק) */}
+              <Route path="/worker" element={<WorkerApp />} />
+              <Route path="*" element={<Navigate to={INITIAL_ROUTE(user.role)} replace />} />
+            </Routes>
+          </main>
+        </div>
+      </NavigationProvider>
     </AppContext.Provider>
   );
 }

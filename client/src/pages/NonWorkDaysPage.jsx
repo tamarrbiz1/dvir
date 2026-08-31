@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { formatDate } from '../utils/format.js';
 import { holidayInfo, jewishHolidaysOfYear, thaiHolidaysOfYear, kindOf, KIND_STYLE, toISO } from '../utils/holidays.js';
+import PageHeader from '../components/PageHeader.jsx';
 
 // ============================================================
 // ימי אי עבודה (סעיף 41) — רשימה + לוח שנתי
@@ -146,10 +147,9 @@ export default function NonWorkDaysPage() {
 
   return (
     <div>
-      <div className="page-header">
-        <h2>ימי אי עבודה — {year}</h2>
+      <PageHeader icon="🗓️" title={`ימי אי עבודה — ${year}`}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <select className="select" value={year} onChange={(e) => { setYear(e.target.value); setNotice(''); }}>
+          <select className="select" aria-label="בחירת שנה" value={year} onChange={(e) => { setYear(e.target.value); setNotice(''); }}>
             {yearsAvailable.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
           <button className="btn btn-primary" disabled={!holidayTypes.length} onClick={() => openAdd()}>+ הוסף יום</button>
@@ -163,7 +163,7 @@ export default function NonWorkDaysPage() {
             🕯️ ייבא שבתות
           </button>
         </div>
-      </div>
+      </PageHeader>
 
       <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 14 }}>
         ימים אלו משמשים את Airtable לחישוב לוחות העבודה והזזת התוכניות. שבתות מודגשות בלוח גם ללא רשומה.

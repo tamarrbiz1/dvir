@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { formatNumber, formatDate, safeValue } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
+import PageHeader from '../components/PageHeader.jsx';
+import { useEscapeClose } from '../utils/navigation.jsx';
 
 export default function SprayingPage() {
   const app = useApp();
@@ -38,10 +40,9 @@ export default function SprayingPage() {
 
   return (
     <div>
-      <div className="page-header">
-        <h2>ריסוסים</h2>
+      <PageHeader icon="🧴" title="ריסוסים">
         <button className="btn btn-primary" onClick={() => setShowAdd(true)}>+ ריסוס חדש</button>
-      </div>
+      </PageHeader>
 
       {loading ? (
         <div className="skeleton skeleton-card" />
@@ -160,6 +161,7 @@ function SprayForm({ materials, structures, workers, workerSelect, onClose, onSa
   const [dosage, setDosage] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  useEscapeClose(onClose, !saving); // סגירה במקש Escape (לא בזמן שמירה)
   const [error, setError] = useState('');
 
   // בחירת חומר → השלמת ברירות מחדל

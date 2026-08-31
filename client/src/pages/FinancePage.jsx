@@ -4,6 +4,7 @@ import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { pick, num } from '../utils/field.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+import PageHeader from '../components/PageHeader.jsx';
 
 const TABS = ['סקירה', 'הוצאות', "צ'קים", 'משווקים'];
 
@@ -43,7 +44,7 @@ export default function FinancePage() {
 
   return (
     <div>
-      <div className="page-header"><h2>כספים</h2></div>
+      <PageHeader icon="💰" title="כספים" />
 
       <div className="tabs" style={{ marginBottom: 18 }}>
         {TABS.map((t) => <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>{t}</button>)}

@@ -4,6 +4,7 @@ import { formatNumber, formatWeight, formatDate } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+import PageHeader from '../components/PageHeader.jsx';
 
 export default function HarvestsPage() {
   const app = useApp();
@@ -31,7 +32,7 @@ export default function HarvestsPage() {
 
   return (
     <div>
-      <div className="page-header"><h2>קטיפים</h2></div>
+      <PageHeader icon="🧺" title="קטיפים" />
 
       <div className="kpi-grid">
         <div className="kpi-card">

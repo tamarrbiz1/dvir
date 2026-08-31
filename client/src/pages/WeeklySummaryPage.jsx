@@ -4,6 +4,8 @@ import { formatNumber, formatMoney, formatDate } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
 import { BarChart, Bar, Line, LineChart, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps, yCategoryProps } from '../utils/chart.js';
+import PageHeader from '../components/PageHeader.jsx';
+import { useEscapeClose } from '../utils/navigation.jsx';
 
 const TABS = ['סקירה', 'לפי ימים', 'זנים', 'מבנים', 'ק"ג בפועל', 'התאמות'];
 const PIE = ['#08A878', '#2878D0', '#8B5CF6', '#F59E0B', '#F04444', '#09A7B2', '#10A66A', '#6366F1'];
@@ -80,7 +82,7 @@ export default function WeeklySummaryPage() {
 
   return (
     <div>
-      <div className="page-header"><h2>סיכום שבועי</h2></div>
+      <PageHeader icon="📆" title="סיכום שבועי" />
       {loading ? (
         <div className="skeleton skeleton-card" />
       ) : (
@@ -200,6 +202,7 @@ function StatusBadge({ v }) {
 // כרטיס שבוע — טאבים
 // ============================================================
 function WeekTabs({ week, onClose }) {
+  useEscapeClose(onClose); // סגירה במקש Escape
   const [tab, setTab] = useState('סקירה');
   const code = week['קוד שבוע'];
   const num = (v) => Number(v) || 0;
@@ -220,7 +223,7 @@ function WeekTabs({ week, onClose }) {
       <div className="drawer stru-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
           <span>שבוע {code}</span>
-          <button className="drawer-close" onClick={onClose}>✕</button>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
         </div>
 
         <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', sticky: 'sticky', position: 'sticky', top: 0, background: '#fff', zIndex: 2, display: 'flex', flexWrap: 'wrap', gap: 4 }}>

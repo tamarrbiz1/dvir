@@ -3,6 +3,9 @@ import { useApp } from '../App.jsx';
 import { formatMoney, formatDate, safeValue } from '../utils/format.js';
 import { pick, num } from '../utils/field.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import PageHeader from '../components/PageHeader.jsx';
+import { useEscapeClose } from '../utils/navigation.jsx';
+import { activatable } from '../utils/a11y.js';
 
 // ============================================================
 // ספקים (סעיף 24)
@@ -53,16 +56,15 @@ export default function SuppliersPage() {
 
   return (
     <div>
-      <div className="page-header">
-        <h2>ספקים</h2>
-        <input className="input" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
-      </div>
+      <PageHeader icon="🚚" title="ספקים">
+        <input className="input" aria-label="חיפוש ספק" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
+      </PageHeader>
       {loading ? (
         <div className="skeleton skeleton-card" />
       ) : (
         <div className="grid">
           {filtered.map((s) => (
-            <div key={s.id} className="card clickable" onClick={() => setDrawer(s)}>
+            <div key={s.id} className="card clickable" {...activatable(() => setDrawer(s), `פתיחת כרטיס ספק ${s['שם ספק'] || ''}`)}>
               <div style={{ fontWeight: 700, fontSize: 17, marginBottom: 6 }}>🚚 {s['שם ספק'] || 'ספק'}</div>
               <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
                 <div>איש קשר: {s['איש קשר'] || 'לא זמין'}</div>
@@ -87,6 +89,7 @@ export default function SuppliersPage() {
 }
 
 function SupplierDrawer({ supplier, expenses, checks, onClose }) {
+  useEscapeClose(onClose); // סגירה במקש Escape
   const [tab, setTab] = useState('פרטים');
 
   return (
@@ -94,7 +97,7 @@ function SupplierDrawer({ supplier, expenses, checks, onClose }) {
       <div className="drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
           <span>🚚 {supplier['שם ספק'] || 'ספק'}</span>
-          <button className="drawer-close" onClick={onClose}>✕</button>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
         </div>
 
         <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, background: '#fff', zIndex: 2, display: 'flex', flexWrap: 'wrap', gap: 4 }}>

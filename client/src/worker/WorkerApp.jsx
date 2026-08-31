@@ -4,6 +4,7 @@
 import { useState } from 'react';
 import { useApp } from '../App.jsx';
 import LanguageSwitcher from '../components/LanguageSwitcher.jsx';
+import { PageNav } from '../components/PageHeader.jsx';
 import { t } from '../i18n.js';
 import WorkerHome from './WorkerHome.jsx';
 import WorkerEarnings from './WorkerEarnings.jsx';
@@ -26,9 +27,16 @@ export default function WorkerApp() {
 
   // נתוני העובד המחובר (מההתחברות)
   const worker = user?.record || {};
+  // בעל העסק/מנהל שנכנס למסלול /worker רק כדי לצפות — צריך דרך חזרה
+  const isPreview = (user?.role || 'worker') !== 'worker';
 
   return (
     <div className="worker-shell">
+      {isPreview && (
+        <div className="worker-preview-bar">
+          <PageNav />
+        </div>
+      )}
       {/* ראש אפליקציה */}
       <header className="worker-header">
         <div className="worker-brand">
@@ -50,19 +58,21 @@ export default function WorkerApp() {
       </main>
 
       {/* סרגל ניווט תחתון */}
-      <nav className="worker-tabs">
+      <nav className="worker-tabs" aria-label={t('nav_mainNav')}>
         {VIEWS.map((v) => (
           <button
+            type="button"
             key={v.key}
             className={`worker-tab ${view === v.key ? 'active' : ''}`}
+            aria-current={view === v.key ? 'page' : undefined}
             onClick={() => setView(v.key)}
           >
-            <span className="worker-tab-icon">{v.icon}</span>
+            <span className="worker-tab-icon" aria-hidden="true">{v.icon}</span>
             <span>{t(v.labelKey)}</span>
           </button>
         ))}
-        <button className="worker-tab" onClick={logout}>
-          <span className="worker-tab-icon">🚪</span>
+        <button type="button" className="worker-tab" onClick={logout}>
+          <span className="worker-tab-icon" aria-hidden="true">🚪</span>
           <span>{t('logout')}</span>
         </button>
       </nav>

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import PageHeader from '../components/PageHeader.jsx';
 import { formatDate, safeValue } from '../utils/format.js';
 import { pick, num } from '../utils/field.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell } from 'recharts';
@@ -12,6 +14,7 @@ const PIE_COLORS = ['#E5A900', '#3B82F6', '#168A55', '#8B5CF6', '#F04444', '#09A
 
 export default function SprayReportsPage() {
   const app = useApp();
+  const navigate = useNavigate();
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -54,12 +57,10 @@ export default function SprayReportsPage() {
 
   return (
     <div>
-      <div className="page-header">
-        <h2>דוחות ריסוסים</h2>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-ghost" onClick={() => window.location.href = '/spraying'}>→ מעבר לריסוסים</button>
-        </div>
-      </div>
+      <PageHeader icon="📋" title="דוחות ריסוסים">
+        {/* ניווט פנימי (ולא רענון עמוד מלא), כדי לשמר את היסטוריית החזרה */}
+        <button className="btn btn-ghost" onClick={() => navigate('/spraying')}>🧴 מעבר לריסוסים</button>
+      </PageHeader>
       <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
         תוצאות מפוענחות מה-AI
       </div>

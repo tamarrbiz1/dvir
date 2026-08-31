@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { formatNumber, safeValue } from '../utils/format.js';
+import PageHeader from '../components/PageHeader.jsx';
 
 // ============================================================
 // תמחור עבודות (סעיף 16) + תמחור לפי מבנים (סעיף 17)
@@ -57,7 +58,7 @@ export default function PricingPage() {
 
   return (
     <div>
-      <div className="page-header"><h2>תמחור עבודות</h2></div>
+      <PageHeader icon="🏷️" title="תמחור עבודות" />
 
       <div className="tabs" style={{ marginBottom: 18 }}>
         <button className={`tab ${view === 'pricing' ? 'active' : ''}`} onClick={() => setView('pricing')}>תמחור עבודות</button>
@@ -154,7 +155,7 @@ function StructurePricingTable({ items, structName, pricingName }) {
           <div className="drawer" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-header">
               <span>תמחור — {structName(drawer['מבנים'] ?? drawer['מבנה'])}</span>
-              <button className="drawer-close" onClick={() => setDrawer(null)}>✕</button>
+              <button type="button" className="drawer-close" onClick={() => setDrawer(null)} aria-label="סגירה" title="סגירה">✕</button>
             </div>
             <div className="drawer-body">
               <div className="card" style={{ marginBottom: 14 }}>

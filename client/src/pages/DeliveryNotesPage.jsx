@@ -4,6 +4,8 @@ import { formatNumber, formatDate, formatWeight } from '../utils/format.js';
 import { pick, num } from '../utils/field.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+import PageHeader from '../components/PageHeader.jsx';
+import { useEscapeClose } from '../utils/navigation.jsx';
 
 // העמודות בפועל בטבלת "תעודות משלוח":
 // תאריך תעודה · משווק/משווק-AI · מבנה · כמות קרטונים · משקל כולל · משקל ממוצע לקרטון · סיכום יומי ...
@@ -26,7 +28,7 @@ export default function DeliveryNotesPage() {
 
   return (
     <div>
-      <div className="page-header"><h2>תעודות משלוח</h2></div>
+      <PageHeader icon="📄" title="תעודות משלוח" />
 
       <div className="kpi-grid">
         <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--weight-soft)' }}>⚖️</div><span className="kpi-label">סה"כ משקל</span></div><div className="kpi-value" style={{ color: 'var(--weight)' }}>{formatWeight(totalWeight)}</div></div>
@@ -72,6 +74,7 @@ function linkSel(v) {
 }
 
 function DeliveryDrawer({ note, onClose }) {
+  useEscapeClose(onClose); // סגירה במקש Escape
   const total = useMemo(() => parseDaily(note['סיכום יומי']), [note]);
   const weight = num(note, ['משקל כולל', 'משקל']);
   const cartons = num(note, ['כמות קרטונים', 'קרטונים']);
@@ -95,7 +98,7 @@ function DeliveryDrawer({ note, onClose }) {
       <div className="drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
           <span>תעודת משלוח</span>
-          <button className="drawer-close" onClick={onClose}>✕</button>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
         </div>
         <div className="drawer-body">
           <div className="card">

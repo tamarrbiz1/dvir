@@ -151,6 +151,12 @@ export function useNav() {
   return ctx;
 }
 
+// גרסה סלחנית — מחזירה null מחוץ לספק (למשל באפליקציית העובד,
+// שמוצגת גם ללא ה-Router shell של המנהל)
+export function useOptionalNav() {
+  return useContext(NavContext);
+}
+
 export function NavigationProvider({ role = 'owner', children }) {
   const location = useLocation();
   const navigate = useNavigate();

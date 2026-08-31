@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { formatNumber } from '../utils/format.js';
+import PageHeader from '../components/PageHeader.jsx';
 
 export default function InventoryPage() {
   const app = useApp();
@@ -44,7 +45,7 @@ export default function InventoryPage() {
 
   return (
     <div>
-      <div className="page-header"><h2>מלאי</h2></div>
+      <PageHeader icon="📦" title="מלאי" />
 
       <div className="kpi-grid">
         <div className="kpi-card">

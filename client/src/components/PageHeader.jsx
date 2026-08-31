@@ -7,13 +7,18 @@
 // נופלת לעמוד בסיס הגיוני (ראו utils/navigation.jsx).
 // ============================================================
 import { t } from '../i18n.js';
-import { routeTitle, useNav } from '../utils/navigation.jsx';
+import { routeTitle, useOptionalNav } from '../utils/navigation.jsx';
 
 // ============================================================
 // שורת הניווט (חזרה + בית)
 // ============================================================
 export function PageNav() {
-  const { back, goHome, backPath, isHome, home, currentPath } = useNav();
+  const nav = useOptionalNav();
+
+  // מחוץ ל-Router shell (אפליקציית העובד) אין ניווט בין מסלולים
+  if (!nav) return null;
+
+  const { back, goHome, backPath, isHome, home, currentPath } = nav;
 
   // בעמוד הבית אין לאן לחזור ואין לאן "לעלות"
   if (isHome) return null;

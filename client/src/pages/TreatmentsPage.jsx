@@ -3,6 +3,8 @@ import { useApp } from '../App.jsx';
 import { formatDate, formatNumber } from '../utils/format.js';
 import { pick } from '../utils/field.js';
 import { displayName, firstId } from '../utils/resolve.js';
+import PageHeader from '../components/PageHeader.jsx';
+import { useEscapeClose } from '../utils/navigation.jsx';
 
 // ============================================================
 // תכנון טיפולים — סעיפים 22 ו-25 באיפיון
@@ -273,15 +275,14 @@ export default function TreatmentsPage() {
   const filtersActive = fStructure || fCrop || fVariety || fType;
 
   if (loading) {
-    return <div><div className="page-header"><h2>תכנון טיפולים</h2></div><div className="skeleton skeleton-chart" /></div>;
+    return <div><PageHeader icon="📅" title="תכנון טיפולים" /><div className="skeleton skeleton-chart" /></div>;
   }
 
   return (
     <div>
-      <div className="page-header">
-        <h2>תכנון טיפולים</h2>
+      <PageHeader icon="📅" title="תכנון טיפולים">
         <button className="btn btn-primary" onClick={() => openForm(null)}>+ טיפול חדש</button>
-      </div>
+      </PageHeader>
 
       {loadError && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {loadError}</div>}
       {actionError && !form && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {actionError}</div>}
@@ -512,12 +513,13 @@ function Chips({ names }) {
 
 // ---------- כרטיס טיפול ----------
 function DayDrawer({ date, events, busy, error, onClose, onEdit, onToggle, onDelete }) {
+  useEscapeClose(onClose, !busy); // סגירה במקש Escape
   return (
     <div className="drawer-overlay" onClick={onClose}>
       <div className="drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
           <span>🧴 טיפולים — {formatDate(date)}</span>
-          <button className="drawer-close" onClick={onClose} aria-label="סגור">✕</button>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
         </div>
         <div className="drawer-body">
           {error && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
@@ -557,6 +559,7 @@ function DayDrawer({ date, events, busy, error, onClose, onEdit, onToggle, onDel
 
 // ---------- טופס יצירה / עריכה ----------
 function TreatmentForm({ form, setForm, busy, error, structures, materials, workers, plans, options, onCancel, onSave }) {
+  useEscapeClose(onCancel, !busy); // סגירה במקש Escape
   const set = (k, v) => setForm({ ...form, [k]: v });
   const toggleStruct = (id) => set('structures', form.structures.includes(id) ? form.structures.filter((x) => x !== id) : [...form.structures, id]);
   const mat = materials.find((m) => m.id === form.material);

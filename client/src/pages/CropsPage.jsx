@@ -4,6 +4,7 @@ import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { formatNumber, formatMoney, formatDate, safeValue } from '../utils/format.js';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+import PageHeader from '../components/PageHeader.jsx';
 
 // ============================================================
 // גידולים (סעיף 37) + מחירי גידול (38) + תפוקה רבעונית (39) + תחזית (40)
@@ -63,7 +64,7 @@ export default function CropsPage() {
 
   return (
     <div>
-      <div className="page-header"><h2>גידולים ותחזיות</h2></div>
+      <PageHeader icon="🌾" title="גידולים ותחזיות" />
 
       <div className="tabs" style={{ marginBottom: 18 }}>
         {TABS.map((t) => <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>{t}</button>)}

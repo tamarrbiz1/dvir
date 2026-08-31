@@ -3,6 +3,9 @@ import { useApp } from '../App.jsx';
 import { formatDate } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import { REQUEST_TABLE, REQUEST_FIELDS, REQUEST_STATUS, statusStyle, requestTimeLabel, MissingRequestsTable } from '../utils/requests.jsx';
+import PageHeader from '../components/PageHeader.jsx';
+import { useEscapeClose } from '../utils/navigation.jsx';
+import { activatable } from '../utils/a11y.js';
 
 // ============================================================
 // בקשות עובדים — מסך המנהל (איפיון: "מסך מנהל — בקשות עובדים")
@@ -111,8 +114,8 @@ export default function WorkerRequestsPage() {
     setBusy(false);
   };
 
-  if (loading) return <div><div className="page-header"><h2>בקשות עובדים</h2></div><div className="skeleton skeleton-card" /></div>;
-  if (missing) return <div><div className="page-header"><h2>בקשות עובדים</h2></div><MissingRequestsTable /></div>;
+  if (loading) return <div><PageHeader icon="🗣️" title="בקשות עובדים" /><div className="skeleton skeleton-card" /></div>;
+  if (missing) return <div><PageHeader icon="🗣️" title="בקשות עובדים" /><MissingRequestsTable /></div>;
 
   const tabs = [
     [REQUEST_STATUS.pending, `ממתינות (${counts[REQUEST_STATUS.pending]})`],
@@ -123,10 +126,9 @@ export default function WorkerRequestsPage() {
 
   return (
     <div>
-      <div className="page-header">
-        <h2>בקשות עובדים</h2>
+      <PageHeader icon="🗣️" title="בקשות עובדים">
         <button className="btn btn-ghost btn-sm" onClick={load} disabled={busy}>⟳ רענן</button>
-      </div>
+      </PageHeader>
       {loadError && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {loadError}</div>}
 
       {/* KPI */}
@@ -134,7 +136,7 @@ export default function WorkerRequestsPage() {
         {[REQUEST_STATUS.pending, REQUEST_STATUS.approved, REQUEST_STATUS.rejected].map((s) => {
           const st = statusStyle(s);
           return (
-            <div key={s} className="kpi-card clickable" onClick={() => setTab(s)} style={{ cursor: 'pointer' }}>
+            <div key={s} className="kpi-card clickable" {...activatable(() => setTab(s), `סינון לפי בקשות בסטטוס ${s}`)} style={{ cursor: 'pointer' }}>
               <div className="kpi-top"><div className="kpi-icon" style={{ background: st.soft }}>{st.icon}</div><span className="kpi-label">בקשות {s === REQUEST_STATUS.pending ? 'ממתינות' : s === REQUEST_STATUS.approved ? 'שאושרו' : 'שלא אושרו'}</span></div>
               <div className="kpi-value" style={{ color: st.color }}>{counts[s]}</div>
             </div>
@@ -169,7 +171,8 @@ export default function WorkerRequestsPage() {
           {visible.map((r) => {
             const st = statusStyle(r.status);
             return (
-              <div key={r.id} className="card clickable" onClick={() => { setActionError(''); setDrawer(r); }}
+              <div key={r.id} className="card clickable"
+                {...activatable(() => { setActionError(''); setDrawer(r); }, `פתיחת בקשת ${r.worker}`)}
                 style={{ borderRight: `5px solid ${st.color}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <b style={{ fontSize: 16 }}>👤 {r.worker}</b>
@@ -191,6 +194,7 @@ export default function WorkerRequestsPage() {
 }
 
 function RequestDrawer({ req, busy, error, onClose, onAnswer }) {
+  useEscapeClose(onClose, !busy); // סגירה במקש Escape
   const [note, setNote] = useState(req.note || '');
   const [allowsWork, setAllowsWork] = useState(req.allowsWork);
   const st = statusStyle(req.status);
@@ -198,7 +202,7 @@ function RequestDrawer({ req, busy, error, onClose, onAnswer }) {
   return (
     <div className="drawer-overlay" onClick={() => !busy && onClose()}>
       <div className="drawer" onClick={(e) => e.stopPropagation()}>
-        <div className="drawer-header"><span>🗣️ בקשה — {req.worker}</span><button className="drawer-close" onClick={onClose} aria-label="סגור">✕</button></div>
+        <div className="drawer-header"><span>🗣️ בקשה — {req.worker}</span><button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button></div>
         <div className="drawer-body">
           {error && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
           <div className="card">

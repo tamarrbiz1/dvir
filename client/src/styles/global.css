@@ -529,6 +529,15 @@ button.nav-item {
   outline: none;
 }
 
+/* שורת חזרה בתצוגת אפליקציית העובד (כשמנהל צופה בה) */
+.worker-preview-bar {
+  padding: 10px 14px 0;
+  background: var(--bg-main);
+}
+.worker-preview-bar .page-nav {
+  margin-bottom: 10px;
+}
+
 /* ============================ Filter bar ============================ */
 .filter-bar {
   display: flex;

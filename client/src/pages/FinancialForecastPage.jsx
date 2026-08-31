@@ -5,6 +5,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+import PageHeader from '../components/PageHeader.jsx';
 
 // ============================================================
 // הכנסות ותחזית — לפי סיכום שבועי בלבד
@@ -157,7 +158,7 @@ export default function FinancialForecastPage() {
   if (loading) {
     return (
       <div>
-        <div className="page-header"><h2>הכנסות ותחזית</h2></div>
+        <PageHeader icon="📈" title="הכנסות ותחזית" />
         <div className="skeleton skeleton-chart" />
       </div>
     );
@@ -165,12 +166,11 @@ export default function FinancialForecastPage() {
 
   return (
     <div>
-      <div className="page-header">
-        <h2>הכנסות ותחזית — {selectedYear}</h2>
-        <select className="select" value={selectedYear} onChange={(e) => setYear(e.target.value)}>
+      <PageHeader icon="📈" title={`הכנסות ותחזית — ${selectedYear}`}>
+        <select className="select" aria-label="בחירת שנה" value={selectedYear} onChange={(e) => setYear(e.target.value)}>
           {years.length ? years.map((y) => <option key={y} value={y}>{y}</option>) : <option value={selectedYear}>{selectedYear}</option>}
         </select>
-      </div>
+      </PageHeader>
 
       {loadError && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {loadError}</div>}
 

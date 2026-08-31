@@ -7,6 +7,9 @@ import { useApp } from '../App.jsx';
 import { formatDate, formatMoney, formatNumber } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import { holidayInfo, KIND_STYLE } from '../utils/holidays.js';
+import PageHeader from '../components/PageHeader.jsx';
+import { useEscapeClose } from '../utils/navigation.jsx';
+import { activatable } from '../utils/a11y.js';
 import {
   CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE,
   xAxisProps, yAxisProps, yCategoryProps,
@@ -624,7 +627,7 @@ export default function PlantingPlanPage() {
   if (loading) {
     return (
       <div>
-        <div className="page-header"><h2>תוכנית שתילה</h2></div>
+        <PageHeader icon="🌱" title="תוכנית שתילה" />
         <div className="skeleton skeleton-chart" />
       </div>
     );
@@ -633,13 +636,10 @@ export default function PlantingPlanPage() {
   return (
     <div>
       {/* ---------- כותרת, שנה ופילטרים (סעיף 46) ---------- */}
-      <div className="page-header">
-        <h2>תוכנית שתילה — {year}</h2>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <button className="btn btn-primary" onClick={() => openNewPlan(null)}>+ תוכנית חדשה</button>
-          <button className="btn btn-ghost" onClick={() => setShowNonWork(true)}>🗓️ ימי אי עבודה</button>
-        </div>
-      </div>
+      <PageHeader icon="🌱" title={`תוכנית שתילה — ${year}`}>
+        <button className="btn btn-primary" onClick={() => openNewPlan(null)}>+ תוכנית חדשה</button>
+        <button className="btn btn-ghost" onClick={() => setShowNonWork(true)}>🗓️ ימי אי עבודה</button>
+      </PageHeader>
 
       {loadError && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {loadError}</div>}
 
@@ -765,7 +765,8 @@ export default function PlantingPlanPage() {
               const totals = weekTotals(w.rows);
               const info = quarterInfo(w.quarter);
               return (
-                <div key={w.key} className="card clickable" onClick={() => setWeekDrawer(w)}
+                <div key={w.key} className="card clickable"
+                  {...activatable(() => setWeekDrawer(w), `פתיחת פירוט שבוע ${formatDate(w.start)}`)}
                   style={{ cursor: 'pointer', borderRight: `4px solid ${info?.color || 'var(--border)'}` }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -1012,7 +1013,7 @@ export default function PlantingPlanPage() {
           <div className="drawer struct-drawer" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-header">
               <span>ימי אי עבודה — {year}</span>
-              <button className="drawer-close" onClick={() => setShowNonWork(false)}>✕</button>
+              <button type="button" className="drawer-close" onClick={() => setShowNonWork(false)} aria-label="סגירה" title="סגירה">✕</button>
             </div>
             <div className="drawer-body">
               <div className="table-wrap">
@@ -1133,6 +1134,7 @@ function CalendarGrid({ days, leadingBlanks, tall, eventsOnDate, nonWorkByKey, o
 // כרטיס תוכנית (סעיפים 14–15)
 // ============================================================
 function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate }) {
+  useEscapeClose(onClose, !busy); // סגירה במקש Escape
   const pairs = [
     ['תחילת שתילה', 'תחילת שתילה מקורית', 'תחילת שתילה מעודכנת'],
     ['סוף שתילה', 'סוף שתילה מקורי', 'סוף שתילה מעודכן'],
@@ -1152,7 +1154,7 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
       <div className="drawer struct-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
           <span>{info.icon} כרטיס תוכנית — תוכנית {info.number ?? 'חדשה'}</span>
-          <button className="drawer-close" onClick={onClose}>✕</button>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
         </div>
         <div className="drawer-body">
           {error && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
@@ -1277,12 +1279,13 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
 // פרטי שבוע (סעיף 26)
 // ============================================================
 function WeekDetails({ week, totals, planById, planInfo, onClose, onPlan }) {
+  useEscapeClose(onClose); // סגירה במקש Escape
   return (
     <div className="drawer-overlay" onClick={onClose}>
       <div className="drawer struct-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
           <span>שבוע {formatDate(week.start)} – {week.end ? formatDate(week.end) : 'לא זמין'}</span>
-          <button className="drawer-close" onClick={onClose}>✕</button>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
         </div>
         <div className="drawer-body">
           <div className="kpi-grid" style={{ marginBottom: 14 }}>
@@ -1319,7 +1322,7 @@ function WeekDetails({ week, totals, planById, planInfo, onClose, onPlan }) {
                     const cropName = displayName(row['גידול'], info?.crop || 'לא זמין');
                     return (
                       <tr key={row.id} className="clickable" style={{ cursor: info ? 'pointer' : 'default' }}
-                        onClick={() => info && onPlan(info.id)}>
+                        {...(info ? activatable(() => onPlan(info.id), `פתיחת תוכנית השתילה ${cropName}`) : {})}>
                         <td>{cropIcon(cropName)} {displayName(row['מבנה'], info?.structure || 'לא זמין')}</td>
                         <td>{cropName}</td>
                         <td><QuarterBadge q={row['רבעון']} /></td>

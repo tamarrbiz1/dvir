@@ -3,8 +3,11 @@ import { useApp } from '../App.jsx';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
+import PageHeader from '../components/PageHeader.jsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+import { useEscapeClose } from '../utils/navigation.jsx';
+import { activatable } from '../utils/a11y.js';
 
 const SHORT_MONTHS = ['ינו', 'פבר', 'מרץ', 'אפר', 'מאי', 'יונ', 'יול', 'אוג', 'ספט', 'אוק', 'נוב', 'דצמ'];
 
@@ -50,10 +53,9 @@ export default function WorkersPage() {
 
   return (
     <div>
-      <div className="page-header">
-        <h2>עובדים ועבודות</h2>
+      <PageHeader icon="👥" title="עובדים ועבודות">
         {canEdit && <button className="btn btn-primary" onClick={() => setForm({})}>+ עובד חדש</button>}
-      </div>
+      </PageHeader>
 
       {loading ? (
         <div className="grid">
@@ -67,7 +69,7 @@ export default function WorkersPage() {
             const cur = recs.filter((r) => inMonth(r, 0));
             const prev = recs.filter((r) => inMonth(r, -1));
             return (
-              <div key={w.id} className="card clickable" onClick={() => setDrawer(w)}>
+              <div key={w.id} className="card clickable" {...activatable(() => setDrawer(w), `פתיחת כרטיס העובד ${name}`)}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
                   <div style={{ width: 44, height: 44, borderRadius: '50%', background: 'var(--workers-soft)', color: 'var(--workers)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 18 }}>
                     {name[0] || '👤'}
@@ -135,6 +137,7 @@ const WORKER_FORM_FIELDS = [
 // כרטיס עובד מפורט — KPI + פילטר + 6 גרפים (סעיף 12)
 // ============================================================
 function WorkerDetails({ worker, records, onClose }) {
+  useEscapeClose(onClose); // סגירה במקש Escape
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
 
@@ -247,7 +250,7 @@ function WorkerDetails({ worker, records, onClose }) {
       <div className="drawer worker-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
           <span>👤 {name}</span>
-          <button className="drawer-close" onClick={onClose}>✕</button>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
         </div>
         <div className="drawer-body">
 

@@ -3,6 +3,8 @@ import { useApp } from '../App.jsx';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+import PageHeader from '../components/PageHeader.jsx';
+import { useEscapeClose } from '../utils/navigation.jsx';
 
 // ============================================================
 // חריגות והתאמות (סעיף 35)
@@ -103,7 +105,7 @@ export default function AlertsPage() {
 
   return (
     <div>
-      <div className="page-header"><h2>חריגות והתאמות</h2></div>
+      <PageHeader icon="🔔" title="חריגות והתאמות" />
 
       {loading ? (
         <div className="skeleton skeleton-card" />
@@ -211,6 +213,7 @@ export default function AlertsPage() {
 
 // Drawer עם פרטי התאמה מלאים של שבוע
 function WeekDrawer({ week, onClose }) {
+  useEscapeClose(onClose); // סגירה במקש Escape
   const daily = parseJson(week['JSON בדיקת התאמה יומית']);
   const harvest = parseJson(week['JSON התאמת קטיף לתעודות משלוח']);
   const income = parseJson(week['JSON הכנסה לפי מבנים']);
@@ -222,7 +225,7 @@ function WeekDrawer({ week, onClose }) {
       <div className="drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
           <span>שבוע {week['קוד שבוע']}</span>
-          <button className="drawer-close" onClick={onClose}>✕</button>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
         </div>
         <div className="drawer-body">
           <div className="card" style={{ marginBottom: 14 }}>

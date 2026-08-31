@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { formatDate } from '../utils/format.js';
+import PageHeader from '../components/PageHeader.jsx';
 
 // ============================================================
 // העלאת מסמך — "גרסה סופית" באיפיון (שורות 3845–4118)
@@ -138,7 +139,7 @@ export default function UploadDocumentPage() {
 
   return (
     <div>
-      <div className="page-header"><h2>העלאת מסמך</h2></div>
+      <PageHeader icon="⬆️" title="העלאת מסמך" />
 
       <div className="card" style={{ maxWidth: 760, margin: '0 auto' }}>
         {/* ===== שלב 1 — נושא ===== */}

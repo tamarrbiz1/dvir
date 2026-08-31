@@ -4,6 +4,8 @@ import { formatNumber, formatDate, formatMoney, formatPercent } from '../utils/f
 import { pick, num } from '../utils/field.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+import PageHeader from '../components/PageHeader.jsx';
+import { useEscapeClose } from '../utils/navigation.jsx';
 
 export default function InvoicesPage() {
   const app = useApp();
@@ -24,7 +26,7 @@ export default function InvoicesPage() {
 
   return (
     <div>
-      <div className="page-header"><h2>חשבוניות</h2></div>
+      <PageHeader icon="🧾" title="חשבוניות" />
 
       {/* KPI */}
       <div className="kpi-grid">
@@ -62,6 +64,7 @@ export default function InvoicesPage() {
 }
 
 function InvoiceDrawer({ inv, onClose }) {
+  useEscapeClose(onClose); // סגירה במקש Escape
   const net = num(inv, ['סכום נטו', 'נטו', 'פדיון נטו']);
   const gross = num(inv, ['סכום ברוטו', 'ברוטו', 'פדיון ברוטו']);
   const weight = num(inv, ['משקל']);
@@ -101,7 +104,7 @@ function InvoiceDrawer({ inv, onClose }) {
       <div className="drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
           <span>חשבונית</span>
-          <button className="drawer-close" onClick={onClose}>✕</button>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
         </div>
         <div className="drawer-body">
           <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(2,1fr)' }}>

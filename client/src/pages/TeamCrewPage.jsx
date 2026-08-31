@@ -3,6 +3,7 @@ import { useApp } from '../App.jsx';
 import { formatMoney, formatNumber } from '../utils/format.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps, yCategoryProps } from '../utils/chart.js';
+import PageHeader from '../components/PageHeader.jsx';
 
 const MONTHS = ['ינו', 'פבר', 'מרץ', 'אפר', 'מאי', 'יונ', 'יול', 'אוג', 'ספט', 'אוק', 'נוב', 'דצמ'];
 
@@ -126,7 +127,7 @@ export default function TeamCrewPage() {
 
   return (
     <div>
-      <div className="page-header"><h2>צוות עובדים</h2></div>
+      <PageHeader icon="👷" title="צוות עובדים" />
 
       {/* פילטרים */}
       <div className="card" style={{ marginBottom: 18 }}>
