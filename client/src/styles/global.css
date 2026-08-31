@@ -608,6 +608,19 @@ button.nav-item {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
 }
+/* Spinner — מוצג בזמן שליחה/טעינה (העלאת מסמך, רענון כרטיס שבוע) */
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+}
+.spinner-sm { width: 13px; height: 13px; border-width: 2px; border-color: var(--border); border-top-color: var(--text-secondary); }
+@keyframes spin { to { transform: rotate(360deg); } }
 .skeleton-card {
   height: 120px;
 }
@@ -908,3 +921,284 @@ textarea.input {
   min-height: 46px;
 }
 
+
+/* ============================ הגיליון השנתי — תוכנית שתילה ============================ */
+/* סרגל שבועות למעלה (דביק), סרגל מבנים מימין (דביק), תאים צבועים כמו בגיליון האקסל */
+.plan-sheet-wrap {
+  overflow: auto;
+  max-height: 72vh;
+  position: relative;
+}
+.plan-sheet {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 11.5px;
+  min-width: max-content;
+  direction: rtl;
+}
+.plan-sheet th,
+.plan-sheet td {
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 3px 4px;
+  text-align: center;
+  white-space: nowrap;
+  min-width: 58px;
+  height: 30px;
+  box-sizing: border-box;
+  background: #fff;
+}
+.plan-sheet thead th {
+  position: sticky;
+  z-index: 3;
+  font-weight: 600;
+  color: var(--text-main);
+}
+.plan-sheet thead tr:nth-child(1) th { top: 0; height: 30px; background: #E6F0FA; }
+.plan-sheet thead tr:nth-child(2) th { top: 30px; height: 36px; background: var(--bg-secondary); }
+.plan-sheet thead tr:nth-child(3) th { top: 66px; height: 28px; }
+.plan-sheet thead tr:nth-child(4) th { top: 94px; height: 28px; font-weight: 500; font-size: 10.5px; }
+.plan-sheet thead tr:nth-child(5) th { top: 122px; height: 26px; font-weight: 400; font-size: 10.5px; color: var(--text-secondary); }
+.plan-sheet .ps-month { font-weight: 700; border-left: 2px solid #B9C7D6; }
+.plan-sheet .ps-week-date { font-size: 9.5px; font-weight: 400; color: var(--text-muted); }
+.plan-sheet .ps-week.ps-today { background: #DCEEFF; color: var(--planned); box-shadow: inset 0 -3px 0 var(--planned); }
+.plan-sheet .ps-variety { font-weight: 600; overflow: hidden; text-overflow: ellipsis; max-width: 0; }
+.plan-sheet .ps-holiday { color: #B42318; font-weight: 600; overflow: hidden; text-overflow: ellipsis; max-width: 0; }
+
+/* הסרגל האנכי — עמודת המבנים + עמודת הדונם, דביקות מימין */
+.plan-sheet .ps-rowhead {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  text-align: right;
+  font-weight: 700;
+  min-width: 128px;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+}
+.plan-sheet .ps-dunam {
+  right: 128px;
+  min-width: 52px;
+  text-align: center;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.plan-sheet thead .ps-corner { z-index: 5; }
+.plan-sheet thead .ps-rowhead.ps-dunam { right: 128px; }
+.plan-sheet .ps-section th { background: #E8F1FF; color: var(--planned); }
+.plan-sheet .ps-section td { background: #F7FAFF; height: 22px; }
+
+/* התאים */
+.plan-sheet .ps-cell { cursor: pointer; font-weight: 600; position: relative; }
+.plan-sheet .ps-cell:hover { filter: brightness(0.94); }
+.plan-sheet .ps-plant-label { font-size: 10.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
+.plan-sheet .ps-exp { line-height: 1.1; }
+.plan-sheet .ps-act { font-size: 10.5px; color: var(--actual); font-weight: 800; line-height: 1.1; }
+.plan-sheet .ps-more { position: absolute; top: 1px; left: 3px; font-size: 9px; color: var(--text-secondary); }
+.plan-sheet .ps-today-col { background: #F4F9FF; }
+
+/* שורות הסיכום מתחת למבנים */
+.plan-sheet .ps-total th { background: #EEF2F7; }
+.plan-sheet .ps-total td.ps-num { font-weight: 700; background: #FAFBFD; }
+.plan-sheet .ps-actual-row td.ps-num { background: #F3FBF6; }
+.plan-sheet .ps-month-row td.ps-month-total { background: #EEF2F7; border-left: 2px solid #B9C7D6; }
+.plan-sheet .ps-year-row td.ps-year-total { background: #E6F0FA; text-align: right; padding-right: 10px; font-weight: 800; }
+.plan-sheet .ps-year-text { position: sticky; right: 190px; display: inline-block; }
+.plan-sheet .ps-clickable { cursor: pointer; }
+.plan-sheet .ps-clickable:hover { text-decoration: underline; }
+
+@media print {
+  .plan-sheet-wrap { max-height: none; overflow: visible; }
+}
+
+/* ============================ תעודות משלוח / אובייקטים מקושרים ============================ */
+.obj-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+  white-space: nowrap;
+}
+.obj-chip:hover, .obj-chip:focus-visible {
+  background: #EAF3FC;
+  border-color: var(--weight);
+  box-shadow: 0 0 0 2px rgba(40,120,208,0.12);
+  outline: none;
+}
+.obj-chip.static { cursor: default; }
+.obj-chip.static:hover { background: var(--bg-secondary); border-color: var(--border); box-shadow: none; }
+
+.obj-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.obj-row-label { color: var(--text-secondary); flex-shrink: 0; }
+.obj-row-value { font-weight: 700; text-align: left; }
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+.crumb-sep { color: var(--text-muted); }
+.crumb-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--weight);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.crumb-link:hover { color: #1B5FB0; }
+
+.sub-title { font-size: 12.5px; font-weight: 700; color: var(--text-secondary); margin: 8px 0 4px; }
+.data-table.compact thead th, .data-table.compact tbody td { padding: 8px 10px; font-size: 13px; }
+.data-table.nested { background: #FAFBFD; border-radius: 8px; margin-bottom: 6px; }
+.data-table.nested thead th { background: #F1F4F8; padding: 6px 10px; font-size: 12px; }
+.data-table.nested tbody td { padding: 6px 10px; font-size: 12.5px; }
+.data-table tr.day-detail > td { background: #FCFDFE; padding: 6px 14px 12px; cursor: default; }
+.data-table tr.day-detail:hover { background: transparent; }
+.chart-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.muted { color: var(--text-muted); }
+
+/* מיון בלחיצה על כותרת */
+.data-table thead th.sortable { padding: 0; }
+.th-btn {
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 12px 16px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-align: right;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.th-btn:hover { color: var(--text-main); }
+.sort-ind { font-size: 11px; color: var(--text-muted); }
+th.sortable.active .th-btn { color: var(--text-main); }
+th.sortable.active .sort-ind { color: var(--weight); }
+
+.doc-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--weight);
+  text-decoration: none;
+  max-width: 180px;
+}
+.doc-link:hover .doc-name { text-decoration: underline; }
+.doc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+
+.date-field { display: inline-flex; flex-direction: column; gap: 2px; font-size: 11.5px; color: var(--text-secondary); }
+.date-field .input { min-height: 38px; padding: 6px 10px; }
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 4px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.pager-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.pager-controls label { display: inline-flex; align-items: center; gap: 4px; }
+
+.hint { margin-top: 12px; font-size: 13px; color: var(--text-secondary); }
+.kpi-card.clickable { cursor: pointer; transition: box-shadow 150ms ease, transform 150ms ease; }
+.kpi-card.clickable:hover { box-shadow: 0 4px 14px rgba(16,24,40,0.08); transform: translateY(-1px); }
+
+/* ============================ הדפסה (סעיף: הדפסה / ייצוא בכל רשימה מרכזית) ============================ */
+@media print {
+  .sidebar, .topbar, .page-nav, .no-print, .drawer-overlay, .filter-bar { display: none !important; }
+  .app-shell, .main-area { display: block !important; width: 100% !important; margin: 0 !important; padding: 0 !important; }
+  body { background: #fff !important; }
+  .card { box-shadow: none !important; border: 1px solid #ddd !important; break-inside: avoid; }
+  .kpi-grid { grid-template-columns: repeat(5, 1fr) !important; }
+  .table-wrap { overflow: visible !important; }
+  .data-table { font-size: 11px; }
+  .data-table thead th, .data-table tbody td { padding: 6px 8px !important; }
+  .obj-chip { border: none !important; background: none !important; padding: 0 !important; }
+  .doc-name { max-width: none; }
+  a[href]::after { content: '' !important; }
+}
+
+/* ============================ צ'קים (סעיף 26) ============================ */
+.check-thumb {
+  display: block;
+  width: 72px;
+  height: 36px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  cursor: zoom-in;
+  background: #f6f8fa;
+}
+.check-thumb-empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: default;
+}
+.check-photo-large {
+  display: block;
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #f6f8fa;
+  cursor: zoom-in;
+}
+.check-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.data-table tr.row-clickable { cursor: pointer; }
+.data-table tr.row-clickable:hover td { background: var(--bg-main); }
+.data-table tr.row-clickable:focus-visible { outline: 2px solid var(--accent-top); outline-offset: -2px; }
+
+.lightbox { z-index: 80; }
+.lightbox img {
+  max-width: 92vw;
+  max-height: 86vh;
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+  background: #fff;
+}
+.lightbox-close {
+  position: fixed;
+  top: 16px;
+  left: 20px;
+  color: #fff;
+  font-size: 28px;
+}
