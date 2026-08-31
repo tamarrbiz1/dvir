@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useApp } from '../App.jsx';
-import { formatDate } from '../utils/format.js';
+import { formatDate, formatMoney, formatNumber } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 
 // ============================================================
@@ -17,14 +18,46 @@ const TOPICS = [
   { key: 'spray', label: 'דוח ריסוסים', icon: '🧴', color: '#8B5CF6', soft: 'var(--pallets-soft)' },
 ];
 
-// שמות טבלאות ושדות (חיים ב-Airtable) לפי נושא
+// שמות טבלאות ושדות (חיים ב-Airtable) לפי נושא.
+// analysis — השדות שה-Automation ממלאת אחרי ההעלאה (מוצגים במעקב ובהיסטוריה).
+// הסטטוס בהיסטוריה נגזר רק מהם: יש ערך → "נותח", אין → "ממתין לעיבוד" (לא ממציאים סטטוס).
 const TARGETS = {
-  income: { table: 'חשבוניות', field: 'חשבונית', dateField: 'תאריך-AI' },
-  expense: { table: 'הוצאות', field: 'חשבונית', dateField: 'תאריך חשבונית-AI' },
-  delivery: { table: 'תעודות משלוח', field: 'תעודת משלוח', dateField: 'תאריך תעודה' },
-  cheque: { table: 'צ׳קים', field: 'צילום צ\'ק', dateField: 'תאריך פירעון' },
-  spray: { table: 'דוחות ריסוסים', field: 'דוח ריסוסים', dateField: 'העלאה אחרונה של הקובץ' },
+  income: {
+    table: 'חשבוניות', field: 'חשבונית', dateField: 'תאריך-AI', uploadedField: 'תאריך העלאת קובץ',
+    analysis: [['תאריך', 'תאריך-AI', 'date'], ['משווק', 'משווק-AI'], ['סכום ברוטו', 'סכום ברוטו', 'money'], ['סכום נטו', 'סכום נטו', 'money'], ['משקל', 'משקל', 'num'], ['קרטונים', 'כמות קרטונים', 'num'], ['משטחים', 'מספר משטחים', 'num']],
+  },
+  expense: {
+    table: 'הוצאות', field: 'חשבונית', dateField: 'תאריך חשבונית-AI', uploadedField: 'תאריך העלאת החשבונית',
+    analysis: [['תאריך', 'תאריך חשבונית-AI', 'date'], ['ספק', 'ספק-AI'], ['קטגוריה', 'קטגוריית חשבונית-AI'], ['סכום כולל', 'סכום כולל-AI', 'money']],
+  },
+  delivery: {
+    table: 'תעודות משלוח', field: 'תעודת משלוח', dateField: 'תאריך תעודה', uploadedField: 'תאריך העלאת קובץ',
+    analysis: [['תאריך תעודה', 'תאריך תעודה', 'date'], ['משווק', 'משווק-AI'], ['קרטונים', 'כמות קרטונים', 'num'], ['משקל כולל', 'משקל כולל', 'num'], ['משקל ממוצע לקרטון', 'משקל ממוצע לקרטון', 'num']],
+  },
+  cheque: {
+    table: 'צ׳קים', field: 'צילום צ\'ק', dateField: 'תאריך פירעון', uploadedField: 'תאריך העלאה האחרון',
+    analysis: [['סכום', 'סכום צ׳ק', 'money'], ['מוטב', 'מוטב'], ['תאריך פירעון', 'תאריך פירעון', 'date']],
+  },
+  spray: {
+    table: 'דוחות ריסוסים', field: 'דוח ריסוסים', dateField: 'העלאה אחרונה של הקובץ', uploadedField: 'העלאה אחרונה של הקובץ',
+    analysis: [['סיכום', 'Attachment Summary']],
+  },
 };
+
+const POLL_MS = 6000;            // תדירות בדיקה של הרשומה שנוצרה
+const POLL_MAX_MS = 4 * 60 * 1000; // מפסיקים לבדוק אחרי 4 דקות
+
+/** האם ה-Automation כבר מילאה לפחות שדה ניתוח אחד */
+function isAnalyzed(rec, target) {
+  return target.analysis.some(([, f]) => rec?.[f] !== undefined && rec?.[f] !== null && rec?.[f] !== '');
+}
+function fmtAnalysis(v, kind) {
+  if (v === undefined || v === null || v === '') return null;
+  if (kind === 'money') return formatMoney(v);
+  if (kind === 'num') return formatNumber(v);
+  if (kind === 'date') return formatDate(v);
+  return Array.isArray(v) ? v.join(', ') : String(v);
+}
 
 const ACCEPT = '.pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png';
 const MAX_MB = 15;
@@ -50,7 +83,9 @@ function weekOf(start) {
 
 export default function UploadDocumentPage() {
   const app = useApp();
-  const [topic, setTopic] = useState(null);
+  const location = useLocation();
+  // הגעה ממסך אחר עם סוג מסמך מוכן (למשל "העלאת תעודה" ממסך תעודות משלוח)
+  const [topic, setTopic] = useState(() => TOPICS.find((t) => t.label === location.state?.docType)?.key ?? null);
   const [weekStart, setWeekStart] = useState(defaultWeekStart);
   const [weekConfirmed, setWeekConfirmed] = useState(false);
   const [changingWeek, setChangingWeek] = useState(false);
@@ -61,6 +96,10 @@ export default function UploadDocumentPage() {
   const [message, setMessage] = useState('');
   const [history, setHistory] = useState([]);
   const [histLoading, setHistLoading] = useState(true);
+  // הרשומה שנוצרה בהעלאה האחרונה — נקראת מחדש עד שה-Automation ממלאת אותה
+  const [created, setCreated] = useState(null); // { key, table, id, name, at }
+  const [createdRec, setCreatedRec] = useState(null);
+  const [tracking, setTracking] = useState('idle'); // idle | polling | analyzed | timeout
   const fileRef = useRef(null);
   const cameraRef = useRef(null);
 
@@ -76,16 +115,40 @@ export default function UploadDocumentPage() {
         .map((r) => ({
           key, label: TOPICS.find((x) => x.key === key)?.label || t.table,
           date: r[t.dateField] || r['תאריך'] || r['תאריך העלאת קובץ'] || '',
+          uploadedAt: r[t.uploadedField] || r[t.dateField] || '',
           week: r['קוד שבוע'] || '',
           name: r[t.field][0]?.filename || 'קובץ',
           url: r[t.field][0]?.url || '',
+          analyzed: isAnalyzed(r, t),
         }))).catch(() => [])
     )).then((results) => {
-      setHistory(results.flat().sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 20));
+      setHistory(results.flat().sort((a, b) => String(b.uploadedAt).localeCompare(String(a.uploadedAt))).slice(0, 20));
       setHistLoading(false);
     });
   };
   useEffect(loadHistory, []);
+
+  // ---------- מעקב אחרי הרשומה שנוצרה (סעיף "לאחר ההעלאה" באיפיון) ----------
+  // קוראים מחדש את הרשומה עצמה (לא את כל הטבלה) עד שה-Automation ממלאת נתונים,
+  // ומעדכנים את המסך בלי שהמשתמש יצטרך לרענן.
+  useEffect(() => {
+    if (!created) return undefined;
+    const target = TARGETS[created.key];
+    let stopped = false;
+    setTracking('polling');
+    const check = async () => {
+      try {
+        const rec = await app.api.get(target.table, `/${created.id}`);
+        if (stopped) return;
+        setCreatedRec(rec);
+        if (isAnalyzed(rec, target)) { setTracking('analyzed'); stopped = true; clearInterval(timer); loadHistory(); }
+      } catch { /* ננסה שוב בבדיקה הבאה */ }
+      if (!stopped && Date.now() - created.at > POLL_MAX_MS) { setTracking('timeout'); stopped = true; clearInterval(timer); }
+    };
+    const timer = setInterval(check, POLL_MS);
+    check();
+    return () => { stopped = true; clearInterval(timer); };
+  }, [created]);
 
   // תצוגה מקדימה לתמונות
   useEffect(() => {
@@ -98,6 +161,7 @@ export default function UploadDocumentPage() {
   const pickTopic = (key) => {
     setTopic(key); setStatus('idle'); setMessage(''); setFile(null);
     setWeekConfirmed(false); setChangingWeek(false); setWeekStart(defaultWeekStart());
+    setCreated(null); setCreatedRec(null); setTracking('idle');
   };
 
   const acceptFile = (f) => {
@@ -125,8 +189,13 @@ export default function UploadDocumentPage() {
       const r = await fetch('/api/upload-document', { method: 'POST', body: fd });
       const data = await r.json().catch(() => ({}));
       if (!r.ok || data.error) throw new Error(data.error || `שגיאה ${r.status}`);
+      // הצלחה מוצגת רק אחרי ש-Airtable החזיר את הרשומה שנוצרה בפועל
+      const recId = data.record?.id;
+      if (!recId) throw new Error('Airtable לא החזיר את הרשומה שנוצרה');
       setStatus('done');
-      setMessage('המסמך הועלה בהצלחה ונשמר ב-Airtable.');
+      setMessage('');
+      setCreatedRec(data.record);
+      setCreated({ key: topic, table: target.table, id: recId, name: file.name, at: Date.now() });
       setFile(null);
       loadHistory();
     } catch (e) {
@@ -242,17 +311,23 @@ export default function UploadDocumentPage() {
               {needsWeek && <Row l="קוד שבוע" v={<span style={{ direction: 'ltr', unicodeBidi: 'embed' }}>{week.code}</span>} />}
             </div>
             {needsWeek && !weekConfirmed && <div className="badge badge-warn" style={{ width: '100%', marginBottom: 12 }}>⚠️ יש לאשר את השבוע לפני השליחה</div>}
-            <button type="button" className="btn btn-primary" style={{ width: '100%', minHeight: 52, fontSize: 16 }} disabled={!canSend} onClick={handleUpload}>
-              {status === 'uploading' ? 'מעלה את המסמך...' : '📤 שלח מסמך'}
+            <button type="button" className="btn btn-primary" style={{ width: '100%', minHeight: 52, fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }} disabled={!canSend} aria-busy={status === 'uploading'} onClick={handleUpload}>
+              {status === 'uploading' ? <><span className="spinner" /> מעלה את המסמך...</> : '📤 שלח מסמך'}
             </button>
           </div>
         )}
 
-        {status === 'done' && (
-          <div style={{ textAlign: 'center', padding: 20, marginTop: 16, background: 'var(--ok-soft)', borderRadius: 14 }}>
-            <div style={{ fontSize: 34 }}>✅</div>
-            <div style={{ fontWeight: 700, color: 'var(--ok)' }}>{message}</div>
-            <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => pickTopic(topic)}>העלה מסמך נוסף</button>
+        {status === 'done' && created && (
+          <div style={{ padding: 20, marginTop: 16, background: 'var(--ok-soft)', borderRadius: 14 }}>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 34 }}>✅</div>
+              <div style={{ fontWeight: 800, color: 'var(--ok)', fontSize: 17 }}>✓ המסמך הועלה בהצלחה</div>
+              <div style={{ color: 'var(--text-secondary)', marginTop: 2 }}>נשלח לעיבוד</div>
+            </div>
+            <ProcessingCard created={created} rec={createdRec} tracking={tracking} />
+            <div style={{ textAlign: 'center' }}>
+              <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 12 }} onClick={() => pickTopic(topic)}>העלה מסמך נוסף</button>
+            </div>
           </div>
         )}
         {status === 'error' && <div style={{ padding: 14, marginTop: 16, background: 'var(--error-soft)', borderRadius: 12, color: 'var(--error)' }}>❌ {message}</div>}
@@ -262,22 +337,27 @@ export default function UploadDocumentPage() {
 
       {/* ===== היסטוריה ===== */}
       <div className="card" style={{ marginTop: 30 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>העלאות אחרונות</div>
+        <div className="section-title" style={{ marginTop: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>מסמכים שהועלו לאחרונה</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={loadHistory} disabled={histLoading}>🔄 רענן</button>
+        </div>
         {histLoading ? <div className="skeleton skeleton-card" /> : history.length === 0 ? (
           <div className="empty-state">אין העלאות אחרונות</div>
         ) : (
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>סוג</th><th>תאריך</th><th>שבוע</th><th>קובץ</th></tr></thead>
+              <thead><tr><th>נושא</th><th>קובץ</th><th>תאריך העלאה</th><th>תאריך מסמך</th><th>שבוע</th><th>סטטוס</th></tr></thead>
               <tbody>
                 {history.map((h, i) => {
                   const meta = TOPICS.find((t) => t.key === h.key);
                   return (
                     <tr key={i} style={{ cursor: 'default' }}>
                       <td><span className="badge" style={{ background: meta?.soft, color: meta?.color }}>{meta?.icon} {h.label}</span></td>
+                      <td style={{ overflowWrap: 'anywhere' }}>{h.url ? <a href={h.url} target="_blank" rel="noreferrer">{h.name}</a> : h.name}</td>
+                      <td>{h.uploadedAt ? formatDate(h.uploadedAt) : 'לא זמין'}</td>
                       <td>{h.date ? formatDate(h.date) : 'לא זמין'}</td>
                       <td style={{ direction: 'ltr', textAlign: 'right' }}>{h.week || '—'}</td>
-                      <td style={{ overflowWrap: 'anywhere' }}>{h.url ? <a href={h.url} target="_blank" rel="noreferrer">{h.name}</a> : h.name}</td>
+                      <td>{h.analyzed ? <span className="badge badge-ok">נותח</span> : <span className="badge badge-warn">ממתין לעיבוד</span>}</td>
                     </tr>
                   );
                 })}
@@ -292,4 +372,36 @@ export default function UploadDocumentPage() {
 
 function Row({ l, v }) {
   return <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 14 }}><span style={{ color: 'var(--text-secondary)' }}>{l}</span><b style={{ overflowWrap: 'anywhere', textAlign: 'left' }}>{v}</b></div>;
+}
+
+/**
+ * כרטיס מעקב אחרי העיבוד ב-Airtable: מציג את שדות הניתוח ברגע שה-Automation
+ * ממלאת אותם. הנתונים מוצגים רק אחרי שהתקבלו מהמקור (ללא Optimistic UI).
+ */
+function ProcessingCard({ created, rec, tracking }) {
+  const target = TARGETS[created.key];
+  const filled = target.analysis.map(([label, field, kind]) => [label, fmtAnalysis(rec?.[field], kind)]).filter(([, v]) => v !== null);
+  const badge = tracking === 'analyzed'
+    ? <span className="badge badge-ok">✓ נותח</span>
+    : tracking === 'timeout'
+      ? <span className="badge badge-warn">עדיין בעיבוד</span>
+      : <span className="badge badge-warn"><span className="spinner spinner-sm" /> בעיבוד</span>;
+  return (
+    <div className="card" style={{ marginTop: 14, background: '#fff' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ fontWeight: 700, overflowWrap: 'anywhere' }}>📄 {created.name}</div>
+        {badge}
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+        נשמר בטבלה "{target.table}"
+        {tracking === 'polling' && ' · המסך מתעדכן אוטומטית כשהניתוח מסתיים'}
+        {tracking === 'timeout' && ' · הניתוח טרם הסתיים; התוצאה תופיע בהיסטוריה כשתהיה מוכנה'}
+      </div>
+      {filled.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          {filled.map(([l, v]) => <Row key={l} l={l} v={v} />)}
+        </div>
+      )}
+    </div>
+  );
 }

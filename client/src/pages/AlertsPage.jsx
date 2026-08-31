@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
+import { INVOICES_TABLE, invLabel, invMarketer, invWeekCode, invDeductionCheck, invTransportCheck, invDeductionDev, invTransportPerPallet, isDeductionAnomaly, isTransportAnomaly } from '../utils/invoices.js';
 
 // ============================================================
 // חריגות והתאמות (סעיף 35)
@@ -19,12 +21,16 @@ const CATEGORIES = [
   { key: 'weightDiff', label: 'חריגת משקל', color: '#2878D0' },
   { key: 'unassigned', label: 'קרטונים לא משויכים', color: '#09A7B2' },
   { key: 'calcError', label: 'שגיאת חישוב', color: '#D92D20' },
+  { key: 'deduction', label: 'חריגת ניכוי משווק', color: '#DC6803' },
+  { key: 'palletPrice', label: 'חריגת מחיר משטח', color: '#7A5AF8' },
 ];
 
 export default function AlertsPage() {
   const app = useApp();
   const [weeks, setWeeks] = useState([]);
   const [inventory, setInventory] = useState([]);
+  const [invoices, setInvoices] = useState([]);
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [week, setWeek] = useState(null);
 
@@ -32,10 +38,12 @@ export default function AlertsPage() {
     Promise.all([
       app.api.get('סיכום שבועי', '?maxRecords=200'),
       app.api.get('מלאי בסיסי', '?maxRecords=200'),
+      app.api.get(INVOICES_TABLE, '?maxRecords=1000').catch(() => []),
     ])
-      .then(([w, inv]) => {
+      .then(([w, inv, invs]) => {
         setWeeks(Array.isArray(w) ? w : []);
         setInventory(Array.isArray(inv) ? inv : []);
+        setInvoices(Array.isArray(invs) ? invs : []);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -83,8 +91,21 @@ export default function AlertsPage() {
         });
       }
     });
+    // ו. חריגות מתוך החשבוניות (סעיף 28: בדיקת ניכוי / בדיקת הובלה) — עם קישור לאובייקט
+    invoices.forEach((inv) => {
+      const week = invWeekCode(inv) || 'ללא שבוע';
+      const who = invMarketer(inv)?.name ? ` · ${invMarketer(inv).name}` : '';
+      if (isDeductionAnomaly(inv)) {
+        const dev = invDeductionDev(inv);
+        out.push({ week, cat: 'deduction', type: `${invLabel(inv)}${who}: ${invDeductionCheck(inv)}${dev !== null ? ` (סטייה ${formatMoney(dev)})` : ''}`, label: 'חריגת ניכוי משווק', open: `/invoices?open=${inv.id}`, objectLabel: invLabel(inv) });
+      }
+      if (isTransportAnomaly(inv)) {
+        const pp = invTransportPerPallet(inv);
+        out.push({ week, cat: 'palletPrice', type: `${invLabel(inv)}${who}: ${invTransportCheck(inv)}${pp !== null ? ` (${formatMoney(pp)} למשטח)` : ''}`, label: 'חריגת מחיר משטח', open: `/invoices?open=${inv.id}`, objectLabel: invLabel(inv) });
+      }
+    });
     return out;
-  }, [weeks]);
+  }, [weeks, invoices]);
 
   // צבירה לפי קטגוריה
   const byCategory = useMemo(() => {
@@ -167,15 +188,20 @@ export default function AlertsPage() {
             ) : (
               <div className="table-wrap">
                 <table className="data-table">
-                  <thead><tr><th>שבוע</th><th>קטגוריה</th><th>תיאור</th></tr></thead>
+                  <thead><tr><th>שבוע</th><th>קטגוריה</th><th>תיאור</th><th>אובייקט</th></tr></thead>
                   <tbody>
                     {anomalies.map((a, i) => {
                       const cat = CATEGORIES.find((c) => c.key === a.cat);
                       return (
-                        <tr key={i} onClick={() => a.week && setWeek(weeks.find((w) => w['קוד שבוע'] === a.week))}>
+                        <tr key={i} onClick={() => (a.open ? navigate(a.open) : a.week && setWeek(weeks.find((w) => w['קוד שבוע'] === a.week)))}>
                           <td><b>{a.week}</b></td>
                           <td><span className="badge" style={{ background: (cat?.color || '#888') + '22', color: cat?.color }}>{cat?.label || a.cat}</span></td>
                           <td style={{ fontSize: 13 }}>{a.type}</td>
+                          <td>
+                            {a.open
+                              ? <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); navigate(a.open); }} aria-label={`פתיחת ${a.objectLabel}`}>🧾 פתח אובייקט</button>
+                              : <span className="muted" style={{ fontSize: 12 }}>שבוע</span>}
+                          </td>
                         </tr>
                       );
                     })}
@@ -214,6 +240,8 @@ export default function AlertsPage() {
 // Drawer עם פרטי התאמה מלאים של שבוע
 function WeekDrawer({ week, onClose }) {
   useEscapeClose(onClose); // סגירה במקש Escape
+  const navigate = useNavigate();
+  const code = week['קוד שבוע'];
   const daily = parseJson(week['JSON בדיקת התאמה יומית']);
   const harvest = parseJson(week['JSON התאמת קטיף לתעודות משלוח']);
   const income = parseJson(week['JSON הכנסה לפי מבנים']);
@@ -233,6 +261,11 @@ function WeekDrawer({ week, onClose }) {
             <div>שליחת: {formatDate(week['תאריך התחלה'])} – {formatDate(week['תאריך סיום'])}</div>
             <div>סטטוס התאמה: <b>{week['סטטוס התאמה'] || 'לא זמין'}</b></div>
             <div>סטטוס קטיף: <b>{week['סטטוס התאמת קטיף'] || 'לא זמין'}</b></div>
+            {/* קישור מההתראה לאובייקטים הקשורים (סעיף "קישור מהתראה לאובייקט") */}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate(`/delivery-notes?week=${encodeURIComponent(code || '')}`)}>📄 תעודות משלוח של השבוע</button>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate(`/weekly?week=${encodeURIComponent(code || '')}`)}>📆 פתח סיכום שבועי</button>
+            </div>
           </div>
 
           {notes.length > 0 && (

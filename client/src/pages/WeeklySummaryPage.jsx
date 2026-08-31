@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import DeliveryNoteDrawer from '../components/DeliveryNoteDrawer.jsx';
 import { formatNumber, formatMoney, formatDate } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
 import { BarChart, Bar, Line, LineChart, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
@@ -7,11 +9,37 @@ import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_S
 import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
 
-const TABS = ['סקירה', 'לפי ימים', 'זנים', 'מבנים', 'ק"ג בפועל', 'התאמות'];
+// ============================================================
+// סיכום שבועי — סעיפים 30–35 באיפיון
+// ------------------------------------------------------------
+// הרשימה טוענת רק שדות קלים (בלי ה-JSON הכבדים). כרטיס השבוע
+// נטען טרי מ-Airtable בכל פתיחה ומתרענן בזמן שהוא פתוח, כדי
+// שתוצאות Automation יופיעו בלי רענון ידני ("JSON וסיכום שבועי").
+// ============================================================
+
+const TABLE = 'סיכום שבועי';
+const TABS = ['סקירה', 'לפי ימים', 'זנים', 'מבנים', 'ק"ג בפועל', 'התאמות', 'מסמכים'];
 const PIE = ['#08A878', '#2878D0', '#8B5CF6', '#F59E0B', '#F04444', '#09A7B2', '#10A66A', '#6366F1'];
+const REFRESH_MS = 30 * 1000;
+
+// שמות השדות ב-Airtable (מקור אמת יחיד לקובץ הזה)
+const F = {
+  code: 'קוד שבוע', start: 'תאריך התחלה', end: 'תאריך סיום',
+  gross: 'סכום ברוטו Rollup (from חשבוניות)', net: 'סכום נטוRollup (from חשבוניות)', weight: 'משקל Rollup (from חשבוניות)',
+  docStatus: 'סטטוס התאמה', docNotes: 'רשימת הערות התאמה',
+  harvestStatus: 'סטטוס התאמת קטיף', harvestNotes: 'הערות התאמת קטיף',
+  calcError: 'שגיאת חישוב קג לפי מבנים',
+  invoices: 'חשבוניות', deliveries: 'תעודות משלוח',
+  jDays: 'JSON לפי ימים מאוחד', jInvoices: 'JSON חשבוניות מאוחד', jDeliveries: 'JSON תעודות משלוח מאוחד',
+  jDailyCheck: 'JSON בדיקת התאמה יומית', jHarvestCheck: 'JSON התאמת קטיף לתעודות משלוח',
+  jIncome: 'JSON הכנסה לפי מבנים', jHarvestStruct: 'JSON סיכום קטיף לפי מבנים', jKg: 'JSON קג בפועל לפי ימים ומבנים',
+};
+const LIST_FIELDS = [F.code, F.start, F.end, F.gross, F.net, F.weight, F.docStatus, F.harvestStatus, F.calcError, F.invoices, F.deliveries];
+const LIST_QS = `?maxRecords=200&raw=1&fields=${LIST_FIELDS.map(encodeURIComponent).join(',')}`;
 
 export default function WeeklySummaryPage() {
   const app = useApp();
+  const [params] = useSearchParams();
   const [weeks, setWeeks] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -19,11 +47,20 @@ export default function WeeklySummaryPage() {
 
   useEffect(() => {
     Promise.all([
-      app.api.get('סיכום שבועי', '?maxRecords=200'),
+      app.api.get(TABLE, LIST_QS),
       app.api.get('הוצאות', '?maxRecords=400'),
     ])
       .then(([w, e]) => {
-        setWeeks(Array.isArray(w) ? w : []);
+        const list = (Array.isArray(w) ? w : []).map(cleanRecord);
+        // החדש למעלה — קוד השבוע הוא YYYYMMDD ולכן מיון מחרוזתי נכון גם כשהתאריך שגוי
+        list.sort((a, b) => String(b[F.code] || '').localeCompare(String(a[F.code] || '')));
+        setWeeks(list);
+        // קישור עמוק: /weekly?week=<קוד שבוע> פותח את כרטיס השבוע (מתעודות משלוח / חשבוניות / חריגות)
+        const wanted = params.get('week');
+        if (wanted) {
+          const hit = list.find((x) => String(x[F.code]) === wanted);
+          if (hit) setDrawer(hit);
+        }
         setExpenses(Array.isArray(e) ? e : []);
       })
       .catch(() => {})
@@ -31,10 +68,10 @@ export default function WeeklySummaryPage() {
   }, []);
 
   // ------ חישובים ------
-  const num = (v) => Number(v) || 0;
-  const totalNeto = weeks.reduce((s, w) => s + num(w['סכום נטוRollup (from חשבוניות)']), 0);
-  const totalWeight = weeks.reduce((s, w) => s + num(w['משקל Rollup (from חשבוניות)']), 0);
+  const totalNeto = weeks.reduce((s, w) => s + num(w[F.net]), 0);
+  const totalWeight = weeks.reduce((s, w) => s + num(w[F.weight]), 0);
   const totalExpenses = expenses.reduce((s, e) => s + num(e['סכום כולל-AI']), 0);
+  const missingDocs = weeks.filter((w) => String(w[F.docStatus] || '').includes('חסר')).length;
 
   // חלוקת הוצאות לשבועות לפי טווח תאריכים
   function getWeekForDate(dateStr) {
@@ -42,13 +79,10 @@ export default function WeeklySummaryPage() {
     const d = new Date(dateStr);
     if (Number.isNaN(d.getTime())) return null;
     for (const w of weeks) {
-      const s = new Date(w['תאריך התחלה']);
-      const e = new Date(w['תאריך סיום']);
-      if (!Number.isNaN(s.getTime()) && !Number.isNaN(e.getTime()) && d >= s && d <= e) {
-        return w['קוד שבוע'];
-      }
+      const s = new Date(w[F.start]);
+      const e = new Date(w[F.end]);
+      if (!Number.isNaN(s.getTime()) && !Number.isNaN(e.getTime()) && d >= s && d <= e) return w[F.code];
     }
-    // fallback: try by week number pattern
     return null;
   }
 
@@ -64,18 +98,14 @@ export default function WeeklySummaryPage() {
   }, [expenses, weeks]);
 
   const chartData = useMemo(() => {
-    const sorted = [...weeks].sort((a, b) => {
-      const da = new Date(a['תאריך התחלה']);
-      const db = new Date(b['תאריך התחלה']);
-      return (Number.isNaN(da.getTime()) ? 0 : da) - (Number.isNaN(db.getTime()) ? 0 : db);
-    });
+    const sorted = [...weeks].sort((a, b) => String(a[F.code] || '').localeCompare(String(b[F.code] || '')));
     return sorted.map((w) => {
-      const code = w['קוד שבוע'];
+      const code = w[F.code];
       return {
-        name: code || '?',
-        'פדיון': Math.round(num(w['סכום נטוRollup (from חשבוניות)'])),
+        name: shortWeek(code),
+        'פדיון': Math.round(num(w[F.net])),
         'הוצאות': Math.round(weeklyExpenses[code] || 0),
-        'משקל': Math.round(num(w['משקל Rollup (from חשבוניות)'])),
+        'משקל': Math.round(num(w[F.weight])),
       };
     });
   }, [weeks, weeklyExpenses]);
@@ -89,171 +119,168 @@ export default function WeeklySummaryPage() {
         <>
           {/* ------ KPI Cards ------ */}
           <div className="kpi-grid">
-            <div className="kpi-card">
-              <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">סה"כ פדיון נטו</span></div>
-              <div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(totalNeto)}</div>
-            </div>
-            <div className="kpi-card">
-              <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--expense-soft)' }}>🧾</div><span className="kpi-label">סה"כ הוצאות</span></div>
-              <div className="kpi-value" style={{ color: 'var(--expense)' }}>{formatMoney(totalExpenses)}</div>
-            </div>
-            <div className="kpi-card">
-              <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--profit-soft)' }}>📈</div><span className="kpi-label">רווח</span></div>
-              <div className="kpi-value" style={{ color: 'var(--profit)' }}>{formatMoney(totalNeto - totalExpenses)}</div>
-            </div>
-            <div className="kpi-card">
-              <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--harvest-soft)' }}>🧺</div><span className="kpi-label">סה"כ משקל קטיף</span></div>
-              <div className="kpi-value" style={{ color: 'var(--harvest)' }}>{formatNumber(totalWeight)} ק"ג</div>
-            </div>
+            <Kpi icon="💰" bg="var(--revenue-soft)" color="var(--revenue)" label='סה"כ פדיון נטו' value={formatMoney(totalNeto)} />
+            <Kpi icon="🧾" bg="var(--expense-soft)" color="var(--expense)" label='סה"כ הוצאות' value={formatMoney(totalExpenses)} />
+            <Kpi icon="📈" bg="var(--profit-soft)" color="var(--profit)" label="רווח" value={formatMoney(totalNeto - totalExpenses)} />
+            <Kpi icon="🧺" bg="var(--harvest-soft)" color="var(--harvest)" label='סה"כ משקל' value={`${formatNumber(totalWeight)} ק"ג`} />
+            <Kpi icon="📂" bg="var(--warning-soft)" color={missingDocs ? 'var(--warning)' : 'var(--ok)'} label="שבועות עם מסמכים חסרים" value={formatNumber(missingDocs)} sub={`מתוך ${weeks.length} שבועות`} />
           </div>
 
           {/* ------ Bar Charts ------ */}
-          {(chartData.length > 0) && (
-            <>
-              <div className="card" style={{ marginTop: 20 }}>
-                <div className="section-title" style={{ marginTop: 0 }}>הכנסות לפי שבוע</div>
-                <div style={{ direction: 'ltr' }}>
-                  <ResponsiveContainer width="100%" height={200}>
-                    <BarChart data={chartData} margin={CHART_MARGIN_ROTATED}>
-                      <CartesianGrid {...GRID_PROPS} />
-                      <XAxis dataKey="name" {...xAxisProps(chartData.length, { rotate: chartData.length > 8 })} />
-                      <YAxis {...yAxisProps({ money: true })} />
-                      <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
-                      <Bar dataKey="פדיון" fill="#08A878" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              <div className="card" style={{ marginTop: 14 }}>
-                <div className="section-title" style={{ marginTop: 0 }}>הוצאות לפי שבוע</div>
-                <div style={{ direction: 'ltr' }}>
-                  <ResponsiveContainer width="100%" height={200}>
-                    <BarChart data={chartData} margin={CHART_MARGIN_ROTATED}>
-                      <CartesianGrid {...GRID_PROPS} />
-                      <XAxis dataKey="name" {...xAxisProps(chartData.length, { rotate: chartData.length > 8 })} />
-                      <YAxis {...yAxisProps({ money: true })} />
-                      <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
-                      <Bar dataKey="הוצאות" fill="#F04444" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              <div className="card" style={{ marginTop: 14 }}>
-                <div className="section-title" style={{ marginTop: 0 }}>ק"ג קטיף לפי שבוע</div>
-                <div style={{ direction: 'ltr' }}>
-                  <ResponsiveContainer width="100%" height={200}>
-                    <BarChart data={chartData} margin={CHART_MARGIN_ROTATED}>
-                      <CartesianGrid {...GRID_PROPS} />
-                      <XAxis dataKey="name" {...xAxisProps(chartData.length, { rotate: chartData.length > 8 })} />
-                      <YAxis {...yAxisProps()} />
-                      <Tooltip {...TOOLTIP_STYLE} formatter={(v) => `${formatNumber(v)} ק"ג`} />
-                      <Bar dataKey="משקל" fill="#6366F1" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            </>
+          {chartData.length > 0 && (
+            <div className="grid-2" style={{ marginTop: 20 }}>
+              <MiniBar title="הכנסות לפי שבוע" data={chartData} dataKey="פדיון" color="#08A878" money />
+              <MiniBar title="הוצאות לפי שבוע" data={chartData} dataKey="הוצאות" color="#F04444" money />
+              <MiniBar title="משקל לפי שבוע" data={chartData} dataKey="משקל" color="#6366F1" unit='ק"ג' />
+            </div>
           )}
 
-          {/* ------ Weekly Breakdown Table ------ */}
+          {/* ------ רשימת שבועות ------ */}
           <div className="card" style={{ marginTop: 20 }}>
-            <div className="section-title" style={{ marginTop: 0 }}>פירוט שבועי</div>
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>שבוע</th><th>מתאריך</th><th>עד תאריך</th><th>פדיון ברוטו</th><th>פדיון נטו</th><th>משקל</th><th>סטטוס מסמכים</th><th>סטטוס קטיף</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {weeks.slice(0, 60).map((w) => (
-                    <tr key={w.id} onClick={() => setDrawer(w)} style={{ cursor: 'pointer' }}>
-                      <td><b>{displayName(w['קוד שבוע'])}</b></td>
-                      <td>{formatDate(w['תאריך התחלה'])}</td>
-                      <td>{formatDate(w['תאריך סיום'])}</td>
-                      <td>{formatMoney(w['סכום ברוטו Rollup (from חשבוניות)'])}</td>
-                      <td>{formatMoney(w['סכום נטוRollup (from חשבוניות)'])}</td>
-                      <td>{formatNumber(w['משקל Rollup (from חשבוניות)'])}</td>
-                      <td><StatusBadge v={displayName(w['סטטוס התאמה'])} /></td>
-                      <td><StatusBadge v={displayName(w['סטטוס התאמת קטיף'])} /></td>
+            <div className="section-title" style={{ marginTop: 0 }}>רשימת שבועות</div>
+            {weeks.length === 0 ? <div className="empty-state">אין נתונים לתקופה זו</div> : (
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>שבוע</th><th>מתאריך</th><th>עד תאריך</th><th>פדיון ברוטו</th><th>פדיון נטו</th><th>משקל</th><th>מסמכים</th><th>סטטוס מסמכים</th><th>סטטוס קטיף</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {weeks.map((w) => (
+                      <tr key={w.id} onClick={() => setDrawer(w)} style={{ cursor: 'pointer' }}>
+                        <td><b style={{ direction: 'ltr', unicodeBidi: 'embed' }}>{displayName(w[F.code])}</b></td>
+                        <td>{formatDate(w[F.start])}</td>
+                        <td>{formatDate(w[F.end])}</td>
+                        <td>{formatMoney(w[F.gross])}</td>
+                        <td>{formatMoney(w[F.net])}</td>
+                        <td>{formatNumber(w[F.weight])}</td>
+                        <td style={{ whiteSpace: 'nowrap', fontSize: 13 }}>🧾 {countOf(w[F.invoices])} · 📄 {countOf(w[F.deliveries])}</td>
+                        <td><StatusBadge v={w[F.docStatus]} /></td>
+                        <td><StatusBadge v={w[F.harvestStatus]} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </>
       )}
 
-      {drawer && <WeekTabs week={drawer} onClose={() => setDrawer(null)} />}
+      {drawer && <WeekDrawer summary={drawer} onClose={() => setDrawer(null)} />}
     </div>
   );
 }
 
-function StatusBadge({ v }) {
-  if (!v) return <span className="badge badge-warn">לא זמין</span>;
-  const ok = ['תקין', 'פעיל', 'אין', 'עבר', '✓'].some((k) => String(v).includes(k));
-  return <span className={`badge ${ok ? 'badge-ok' : 'badge-error'}`}>{v}</span>;
-}
-
 // ============================================================
-// כרטיס שבוע — טאבים
+// כרטיס שבוע — נטען טרי מ-Airtable ומתרענן כל 30 שניות
 // ============================================================
-function WeekTabs({ week, onClose }) {
-  useEscapeClose(onClose); // סגירה במקש Escape
+function WeekDrawer({ summary, onClose }) {
+  const app = useApp();
+  useEscapeClose(onClose);
   const [tab, setTab] = useState('סקירה');
-  const code = week['קוד שבוע'];
-  const num = (v) => Number(v) || 0;
-  const neto = num(week['סכום נטוRollup (from חשבוניות)']);
-  const bruto = num(week['סכום ברוטו Rollup (from חשבוניות)']);
-  const weight = num(week['משקל Rollup (from חשבוניות)']);
+  const [week, setWeek] = useState(null);
+  const [error, setError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadedAt, setLoadedAt] = useState(null);
+  const alive = useRef(true);
 
-  // פרסור נקי
-  const days = useMemo(() => parseDays(week['JSON לפי ימים מאוחד']), [week]);
-  const incomeByStruct = useMemo(() => parseStructIncome(week['JSON הכנסה לפי מבנים']), [week]);
-  const cartonsByStruct = useMemo(() => parseMapList(week['JSON סיכום קטיף לפי מבנים'], ['קרטונים', 'cartons']), [week]);
-  const yieldDays = useMemo(() => parseDaily(week['JSON קג בפועל לפי ימים ומבנים']).days, [week]);
+  const load = useCallback(async (silent = true) => {
+    if (!silent) setRefreshing(true);
+    try {
+      const rec = cleanRecord(await app.api.get(TABLE, `/${summary.id}`));
+      if (!alive.current) return;
+      setWeek(rec); setError(''); setLoadedAt(new Date());
+    } catch (e) {
+      if (alive.current) setError(e.message || 'שגיאה בטעינה');
+    } finally {
+      if (alive.current) setRefreshing(false);
+    }
+  }, [app.api, summary.id]);
 
-  const sumCartons = Math.round(num(week['קרטונים']) || days.reduce((s, d) => s + num(d.cartons), 0));
+  useEffect(() => {
+    alive.current = true;
+    load(false);
+    // רענון ממוקד של הרשומה בלבד — כדי שעדכוני Automation יופיעו בלי רענון ידני
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') load(true); }, REFRESH_MS);
+    return () => { alive.current = false; clearInterval(timer); };
+  }, [load]);
+
+  const w = week || summary;
+  const code = w[F.code];
+
+  // פרסור נקי של כל שדות ה-JSON (פעם אחת לכל גרסה של הרשומה)
+  const parsed = useMemo(() => ({
+    days: parseDays(w[F.jDays]),
+    income: parseIncome(w[F.jIncome]),
+    harvestStruct: parseHarvestStruct(w[F.jHarvestStruct]),
+    kg: parseKg(w[F.jKg]),
+    dailyCheck: parseCheck(w[F.jDailyCheck]),
+    harvestCheck: parseCheck(w[F.jHarvestCheck]),
+    invoicesJson: parseInvoicesJson(w[F.jInvoices]),
+    deliveriesJson: parseDeliveriesJson(w[F.jDeliveries]),
+  }), [w]);
 
   return (
     <div className="drawer-overlay" onClick={onClose}>
       <div className="drawer stru-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
-          <span>שבוע {code}</span>
-          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
+          <span>
+            שבוע <span style={{ direction: 'ltr', unicodeBidi: 'embed' }}>{code}</span>
+            <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--text-secondary)', marginInlineStart: 10 }}>{formatDate(w[F.start])} – {formatDate(w[F.end])}</span>
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => load(false)} disabled={refreshing} title="טעינה מחדש מ-Airtable">
+              {refreshing ? <span className="spinner spinner-sm" /> : '🔄'} {loadedAt ? `עודכן ${hhmm(loadedAt)}` : 'טוען...'}
+            </button>
+            <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
+          </span>
         </div>
 
-        <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', sticky: 'sticky', position: 'sticky', top: 0, background: '#fff', zIndex: 2, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+        <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, background: '#fff', zIndex: 2, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
           {TABS.map((t) => (
             <button key={t} onClick={() => setTab(t)} className={`tab ${tab === t ? 'active' : ''}`} style={{ fontSize: 12, padding: '6px 10px' }}>{t}</button>
           ))}
         </div>
 
         <div className="drawer-body">
-          {tab === 'סקירה' && <OverviewTab bruto={bruto} neto={neto} weight={weight} cartons={sumCartons} week={week} />}
-          {tab === 'לפי ימים' && <DaysTab days={days} />}
-          {tab === 'זנים' && <VarietiesTab week={week} />}
-          {tab === 'מבנים' && <StructIncomeTab income={incomeByStruct} cartons={cartonsByStruct} />}
-          {tab === 'ק"ג בפועל' && <YieldTab yieldDays={yieldDays} />}
-          {tab === 'התאמות' && <MatchTab week={week} />}
+          {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12 }}>⚠️ {error}</div>}
+          {!week ? (
+            <div><div className="skeleton skeleton-card" /><div className="skeleton skeleton-chart" style={{ marginTop: 12 }} /></div>
+          ) : (
+            <>
+              {tab === 'סקירה' && <OverviewTab week={w} p={parsed} />}
+              {tab === 'לפי ימים' && <DaysTab days={parsed.days} />}
+              {tab === 'זנים' && <VarietiesTab days={parsed.days} kg={parsed.kg} />}
+              {tab === 'מבנים' && <StructuresTab income={parsed.income} harvestStruct={parsed.harvestStruct} kg={parsed.kg} />}
+              {tab === 'ק"ג בפועל' && <KgTab kg={parsed.kg} calcError={w[F.calcError]} />}
+              {tab === 'התאמות' && <MatchTab week={w} dailyCheck={parsed.dailyCheck} harvestCheck={parsed.harvestCheck} />}
+              {tab === 'מסמכים' && <DocsTab week={w} p={parsed} />}
+            </>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function OverviewTab({ bruto, neto, weight, cartons, week }) {
-  const pallets = Math.round(Number(week['משטחים']) || 0);
+// ============================================================
+// סקירה (סעיף 30)
+// ============================================================
+function OverviewTab({ week, p }) {
+  const cartons = p.days.reduce((s, d) => s + d.cartons, 0);
+  const pallets = p.days.reduce((s, d) => s + d.pallets, 0);
   const kpis = [
-    { l: 'פדיון ברוטו', v: formatMoney(bruto), c: 'var(--revenue)' },
-    { l: 'פדיון נטו', v: formatMoney(neto), c: 'var(--profit)' },
-    { l: 'משקל', v: `${formatNumber(weight)} ק"ג`, c: 'var(--weight)' },
+    { l: 'פדיון ברוטו', v: formatMoney(week[F.gross]), c: 'var(--revenue)' },
+    { l: 'פדיון נטו', v: formatMoney(week[F.net]), c: 'var(--profit)' },
+    { l: 'משקל', v: `${formatNumber(week[F.weight])} ק"ג`, c: 'var(--weight)' },
     { l: 'קרטונים', v: formatNumber(cartons), c: 'var(--cartons)' },
     { l: 'משטחים', v: formatNumber(pallets), c: 'var(--pallets)' },
+    { l: 'מספר חשבוניות', v: formatNumber(countOf(week[F.invoices])), c: 'var(--docs)' },
+    { l: 'מספר תעודות משלוח', v: formatNumber(countOf(week[F.deliveries])), c: 'var(--docs)' },
   ];
+  const s = p.dailyCheck?.summary;
   return (
     <div>
       <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(2,1fr)' }}>
@@ -265,18 +292,27 @@ function OverviewTab({ bruto, neto, weight, cartons, week }) {
         ))}
       </div>
       <div className="card" style={{ marginTop: 14 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>סיכום</div>
-        <Row l="סטטוס מסמכים" v={<StatusBadge v={week['סטטוס התאמה']} />} />
-        <Row l="הערות התאמה" v={week['רשימת הערות התאמה'] ? arrToStr(week['רשימת הערות התאמה']) : '—'} />
-        <Row l="סטטוס קטיף" v={<StatusBadge v={week['סטטוס התאמת קטיף']} />} />
+        <div className="section-title" style={{ marginTop: 0 }}>סטטוס</div>
+        <Row l="סטטוס מסמכים" v={<StatusBadge v={week[F.docStatus]} />} />
+        <Row l="סטטוס קטיף" v={<StatusBadge v={week[F.harvestStatus]} />} />
+        {s && (
+          <Row l="בדיקה יומית" v={<span style={{ fontSize: 13 }}>נבדקו {s.checked_days} ימים · תקינים {s.matched_days} · אי התאמה {s.mismatch_days} · ללא חשבונית {s.missing_invoice_days} · ללא תעודה {s.missing_delivery_days}</span>} />
+        )}
+        {week[F.calcError] && <Row l="שגיאת חישוב" v={<span className="badge badge-error">שגיאת חישוב ק"ג לפי מבנים</span>} />}
       </div>
+      <NotesCard title="הערות התאמת מסמכים" text={week[F.docNotes]} />
+      <NotesCard title="הערות התאמת קטיף" text={week[F.harvestNotes]} />
     </div>
   );
 }
 
+// ============================================================
+// לפי ימים (סעיף 31)
+// ============================================================
 function DaysTab({ days }) {
   if (!days.length) return <div className="empty-state">אין נתונים לתקופה זו</div>;
-  const chart = days.map((d) => ({ label: shortDate(d.date), קרטונים: num(d.cartons), משקל: Math.round(num(d.weight)), פדיון: Math.round(num(d.value)) }));
+  const chart = days.map((d) => ({ name: shortDate(d.date), פדיון: Math.round(d.gross), קרטונים: d.cartons, משקל: Math.round(d.weight), משטחים: d.pallets }));
+  const tot = days.reduce((a, d) => ({ cartons: a.cartons + d.cartons, weight: a.weight + d.weight, gross: a.gross + d.gross, pallets: a.pallets + d.pallets }), { cartons: 0, weight: 0, gross: 0, pallets: 0 });
   return (
     <div>
       <div className="card">
@@ -289,221 +325,714 @@ function DaysTab({ days }) {
                   <td>{formatDate(d.date)}</td>
                   <td>{formatNumber(d.cartons)}</td>
                   <td>{formatNumber(d.weight)}</td>
-                  <td>{formatMoney(d.value)}</td>
+                  <td>{formatMoney(d.gross)}</td>
                   <td>{formatNumber(d.pallets)}</td>
                 </tr>
               ))}
+              <tr style={{ fontWeight: 700, background: 'var(--bg-secondary)' }}>
+                <td>סה"כ</td><td>{formatNumber(tot.cartons)}</td><td>{formatNumber(tot.weight)}</td><td>{formatMoney(tot.gross)}</td><td>{formatNumber(tot.pallets)}</td>
+              </tr>
             </tbody>
           </table>
         </div>
       </div>
-      <div className="card" style={{ marginTop: 14 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>פדיון לפי יום</div>
-        <div style={{ direction: 'ltr' }}>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={chart} margin={CHART_MARGIN_ROTATED}>
-              <CartesianGrid {...GRID_PROPS} />
-              <XAxis dataKey="label" {...xAxisProps(chart.length, { rotate: chart.length > 7 })} />
-              <YAxis {...yAxisProps({ money: true })} />
-              <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
-              <Bar dataKey="פדיון" fill="#08A878" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
+      <div className="grid-2" style={{ marginTop: 14 }}>
+        <MiniBar title="פדיון לפי יום" data={chart} dataKey="פדיון" color="#08A878" money />
+        <MiniBar title="קרטונים לפי יום" data={chart} dataKey="קרטונים" color="#F59E0B" />
+        <MiniBar title="משקל לפי יום" data={chart} dataKey="משקל" color="#2878D0" unit='ק"ג' />
+        <MiniBar title="משטחים לפי יום" data={chart} dataKey="משטחים" color="#8B5CF6" />
       </div>
     </div>
   );
 }
 
-function VarietiesTab({ week }) {
-  const v = useMemo(() => {
-    const daily = parseDaily(week['JSON קג בפועל לפי ימים ומבנים']);
-    const byVar = {};
-    (daily.varieties || []).forEach((x) => {
-      const k = x.variety || x['זן'];
-      byVar[k] = byVar[k] || { weight: 0, cartons: 0 };
-      byVar[k].weight += num(x.delivery_weight ?? x.allocated_weight);
-      byVar[k].cartons += num(x.delivery_cartons ?? x.allocated_cartons);
+// ============================================================
+// זנים (סעיפים 32–33 — לפי זן)
+// ============================================================
+function VarietiesTab({ days, kg }) {
+  const rows = useMemo(() => {
+    const by = {};
+    days.forEach((d) => d.products.forEach((pr) => {
+      const k = pr.variety || 'לא צוין';
+      by[k] = by[k] || { name: k, cartons: 0, weight: 0, gross: 0, pallets: 0 };
+      by[k].cartons += pr.cartons; by[k].weight += pr.weight; by[k].gross += pr.gross; by[k].pallets += pr.pallets;
+    }));
+    return Object.values(by).sort((a, b) => b.gross - a.gross);
+  }, [days]);
+
+  // קרטונים לפי זן לאורך זמן (מתעודות המשלוח המאוחדות)
+  const overTime = useMemo(() => {
+    const names = rows.map((r) => r.name);
+    return days.map((d) => {
+      const o = { name: shortDate(d.date) };
+      names.forEach((n) => { o[n] = 0; });
+      d.products.forEach((pr) => { o[pr.variety || 'לא צוין'] += pr.cartons; });
+      return o;
     });
-    return Object.entries(byVar).map(([k, v]) => ({ name: k, ...v }));
-  }, [week]);
-  if (!v.length) return <div className="empty-state">אין נתונים לתקופה זו</div>;
+  }, [days, rows]);
+
+  if (!rows.length) return <div className="empty-state">אין נתונים לתקופה זו</div>;
+  const totalGross = rows.reduce((s, r) => s + r.gross, 0);
   return (
     <div>
       <div className="card">
         <div className="table-wrap">
           <table className="data-table">
-            <thead><tr><th>זן</th><th>קרטונים</th><th>משקל</th></tr></thead>
+            <thead><tr><th>זן</th><th>קרטונים</th><th>משקל</th><th>פדיון</th><th>חלק יחסי</th><th>משטחים</th></tr></thead>
             <tbody>
-              {v.map((x, i) => (
-                <tr key={i}><td>{x.name}</td><td>{formatNumber(x.cartons)}</td><td>{formatNumber(x.weight)}</td></tr>
+              {rows.map((x) => (
+                <tr key={x.name}><td><b>{x.name}</b></td><td>{formatNumber(x.cartons)}</td><td>{formatNumber(x.weight)}</td><td>{formatMoney(x.gross)}</td><td>{pct(x.gross, totalGross)}</td><td>{formatNumber(x.pallets)}</td></tr>
               ))}
             </tbody>
           </table>
         </div>
       </div>
-      <div className="card" style={{ marginTop: 14 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>ק"ג לפי זן</div>
-        <ResponsiveContainer width="100%" height={220}>
-          <PieChart>
-            <Pie data={v} dataKey="weight" nameKey="name" innerRadius={50} outerRadius={75}>
-              {v.map((_, i) => <Cell key={i} fill={PIE[i % PIE.length]} />)}
-            </Pie>
-            <Tooltip {...TOOLTIP_STYLE} formatter={(val) => `${formatNumber(val)} ק"ג`} />
-            <Legend wrapperStyle={LEGEND_STYLE} />
-          </PieChart>
-        </ResponsiveContainer>
+      <div className="grid-2" style={{ marginTop: 14 }}>
+        <div className="card">
+          <div className="section-title" style={{ marginTop: 0 }}>הכנסה לפי זן</div>
+          <PieBox data={rows.map((r) => ({ name: r.name, value: Math.round(r.gross) }))} fmt={(v) => formatMoney(v)} />
+        </div>
+        <div className="card">
+          <div className="section-title" style={{ marginTop: 0 }}>משקל לפי זן</div>
+          <PieBox data={rows.map((r) => ({ name: r.name, value: Math.round(r.weight) }))} fmt={(v) => `${formatNumber(v)} ק"ג`} />
+        </div>
+        <MiniBar title="קרטונים לפי זן" data={rows.map((r) => ({ name: r.name, קרטונים: r.cartons }))} dataKey="קרטונים" color="#F59E0B" />
+        <StackedBox title="קרטונים לפי זן לאורך זמן" data={overTime} keys={rows.map((r) => r.name)} />
+      </div>
+      {kg && <StructVarietyMatrix kg={kg} />}
+    </div>
+  );
+}
+
+// ============================================================
+// מבנים (סעיפים 32–33 — לפי מבנה)
+// ============================================================
+function StructuresTab({ income, harvestStruct, kg }) {
+  const cards = useMemo(() => {
+    const by = {};
+    (income?.structures || []).forEach((s) => { by[s.name] = { name: s.name, net: s.net, share: s.share, cartons: s.cartons, varieties: new Set() }; });
+    (harvestStruct?.structures || []).forEach((s) => {
+      by[s.name] = by[s.name] || { name: s.name, net: 0, share: 0, cartons: 0, varieties: new Set() };
+      if (!by[s.name].cartons) by[s.name].cartons = s.cartons;
+    });
+    (kg?.days || []).forEach((d) => d.varieties.forEach((v) => v.structures.forEach((st) => {
+      by[st.name] = by[st.name] || { name: st.name, net: 0, share: 0, cartons: 0, varieties: new Set() };
+      by[st.name].varieties.add(v.variety);
+    })));
+    const totalNet = Object.values(by).reduce((s, x) => s + x.net, 0);
+    return Object.values(by).map((x) => ({ ...x, share: x.share || (totalNet ? x.net / totalNet : 0), varieties: [...x.varieties] })).sort((a, b) => b.net - a.net || b.cartons - a.cartons);
+  }, [income, harvestStruct, kg]);
+
+  // קרטונים לפי מבנה לאורך זמן (מתוך JSON ק"ג בפועל)
+  const overTime = useMemo(() => {
+    if (!kg) return [];
+    const names = cards.map((c) => c.name);
+    return kg.days.map((d) => {
+      const o = { name: shortDate(d.date) };
+      names.forEach((n) => { o[n] = 0; });
+      d.varieties.forEach((v) => v.structures.forEach((st) => { o[st.name] = (o[st.name] || 0) + st.cartons; }));
+      return o;
+    });
+  }, [kg, cards]);
+
+  if (!cards.length) return <div className="empty-state">אין נתונים לתקופה זו</div>;
+  return (
+    <div>
+      {income && (
+        <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(2,1fr)' }}>
+          <MiniKpi l="הכנסה נטו שבועית" v={formatMoney(income.total)} c="var(--profit)" />
+          <MiniKpi l="קרטונים שחולקו" v={formatNumber(income.cartons)} c="var(--cartons)" />
+        </div>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 10, marginTop: 14 }}>
+        {cards.map((c) => (
+          <div key={c.name} className="card" style={{ padding: 14 }}>
+            <div style={{ fontWeight: 800 }}>🏗️ {c.name}</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--profit)', marginTop: 6 }}>{formatMoney(c.net)}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>חלק יחסי {(c.share * 100).toFixed(1)}% · {formatNumber(c.cartons)} קרטונים</div>
+            <div style={{ marginTop: 8, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              {c.varieties.length ? c.varieties.map((v) => <span key={v} className="badge" style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>{v}</span>) : <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>זנים: לא זמין</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="grid-2" style={{ marginTop: 14 }}>
+        <HBar title="הכנסה לפי מבנה" data={cards.map((c) => ({ name: c.name, value: Math.round(c.net) }))} color="#2878D0" fmt={(v) => formatMoney(v)} />
+        <HBar title="קרטונים לפי מבנה" data={cards.map((c) => ({ name: c.name, value: c.cartons }))} color="#F59E0B" fmt={(v) => formatNumber(v)} />
+        {overTime.length > 0 && <StackedBox title="קרטונים לפי מבנה לאורך זמן" data={overTime} keys={cards.map((c) => c.name)} />}
+      </div>
+      {kg && <StructVarietyMatrix kg={kg} />}
+    </div>
+  );
+}
+
+/** טבלת מבנה × זן — קרטונים (סעיף 33: "קרטונים לפי מבנה וזן") */
+function StructVarietyMatrix({ kg }) {
+  const { structs, vars, cell } = useMemo(() => {
+    const structs = new Set(); const vars = new Set(); const cell = {};
+    kg.days.forEach((d) => d.varieties.forEach((v) => v.structures.forEach((st) => {
+      structs.add(st.name); vars.add(v.variety);
+      cell[`${st.name}|${v.variety}`] = (cell[`${st.name}|${v.variety}`] || 0) + st.cartons;
+    })));
+    return { structs: [...structs], vars: [...vars], cell };
+  }, [kg]);
+  if (!structs.length) return null;
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="section-title" style={{ marginTop: 0 }}>קרטונים לפי מבנה וזן</div>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>מבנה</th>{vars.map((v) => <th key={v}>{v}</th>)}<th>סה"כ</th></tr></thead>
+          <tbody>
+            {structs.map((s) => {
+              const total = vars.reduce((acc, v) => acc + (cell[`${s}|${v}`] || 0), 0);
+              return <tr key={s}><td><b>{s}</b></td>{vars.map((v) => <td key={v}>{formatNumber(cell[`${s}|${v}`] || 0)}</td>)}<td><b>{formatNumber(total)}</b></td></tr>;
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
 
-function StructIncomeTab({ income, cartons }) {
-  if (!income.length) return <div className="empty-state">אין נתונים לתקופה זו</div>;
+// ============================================================
+// ק"ג בפועל (סעיף 34)
+// ============================================================
+function KgTab({ kg, calcError }) {
+  const m = useMemo(() => (kg && kg.days.length ? summarizeKg(kg) : null), [kg]);
+  if (!m) {
+    return (
+      <div>
+        {calcError && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12, whiteSpace: 'normal', textAlign: 'right' }}>⚠️ שגיאת חישוב ק"ג לפי מבנים — הנתונים לא חושבו ב-Airtable</div>}
+        <div className="empty-state">אין נתונים לתקופה זו</div>
+      </div>
+    );
+  }
   return (
     <div>
-      <div className="card">
+      {calcError && <div className="badge badge-warn" style={{ width: '100%', marginBottom: 12, whiteSpace: 'normal', textAlign: 'right' }}>⚠️ קיימת שגיאת חישוב — ייתכן שהנתונים חלקיים</div>}
+      <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(2,1fr)' }}>
+        <MiniKpi l='סה"כ ק"ג בפועל' v={`${formatNumber(m.totalWeight)}`} c="var(--harvest)" />
+        <MiniKpi l="קרטונים שחולקו" v={formatNumber(m.totalAllocated)} c="var(--cartons)" />
+        <MiniKpi l="מבנים פעילים" v={formatNumber(m.byStruct.length)} />
+        <MiniKpi l="זנים" v={formatNumber(m.byVariety.length)} />
+        <MiniKpi l="קרטונים לא משויכים" v={formatNumber(m.unassigned)} c={m.unassigned ? 'var(--warning)' : 'var(--ok)'} />
+      </div>
+
+      <div className="grid-2" style={{ marginTop: 14 }}>
+        <div className="card">
+          <div className="section-title" style={{ marginTop: 0 }}>ק"ג לאורך זמן</div>
+          <div style={{ direction: 'ltr' }}>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={m.perDay} margin={CHART_MARGIN_ROTATED}>
+                <CartesianGrid {...GRID_PROPS} />
+                <XAxis dataKey="name" {...xAxisProps(m.perDay.length, { rotate: m.perDay.length > 7 })} />
+                <YAxis {...yAxisProps()} />
+                <Tooltip {...TOOLTIP_STYLE} formatter={(v) => `${formatNumber(v)} ק"ג`} />
+                <Line type="monotone" dataKey='ק"ג' stroke="#2E9B62" strokeWidth={2} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <HBar title="ק״ג לפי מבנה" data={m.byStruct.map((s) => ({ name: s.name, value: Math.round(s.weight) }))} color="#2E9B62" fmt={(v) => `${formatNumber(v)} ק"ג`} />
+        <div className="card">
+          <div className="section-title" style={{ marginTop: 0 }}>ק"ג לפי זן</div>
+          <PieBox data={m.byVariety.map((v) => ({ name: v.name, value: Math.round(v.weight) }))} fmt={(v) => `${formatNumber(v)} ק"ג`} />
+        </div>
+        <HBar title="קרטונים לפי מבנה" data={m.byStruct.map((s) => ({ name: s.name, value: s.cartons }))} color="#F59E0B" fmt={(v) => formatNumber(v)} />
+        <MiniBar title="משקל ממוצע לקרטון (לפי זן)" data={m.byVariety.map((v) => ({ name: v.name, ממוצע: v.avg }))} dataKey="ממוצע" color="#8B5CF6" unit='ק"ג' />
+        <div className="card">
+          <div className="section-title" style={{ marginTop: 0 }}>קרטונים בתעודות מול קרטונים ששויכו</div>
+          <div style={{ direction: 'ltr' }}>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={m.perDay} margin={CHART_MARGIN_ROTATED}>
+                <CartesianGrid {...GRID_PROPS} />
+                <XAxis dataKey="name" {...xAxisProps(m.perDay.length, { rotate: m.perDay.length > 7 })} />
+                <YAxis {...yAxisProps()} />
+                <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatNumber(v)} />
+                <Legend wrapperStyle={LEGEND_STYLE} />
+                <Bar dataKey="בתעודות" fill="#2878D0" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="שויכו" fill="#08A878" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <MiniBar title="פער קרטונים לאורך זמן" data={m.perDay} dataKey="פער" color="#F04444" />
+      </div>
+
+      <div className="card" style={{ marginTop: 14 }}>
+        <div className="section-title" style={{ marginTop: 0 }}>פירוט</div>
         <div className="table-wrap">
           <table className="data-table">
-            <thead><tr><th>מבנה</th><th>הכנסה נטו</th><th>חלק יחסי</th><th>קרטונים</th></tr></thead>
+            <thead><tr><th>תאריך</th><th>זן</th><th>מבנה</th><th>קרטונים</th><th>ק"ג בפועל</th><th>משקל ממוצע</th><th>קרטונים בתעודות</th><th>קרטונים ששויכו</th><th>פער</th></tr></thead>
             <tbody>
-              {income.map((r, i) => {
-                const total = income.reduce((s, x) => s + num(x.value), 0);
-                const c = cartons.find((x) => x.name === r.name);
-                return (
-                  <tr key={i}>
-                    <td>{r.name}</td>
-                    <td>{formatMoney(r.value)}</td>
-                    <td>{(total ? (num(r.value) / total) * 100 : 0).toFixed(1)}%</td>
-                    <td>{formatNumber(c?.value)}</td>
+              {kg.days.map((d) => d.varieties.map((v, vi) => {
+                const rowsOfVar = v.structures.length ? v.structures : [{ name: 'לא משויך', cartons: 0, weight: 0 }];
+                const span = rowsOfVar.length;
+                const gap = v.delivery_cartons - v.allocated_cartons;
+                return rowsOfVar.map((st, si) => (
+                  <tr key={`${d.date}-${vi}-${si}`}>
+                    {si === 0 && <td rowSpan={span}>{formatDate(d.date)}</td>}
+                    {si === 0 && <td rowSpan={span}><b>{v.variety}</b></td>}
+                    <td>{st.name}</td>
+                    <td>{formatNumber(st.cartons)}</td>
+                    <td>{formatNumber(st.weight)}</td>
+                    {si === 0 && <td rowSpan={span}>{v.avg ? formatNumber(v.avg, 1) : '—'}</td>}
+                    {si === 0 && <td rowSpan={span}>{formatNumber(v.delivery_cartons)}</td>}
+                    {si === 0 && <td rowSpan={span}>{formatNumber(v.allocated_cartons)}</td>}
+                    {si === 0 && <td rowSpan={span} style={{ color: gap ? 'var(--warning)' : 'var(--ok)', fontWeight: 700 }}>{gap > 0 ? `+${formatNumber(gap)}` : formatNumber(gap)}</td>}
                   </tr>
-                );
-              })}
+                ));
+              }))}
             </tbody>
           </table>
         </div>
       </div>
-      <div className="card" style={{ marginTop: 14 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>הכנסה לפי מבנה</div>
-        <div style={{ direction: 'ltr' }}>
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={income.map((r) => ({ name: r.name, value: Math.round(num(r.value)) }))}
-              layout="vertical" margin={CHART_MARGIN}>
-              <CartesianGrid {...GRID_PROPS} vertical horizontal={false} />
-              <XAxis type="number" {...xAxisProps(0)} />
-              <YAxis dataKey="name" {...yCategoryProps({ width: 104 })} />
-              <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
-              <Bar dataKey="value" fill="#2878D0" radius={[0, 6, 6, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
     </div>
   );
 }
 
-function YieldTab({ yieldDays }) {
-  if (!yieldDays || !yieldDays.length) return <div className="empty-state">אין נתונים לתקופה זו</div>;
-  const chart = yieldDays.map((d) => ({ label: shortDate(d.date), מלא: Math.round(num(d.allocated_weight)), החלטה: Math.round(num(d.allocated_cartons)) }));
-  const totalWeight = yieldDays.reduce((s, d) => s + num(d.allocated_weight), 0);
-  return (
-    <div>
-      <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(2,1fr)' }}>
-        <div className="kpi-card"><div className="kpi-top"><span className="kpi-label">סה"כ ק"ג בפועל</span></div><div className="kpi-value" style={{ fontSize: 18, color: 'var(--harvest)' }}>{formatNumber(totalWeight)}</div></div>
-        <div className="kpi-card"><div className="kpi-top"><span className="kpi-label">ימים פעילים</span></div><div className="kpi-value" style={{ fontSize: 18 }}>{yieldDays.length}</div></div>
-      </div>
-      <div className="card" style={{ marginTop: 14 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>ק"ג בפועל לפי יום</div>
-        <div style={{ direction: 'ltr' }}>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={chart} margin={CHART_MARGIN_ROTATED}>
-              <CartesianGrid {...GRID_PROPS} />
-              <XAxis dataKey="label" {...xAxisProps(chart.length, { rotate: chart.length > 7 })} />
-              <YAxis {...yAxisProps()} />
-              <Tooltip {...TOOLTIP_STYLE} formatter={(v) => `${formatNumber(v)} ק"ג`} />
-              <Line type="monotone" dataKey="מלא" stroke="#2E9B62" strokeWidth={2} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-    </div>
-  );
+function summarizeKg(kg) {
+  const byStruct = {}; const byVariety = {};
+  let totalWeight = 0; let totalAllocated = 0; let unassigned = 0;
+  const perDay = kg.days.map((d) => {
+    let delivered = 0; let allocated = 0; let weight = 0;
+    d.varieties.forEach((v) => {
+      delivered += v.delivery_cartons; allocated += v.allocated_cartons;
+      unassigned += Math.max(0, v.delivery_cartons - v.allocated_cartons);
+      const bv = byVariety[v.variety] = byVariety[v.variety] || { name: v.variety, weight: 0, cartons: 0 };
+      v.structures.forEach((st) => {
+        weight += st.weight;
+        const bs = byStruct[st.name] = byStruct[st.name] || { name: st.name, weight: 0, cartons: 0 };
+        bs.weight += st.weight; bs.cartons += st.cartons;
+        bv.weight += st.weight; bv.cartons += st.cartons;
+      });
+      if (!v.structures.length) { bv.weight += v.allocated_weight; bv.cartons += v.allocated_cartons; weight += v.allocated_weight; }
+    });
+    totalWeight += weight; totalAllocated += allocated;
+    return { name: shortDate(d.date), 'ק"ג': Math.round(weight), בתעודות: delivered, שויכו: allocated, פער: delivered - allocated };
+  });
+  return {
+    perDay, totalWeight, totalAllocated, unassigned,
+    byStruct: Object.values(byStruct).sort((a, b) => b.weight - a.weight),
+    byVariety: Object.values(byVariety).map((v) => ({ ...v, avg: v.cartons ? +(v.weight / v.cartons).toFixed(1) : 0 })).sort((a, b) => b.weight - a.weight),
+  };
 }
 
-function MatchTab({ week }) {
+// ============================================================
+// התאמות (סעיף 35)
+// ============================================================
+const ISSUE_LABEL = {
+  cartons_mismatch: 'אי התאמת קרטונים', weight_mismatch: 'אי התאמת משקל', pallets_mismatch: 'אי התאמת משטחים',
+  missing_invoice: 'חסרה חשבונית', missing_delivery: 'חסרה תעודת משלוח', missing_harvest: 'חסר דיווח קטיף',
+  harvest_mismatch: 'אי התאמת קטיף', marketer_deduction: 'ניכוי משווק', transport: 'הובלה', weight_deviation: 'חריגת משקל',
+};
+function MatchTab({ week, dailyCheck, harvestCheck }) {
   return (
     <div>
-      <div className="card" style={{ marginBottom: 14 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>התאמת מסמכים</div>
-        <Row l="סטטוס" v={<StatusBadge v={week['סטטוס התאמה']} />} />
-        <Row l="הערות" v={week['רשימת הערות התאמה'] ? arrToStr(week['רשימת הערות התאמה']) : '—'} />
-      </div>
-      <div className="card">
-        <div className="section-title" style={{ marginTop: 0 }}>התאמת קטיף</div>
-        <Row l="סטטוס" v={<StatusBadge v={week['סטטוס התאמת קטיף']} />} />
-        <Row l="הערות קטיף" v={week['הערות התאמת קטיף'] || '—'} />
-      </div>
-      {week['שגיאת חישוב קג לפי מבנים'] && (
-        <div className="badge badge-error" style={{ marginTop: 12, width: '100%' }}>⚠️ שגיאת חישוב: {week['שגיאת חישוב קג לפי מבנים']}</div>
+      <CheckCard title="התאמת מסמכים (חשבוניות מול תעודות משלוח)" status={week[F.docStatus]} check={dailyCheck} notes={week[F.docNotes]}
+        legend={(s) => `נבדקו ${s.checked_days} · תקינים ${s.matched_days} · אי התאמה ${s.mismatch_days} · ללא חשבונית ${s.missing_invoice_days ?? 0} · ללא תעודה ${s.missing_delivery_days ?? 0}`} />
+      <CheckCard title="התאמת קטיף (דיווחי קטיף מול תעודות משלוח)" status={week[F.harvestStatus]} check={harvestCheck} notes={week[F.harvestNotes]}
+        legend={(s) => `נבדקו ${s.checked_days} · תקינים ${s.matched_days} · אי התאמה ${s.mismatch_days} · ללא דיווח קטיף ${s.missing_harvest_days ?? 0}`} />
+      {week[F.calcError] && (
+        <div className="card" style={{ borderColor: 'var(--error)' }}>
+          <div className="section-title" style={{ marginTop: 0, color: 'var(--error)' }}>שגיאת חישוב ק"ג לפי מבנים</div>
+          <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', color: 'var(--text-secondary)' }}>{String(week[F.calcError]).trim()}</div>
+        </div>
       )}
     </div>
   );
 }
 
-// Helpers
+function CheckCard({ title, status, check, notes, legend }) {
+  const days = check?.days || [];
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div className="section-title" style={{ marginTop: 0 }}>{title}</div>
+      <Row l="סטטוס" v={<StatusBadge v={status} />} />
+      {check?.summary && <Row l="סיכום" v={<span style={{ fontSize: 13 }}>{legend(check.summary)}</span>} />}
+      {days.length > 0 ? (
+        <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+          {days.map((d, i) => (
+            <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <b>{formatDate(d.date)}</b><StatusBadge v={d.status} />
+              </div>
+              {(d.issues || []).map((iss, j) => (
+                <div key={j} style={{ marginTop: 8, fontSize: 13 }}>
+                  <span className="badge badge-warn" style={{ marginInlineEnd: 6 }}>{ISSUE_LABEL[iss.type] || iss.type}</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>{iss.message}</span>
+                </div>
+              ))}
+              {!(d.issues || []).length && <div style={{ fontSize: 13, color: 'var(--ok)', marginTop: 6 }}>✓ אין חריגות ביום זה</div>}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <NotesInline text={notes} />
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// מסמכים — חשבוניות ותעודות משלוח של השבוע
+// ============================================================
+function DocsTab({ week, p }) {
+  const app = useApp();
+  const [recs, setRecs] = useState({ invoices: null, deliveries: null });
+  const [openNote, setOpenNote] = useState(null); // כרטיס תעודת משלוח מלא מעל כרטיס השבוע
+  const invIds = useMemo(() => new Set(idsOf(week[F.invoices])), [week]);
+  const delIds = useMemo(() => new Set(idsOf(week[F.deliveries])), [week]);
+
+  // הרשומות עצמן נטענות רק כשנכנסים לטאב (Lazy) — בשביל הקבצים המצורפים
+  useEffect(() => {
+    let on = true;
+    Promise.all([
+      app.api.get('חשבוניות', '?maxRecords=400&raw=1').catch(() => []),
+      // התעודות נטענות עם שמות מקושרים (לא raw) כדי שכרטיס התעודה יציג משווק/מבנה בשם ולא במזהה
+      app.api.get('תעודות משלוח', '?maxRecords=400').catch(() => []),
+    ]).then(([i, d]) => { if (on) setRecs({ invoices: Array.isArray(i) ? i : [], deliveries: Array.isArray(d) ? d : [] }); });
+    return () => { on = false; };
+  }, [app.api, week.id]);
+
+  const invoices = useMemo(() => {
+    const byId = new Map(p.invoicesJson.map((x) => [x.record_id, x]));
+    const fromRecs = (recs.invoices || []).filter((r) => invIds.has(r.id)).map((r) => {
+      const j = byId.get(r.id) || {};
+      const att = Array.isArray(r['חשבונית']) ? r['חשבונית'][0] : null;
+      return {
+        id: r.id, title: j.title || r['כותרת (חשבונית)'] || r['מספר חשבונית'] || 'חשבונית',
+        marketer: j.marketer || r['שם משווק'] || r['משווק-AI'] || 'לא זמין',
+        date: j.invoice_date || r['תאריך-AI'] || r['תאריך העלאת קובץ'],
+        gross: j.gross_amount ?? r['סכום ברוטו'], net: j.net_amount ?? r['סכום נטו'], weight: j.weight ?? r['משקל'],
+        cartons: j.cartons ?? r['כמות קרטונים'], pallets: j.pallets ?? r['מספר משטחים'],
+        deductionCheck: j.marketer_deduction_check || r['בדיקת ניכוי משווק'], palletCheck: j.pallet_price_check || r['בדיקת חריגת מחיר משטח'],
+        payStatus: r['סטטוס תשלום'], file: att,
+      };
+    });
+    if (fromRecs.length || recs.invoices) return fromRecs;
+    // עד שהרשומות נטענות — מציגים את מה שיש ב-JSON המאוחד
+    return p.invoicesJson.map((j) => ({ id: j.record_id, title: j.title, marketer: j.marketer, date: j.invoice_date, gross: j.gross_amount, net: j.net_amount, weight: j.weight, cartons: j.cartons, pallets: j.pallets, deductionCheck: j.marketer_deduction_check, palletCheck: j.pallet_price_check }));
+  }, [recs.invoices, p.invoicesJson, invIds]);
+
+  const deliveries = useMemo(() => (recs.deliveries || []).filter((r) => delIds.has(r.id)).map((r) => ({
+    id: r.id, number: r['מספר תעודה'] || 'תעודה', date: r['תאריך תעודה'] || r['תאריך העלאת קובץ'],
+    marketer: r['שם משווק'] || r['משווק-AI'] || 'לא זמין', cartons: r['כמות קרטונים'], weight: r['משקל כולל'], avg: r['משקל ממוצע לקרטון'],
+    weightCheck: r['בדיקת חריגת משקל'], file: Array.isArray(r['תעודת משלוח']) ? r['תעודת משלוח'][0] : null,
+    rec: r,
+  })), [recs.deliveries, delIds]);
+
+  const s = p.dailyCheck?.summary;
+  const loading = recs.invoices === null;
+  return (
+    <div>
+      <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(2,1fr)' }}>
+        <MiniKpi l="חשבוניות" v={formatNumber(invIds.size)} c="var(--docs)" />
+        <MiniKpi l="תעודות משלוח" v={formatNumber(delIds.size)} c="var(--docs)" />
+        {s && <MiniKpi l="ימים ללא חשבונית" v={formatNumber(s.missing_invoice_days)} c={s.missing_invoice_days ? 'var(--warning)' : 'var(--ok)'} />}
+        {s && <MiniKpi l="ימים ללא תעודת משלוח" v={formatNumber(s.missing_delivery_days)} c={s.missing_delivery_days ? 'var(--warning)' : 'var(--ok)'} />}
+      </div>
+      <div className="card" style={{ marginTop: 14 }}>
+        <div className="section-title" style={{ marginTop: 0, display: 'flex', justifyContent: 'space-between' }}><span>🧾 חשבוניות</span><StatusBadge v={week[F.docStatus]} /></div>
+        {invoices.length === 0 ? <div className="empty-state">{loading ? 'טוען...' : 'אין חשבוניות לשבוע זה'}</div> : (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>חשבונית</th><th>משווק</th><th>תאריך</th><th>ברוטו</th><th>נטו</th><th>משקל</th><th>קרטונים</th><th>משטחים</th><th>בדיקות</th><th>קובץ</th></tr></thead>
+              <tbody>
+                {invoices.map((i) => (
+                  <tr key={i.id}>
+                    <td><b>{i.title}</b>{i.payStatus && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{i.payStatus}</div>}</td>
+                    <td>{i.marketer}</td>
+                    <td>{formatDate(i.date)}</td>
+                    <td>{formatMoney(i.gross)}</td>
+                    <td>{formatMoney(i.net)}</td>
+                    <td>{formatNumber(i.weight)}</td>
+                    <td>{formatNumber(i.cartons)}</td>
+                    <td>{formatNumber(i.pallets)}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}><CheckBadge label="ניכוי" v={i.deductionCheck} /> <CheckBadge label="משטח" v={i.palletCheck} /></td>
+                    <td>{i.file?.url ? <a href={i.file.url} target="_blank" rel="noreferrer">📎 פתח</a> : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      <div className="card" style={{ marginTop: 14 }}>
+        <div className="section-title" style={{ marginTop: 0 }}>📄 תעודות משלוח</div>
+        {deliveries.length === 0 ? <div className="empty-state">{loading ? 'טוען...' : 'אין תעודות משלוח לשבוע זה'}</div> : (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>תעודה</th><th>משווק</th><th>תאריך</th><th>קרטונים</th><th>משקל כולל</th><th>משקל ממוצע</th><th>חריגת משקל</th><th>קובץ</th></tr></thead>
+              <tbody>
+                {deliveries.map((d) => (
+                  <tr key={d.id} onClick={() => setOpenNote(d.rec)} style={{ cursor: 'pointer' }} title="פתיחת כרטיס התעודה">
+                    <td><b>{d.number}</b></td>
+                    <td>{d.marketer}</td>
+                    <td>{formatDate(d.date)}</td>
+                    <td>{formatNumber(d.cartons)}</td>
+                    <td>{formatNumber(d.weight)}</td>
+                    <td>{d.avg != null ? formatNumber(d.avg, 1) : '—'}</td>
+                    <td><CheckBadge v={d.weightCheck} /></td>
+                    <td>{d.file?.url ? <a href={d.file.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>📎 פתח</a> : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      {openNote && <DeliveryNoteDrawer note={openNote} notes={recs.deliveries || []} api={app.api} onClose={() => setOpenNote(null)} />}
+      {p.deliveriesJson.length > 0 && (
+        <div className="card" style={{ marginTop: 14 }}>
+          <div className="section-title" style={{ marginTop: 0 }}>תעודות משלוח — מאוחד לפי יום</div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>תאריך</th><th>קרטונים</th><th>משקל</th><th>משטחים</th><th>תעודות</th></tr></thead>
+              <tbody>
+                {p.deliveriesJson.map((d, i) => <tr key={i}><td>{formatDate(d.date)}</td><td>{formatNumber(d.cartons)}</td><td>{formatNumber(d.weight)}</td><td>{formatNumber(d.pallets)}</td><td>{d.count}</td></tr>)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// רכיבי עזר משותפים
+// ============================================================
+function Kpi({ icon, bg, color, label, value, sub }) {
+  return (
+    <div className="kpi-card">
+      <div className="kpi-top"><div className="kpi-icon" style={{ background: bg }}>{icon}</div><span className="kpi-label">{label}</span></div>
+      <div className="kpi-value" style={{ color }}>{value}</div>
+      {sub && <div className="kpi-sub">{sub}</div>}
+    </div>
+  );
+}
+function MiniKpi({ l, v, c }) {
+  return <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>{l}</span></div><div className="kpi-value" style={{ fontSize: 18, color: c }}>{v}</div></div>;
+}
+function MiniBar({ title, data, dataKey, color, money, unit }) {
+  const fmt = money ? (v) => formatMoney(v) : (v) => `${formatNumber(v)}${unit ? ` ${unit}` : ''}`;
+  return (
+    <div className="card">
+      <div className="section-title" style={{ marginTop: 0 }}>{title}</div>
+      <div style={{ direction: 'ltr' }}>
+        <ResponsiveContainer width="100%" height={200}>
+          <BarChart data={data} margin={CHART_MARGIN_ROTATED}>
+            <CartesianGrid {...GRID_PROPS} />
+            <XAxis dataKey="name" {...xAxisProps(data.length, { rotate: data.length > 7 })} />
+            <YAxis {...yAxisProps({ money })} />
+            <Tooltip {...TOOLTIP_STYLE} formatter={fmt} />
+            <Bar dataKey={dataKey} fill={color} radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+function HBar({ title, data, color, fmt }) {
+  const h = Math.max(160, 40 * data.length + 40);
+  return (
+    <div className="card">
+      <div className="section-title" style={{ marginTop: 0 }}>{title}</div>
+      <div style={{ direction: 'ltr' }}>
+        <ResponsiveContainer width="100%" height={h}>
+          <BarChart data={data} layout="vertical" margin={CHART_MARGIN}>
+            <CartesianGrid {...GRID_PROPS} vertical horizontal={false} />
+            <XAxis type="number" {...xAxisProps(0)} />
+            <YAxis dataKey="name" {...yCategoryProps({ width: 104 })} />
+            <Tooltip {...TOOLTIP_STYLE} formatter={fmt} />
+            <Bar dataKey="value" fill={color} radius={[0, 6, 6, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+function PieBox({ data, fmt }) {
+  const filtered = data.filter((d) => d.value > 0);
+  if (!filtered.length) return <div className="empty-state">אין נתונים לתקופה זו</div>;
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <PieChart>
+        <Pie data={filtered} dataKey="value" nameKey="name" innerRadius={50} outerRadius={75}>
+          {filtered.map((_, i) => <Cell key={i} fill={PIE[i % PIE.length]} />)}
+        </Pie>
+        <Tooltip {...TOOLTIP_STYLE} formatter={fmt} />
+        <Legend wrapperStyle={LEGEND_STYLE} />
+      </PieChart>
+    </ResponsiveContainer>
+  );
+}
+function StackedBox({ title, data, keys }) {
+  return (
+    <div className="card">
+      <div className="section-title" style={{ marginTop: 0 }}>{title}</div>
+      <div style={{ direction: 'ltr' }}>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={data} margin={CHART_MARGIN_ROTATED}>
+            <CartesianGrid {...GRID_PROPS} />
+            <XAxis dataKey="name" {...xAxisProps(data.length, { rotate: data.length > 7 })} />
+            <YAxis {...yAxisProps()} />
+            <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatNumber(v)} />
+            <Legend wrapperStyle={LEGEND_STYLE} />
+            {keys.map((k, i) => <Bar key={k} dataKey={k} stackId="a" fill={PIE[i % PIE.length]} radius={i === keys.length - 1 ? [4, 4, 0, 0] : 0} />)}
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+function NotesCard({ title, text }) {
+  const lines = noteLines(text);
+  if (!lines.length) return null;
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="section-title" style={{ marginTop: 0 }}>{title}</div>
+      <NotesInline text={text} />
+    </div>
+  );
+}
+function NotesInline({ text }) {
+  const lines = noteLines(text);
+  if (!lines.length) return <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8 }}>אין הערות</div>;
+  return <ul style={{ margin: '8px 0 0', paddingInlineStart: 18, fontSize: 13, color: 'var(--text-secondary)', display: 'grid', gap: 4 }}>{lines.map((l, i) => <li key={i}>{l}</li>)}</ul>;
+}
+function StatusBadge({ v }) {
+  const s = displayName(v, '');
+  if (!s) return <span className="badge badge-warn">לא זמין</span>;
+  const ok = ['תקין', 'תואם', 'הושלם', '✓'].some((k) => s.includes(k));
+  const warn = s.includes('חסר') || s.includes('ממתין');
+  return <span className={`badge ${ok ? 'badge-ok' : warn ? 'badge-warn' : 'badge-error'}`}>{s}</span>;
+}
+function CheckBadge({ label, v }) {
+  if (!v) return <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>—</span>;
+  const ok = String(v).includes('תקין');
+  return <span className={`badge ${ok ? 'badge-ok' : 'badge-warn'}`} style={{ fontSize: 11 }}>{label ? `${label}: ` : ''}{v}</span>;
+}
 function Row({ l, v }) {
-  return <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 14 }}><span style={{ color: 'var(--text-secondary)' }}>{l}</span><b>{v}</b></div>;
+  return <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 14 }}><span style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{l}</span><b style={{ textAlign: 'left' }}>{v}</b></div>;
 }
+
+// ------ פונקציות עזר ------
 function num(v) { return Number(v) || 0; }
-function arrToStr(v) {
-  if (Array.isArray(v)) return v.join(', ');
-  try { const p = JSON.parse(v); return Array.isArray(p) ? p.join(', ') : v; } catch { return v; }
+/** Airtable מחזיר שגיאת נוסחה כ-{error:'#ERROR!'} — מנקים לערך ריק כדי לא להציג "[object Object]" */
+function cleanRecord(rec) {
+  if (!rec || typeof rec !== 'object') return rec;
+  const out = {};
+  for (const [k, v] of Object.entries(rec)) out[k] = (v && typeof v === 'object' && !Array.isArray(v) && 'error' in v) ? null : v;
+  return out;
 }
+function pct(part, total) { return total ? `${((num(part) / total) * 100).toFixed(1)}%` : '—'; }
+function countOf(v) { return Array.isArray(v) ? v.length : 0; }
+function idsOf(v) { return Array.isArray(v) ? v.map((x) => (x && typeof x === 'object' ? x.id : x)).filter(Boolean) : []; }
+function hhmm(d) { return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
 function shortDate(d) { if (!d) return ''; const x = new Date(d); return Number.isNaN(x.getTime()) ? String(d).slice(0, 5) : `${x.getDate()}/${x.getMonth() + 1}`; }
+function shortWeek(code) {
+  // 20260830-20260905 → 30/08
+  const m = /^(\d{4})(\d{2})(\d{2})-/.exec(String(code || ''));
+  return m ? `${m[3]}/${m[2]}` : String(code || '?');
+}
+function noteLines(text) {
+  if (!text) return [];
+  if (Array.isArray(text)) return text.map(String).filter(Boolean);
+  return String(text).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+}
 
+/** JSON מ-Airtable; סובלני ל-underscore מוברח (work\_records) שמופיע בנתונים אמיתיים */
+function parseJSON(v) {
+  if (!v) return null;
+  if (typeof v === 'object') return v;
+  const s = String(v).trim();
+  if (!s) return null;
+  try { return JSON.parse(s); } catch { /* ננסה לתקן */ }
+  try { return JSON.parse(s.replace(/\\_/g, '_')); } catch { return null; }
+}
+
+/** JSON לפי ימים מאוחד: days[] {date, cartons, weight, gross_sales_amount, pallets, products[]} */
 function parseDays(json) {
-  if (!json) return [];
-  try {
-    const p = typeof json === 'string' ? JSON.parse(json) : json;
-    const arr = Array.isArray(p.days) ? p.days : (Array.isArray(p) ? p : []);
-    return arr.map((d) => ({
-      date: d.date || d['תאריך'],
-      cartons: d.cartons ?? d['קרטונים'],
-      weight: d.weight ?? d['משקל'],
-      value: d.value ?? d['פדיון'],
-      pallets: d.pallets ?? d['משטחים'],
-    }));
-  } catch { return []; }
+  const p = parseJSON(json);
+  const arr = Array.isArray(p?.days) ? p.days : (Array.isArray(p) ? p : []);
+  return arr.map((d) => ({
+    date: d.date || d['תאריך'],
+    cartons: num(d.cartons ?? d['קרטונים']),
+    weight: num(d.weight ?? d['משקל']),
+    gross: num(d.gross_sales_amount ?? d.value ?? d['פדיון']),
+    pallets: num(d.pallets ?? d['משטחים']),
+    products: (Array.isArray(d.products) ? d.products : []).map((pr) => ({
+      variety: pr.variety || pr['זן'] || 'לא צוין',
+      cartons: num(pr.cartons), weight: num(pr.weight), gross: num(pr.gross_sales_amount ?? pr.value), pallets: num(pr.pallets),
+    })),
+  })).sort((a, b) => String(a.date).localeCompare(String(b.date)));
 }
 
-function parseStructIncome(json) {
-  if (!json) return [];
-  try {
-    const p = typeof json === 'string' ? JSON.parse(json) : json;
-    const arr = Array.isArray(p) ? p : (Array.isArray(p.items) ? p.items : []);
-    return arr.map((x) => ({
-      name: x.structure || x['מבנה'] || x.name || 'מבנה',
-      value: num(x.neto ?? x['נטו'] ?? x.revenue ?? x['הכנסה'] ?? x.value),
-    }));
-  } catch { return []; }
+/** JSON הכנסה לפי מבנים: {weekly_net_income, total_cartons, structures[] {structure, cartons, share, net_income}} */
+function parseIncome(json) {
+  const p = parseJSON(json);
+  if (!p) return null;
+  const arr = Array.isArray(p.structures) ? p.structures : (Array.isArray(p) ? p : []);
+  const structures = arr.map((x) => ({
+    name: x.structure || x['מבנה'] || x.name || 'מבנה',
+    cartons: num(x.cartons), share: num(x.share),
+    net: num(x.net_income ?? x.neto ?? x['נטו'] ?? x.revenue ?? x['הכנסה'] ?? x.value),
+  }));
+  if (!structures.length) return null;
+  return { total: num(p.weekly_net_income) || structures.reduce((s, x) => s + x.net, 0), cartons: num(p.total_cartons) || structures.reduce((s, x) => s + x.cartons, 0), structures };
 }
 
-function parseMapList(json, keys) {
-  if (!json) return [];
-  try {
-    const p = typeof json === 'string' ? JSON.parse(json) : json;
-    const arr = Array.isArray(p) ? p : [];
-    return arr.map((x) => ({
-      name: x.structure || x['מבנה'] || x.name || 'מבנה',
-      value: keys.reduce((s, k) => (x[k] != null ? x[k] : s), x.cartons ?? 0),
-    }));
-  } catch { return []; }
+/** JSON סיכום קטיף לפי מבנים: {total_cartons, structures[] {structure, cartons}} */
+function parseHarvestStruct(json) {
+  const p = parseJSON(json);
+  if (!p) return null;
+  const arr = Array.isArray(p.structures) ? p.structures : (Array.isArray(p) ? p : []);
+  const structures = arr.map((x) => ({ name: x.structure || x['מבנה'] || x.name || 'מבנה', cartons: num(x.cartons ?? x['קרטונים']) }));
+  return structures.length ? { total: num(p.total_cartons) || structures.reduce((s, x) => s + x.cartons, 0), structures } : null;
 }
 
-function parseDaily(json) {
-  if (!json) return { days: [], varieties: [] };
-  try {
-    const p = typeof json === 'string' ? JSON.parse(json) : json;
-    return { days: Array.isArray(p.days) ? p.days : [], varieties: Array.isArray(p.varieties) ? p.varieties : [] };
-  } catch { return { days: [], varieties: [] }; }
+/** JSON ק"ג בפועל לפי ימים ומבנים (סעיף 34) — ללא structure_id / work_records */
+function parseKg(json) {
+  const p = parseJSON(json);
+  const arr = Array.isArray(p?.days) ? p.days : [];
+  if (!arr.length) return null;
+  const days = arr.map((d) => ({
+    date: d.date,
+    allocated_cartons: num(d.allocated_cartons), allocated_weight: num(d.allocated_weight),
+    varieties: (Array.isArray(d.varieties) ? d.varieties : []).map((v) => ({
+      variety: v.variety || 'לא צוין',
+      delivery_cartons: num(v.delivery_cartons), delivery_weight: num(v.delivery_weight),
+      avg: num(v.avg_weight_per_carton),
+      allocated_cartons: num(v.allocated_cartons), allocated_weight: num(v.allocated_weight),
+      structures: (Array.isArray(v.structures) ? v.structures : []).map((st) => ({
+        name: st.structure || st.name || 'מבנה', cartons: num(st.cartons), weight: num(st.actual_weight ?? st.weight),
+      })),
+    })),
+  })).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  return { days };
+}
+
+/** JSON בדיקת התאמה יומית / התאמת קטיף: {status, summary{...}, days[] {date, status, issues[]}} */
+function parseCheck(json) {
+  const p = parseJSON(json);
+  if (!p) return null;
+  return { status: p.status, summary: p.summary || null, days: Array.isArray(p.days) ? p.days : [] };
+}
+
+/** JSON חשבוניות מאוחד: {invoices[]} */
+function parseInvoicesJson(json) {
+  const p = parseJSON(json);
+  return Array.isArray(p?.invoices) ? p.invoices : [];
+}
+
+/** JSON תעודות משלוח מאוחד: {days[] {date, cartons, weight, pallets, source_delivery_records[]}} */
+function parseDeliveriesJson(json) {
+  const p = parseJSON(json);
+  return (Array.isArray(p?.days) ? p.days : []).map((d) => ({
+    date: d.date, cartons: num(d.cartons), weight: num(d.weight), pallets: num(d.pallets),
+    count: Array.isArray(d.source_delivery_records) ? d.source_delivery_records.length : '—',
+  }));
 }

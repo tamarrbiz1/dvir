@@ -16,20 +16,25 @@ export default function DashboardPage() {
   const [invoices, setInvoices] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [structures, setStructures] = useState([]);
+  const [weeks, setWeeks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [year, setYear] = useState(null);
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [i, e, s] = await Promise.all([
+        // "סיכום שבועי" — רק שדות הבקרה הקלים (בלי ה-JSON הכבדים)
+        const weekFields = ['קוד שבוע', 'סטטוס התאמה', 'סטטוס התאמת קטיף', 'שגיאת חישוב קג לפי מבנים'].map(encodeURIComponent).join(',');
+        const [i, e, s, w] = await Promise.all([
           app.api.get('חשבוניות', '?maxRecords=200&raw=1'),
           app.api.get('הוצאות', '?maxRecords=200'),
           app.api.get('מבנים', '?maxRecords=200'),
+          app.api.get('סיכום שבועי', `?maxRecords=200&raw=1&fields=${weekFields}`).catch(() => []),
         ]);
         setInvoices(Array.isArray(i) ? i : []);
         setExpenses(Array.isArray(e) ? e : []);
         setStructures(Array.isArray(s) ? s : []);
+        setWeeks(Array.isArray(w) ? w : []);
       } catch (err) {
         console.error(err);
       } finally {
@@ -130,6 +135,10 @@ export default function DashboardPage() {
           <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
             {filteredInvoices.length} חשבוניות
           </span>
+          {/* פעולה מהירה (סעיף 36): העלאת מסמך ישירות מלוח הבקרה */}
+          <button type="button" className="btn btn-primary" onClick={() => navigate('/upload')} title="העלאת חשבונית / תעודת משלוח / דוח ריסוסים">
+            ⬆️ העלאת מסמך
+          </button>
         </div>
       </div>
 
@@ -185,6 +194,33 @@ export default function DashboardPage() {
           <div className="kpi-footer" style={{ background: 'linear-gradient(135deg,#2878D0,#3D91E8)' }}>ק"ג לאורך זמן</div>
         </div>
       </div>
+
+      {/* ===== בקרת מסמכים — מתוך "סיכום שבועי" (חסרים מסמכים / אי התאמות / שגיאות חישוב) ===== */}
+      {weeks.length > 0 && (() => {
+        const has = (v, k) => String(v || '').includes(k);
+        const missingDocs = weeks.filter((w) => has(w['סטטוס התאמה'], 'חסר')).length;
+        const mismatches = weeks.filter((w) => has(w['סטטוס התאמה'], 'אי התאמה') || has(w['סטטוס התאמת קטיף'], 'אי התאמה')).length;
+        const calcErrors = weeks.filter((w) => w['שגיאת חישוב קג לפי מבנים']).length;
+        const active = missingDocs + mismatches + calcErrors;
+        const cards = [
+          { label: 'התראות פעילות', value: active, icon: '🔔', to: '/alerts', color: active ? 'var(--error)' : 'var(--ok)', bg: 'var(--error-soft)' },
+          { label: 'חסרים מסמכים', value: missingDocs, icon: '📂', to: '/weekly', color: missingDocs ? 'var(--warning)' : 'var(--ok)', bg: 'var(--warning-soft)' },
+          { label: 'אי התאמות', value: mismatches, icon: '⚖️', to: '/alerts', color: mismatches ? 'var(--warning)' : 'var(--ok)', bg: 'var(--warning-soft)' },
+          { label: 'שגיאות חישוב', value: calcErrors, icon: '🧮', to: '/alerts', color: calcErrors ? 'var(--error)' : 'var(--ok)', bg: 'var(--error-soft)' },
+        ];
+        return (
+          <div className="kpi-grid" style={{ marginTop: 14 }}>
+            {cards.map((c) => (
+              <div key={c.label} className="kpi-card" role="button" tabIndex={0} style={{ cursor: 'pointer', padding: '14px 16px' }}
+                onClick={() => navigate(c.to)} onKeyDown={(e) => { if (e.key === 'Enter') navigate(c.to); }} title="פתיחת המסך המתאים">
+                <div className="kpi-top"><div className="kpi-icon" style={{ background: c.bg }}>{c.icon}</div><span className="kpi-label">{c.label}</span></div>
+                <div className="kpi-value" style={{ color: c.color, fontSize: 24 }}>{formatNumber(c.value)}</div>
+                <div className="kpi-sub">שבועות · מתוך {weeks.length}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* ===== שורה 2 — גרפים ===== */}
       <div className="grid-2" style={{ marginTop: 22 }}>

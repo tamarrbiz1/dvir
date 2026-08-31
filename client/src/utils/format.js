@@ -48,6 +48,8 @@ export function formatPercent(ratio) {
 // פורמט תאריך: DD/MM/YYYY
 export function formatDate(value) {
   if (!value) return 'לא זמין';
+  // Airtable מחזיר שגיאת נוסחה כאובייקט {error: '#ERROR!'} — לא תאריך
+  if (typeof value === 'object' && !(value instanceof Date)) return 'לא זמין';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) {
     // ייתכן מחרוזת תאריך — ננסה לפרק

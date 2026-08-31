@@ -117,7 +117,7 @@ const READ_TTL_MS = 30 * 1000;
 const readCache = new Map(); // key -> { at, payload }
 
 function cacheKeyFor(table, query) {
-  const relevant = ['filterByFormula', 'sortField', 'sortDirection', 'maxRecords', 'pageSize', 'raw'];
+  const relevant = ['filterByFormula', 'sortField', 'sortDirection', 'maxRecords', 'pageSize', 'raw', 'fields'];
   return table + '|' + relevant.map((k) => `${k}=${query[k] ?? ''}`).join('&');
 }
 
@@ -173,6 +173,11 @@ app.get('/api/:table', async (req, res) => {
     if (req.query.sortField) opts.sort = [{ field: req.query.sortField, direction: req.query.sortDirection || 'asc' }];
     if (req.query.maxRecords) opts.maxRecords = parseInt(req.query.maxRecords, 10);
     if (req.query.pageSize) opts.pageSize = parseInt(req.query.pageSize, 10);
+    // שדות נבחרים בלבד (fields=a,b,c) — מאפשר לרשימות לוותר על שדות JSON כבדים
+    if (req.query.fields) {
+      const names = String(req.query.fields).split(',').map((f) => f.trim()).filter(Boolean);
+      if (names.length) opts.fields = names;
+    }
     const records = await fetchRecords(table, opts);
 
     // העשרה: שדות מקושרים -> אובייקטים עם שם (אלא אם raw=1)

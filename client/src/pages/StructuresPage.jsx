@@ -9,6 +9,8 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
+import DeliveryNoteDrawer, { CheckBadge } from '../components/DeliveryNoteDrawer.jsx';
+import { DELIVERY_TABLE, noteNumber, noteDate, noteCartons, noteWeight, noteMarketer, noteWeekCode, noteDocument, notesOfStructure } from '../utils/deliveryNotes.js';
 
 const TABS = ['סקירה', 'תוכנית שתילה', 'עבודות', 'קטיפים', 'ריסוסים', 'תפוקה', 'כספים', 'מסמכים'];
 
@@ -141,8 +143,9 @@ function StructureDetails({ structure, api, onClose }) {
       api.get('ריסוסים', '?maxRecords=1500'),
       api.get('תוכניות שתילה', '?maxRecords=500'),
       api.get('חשבוניות', '?maxRecords=200&raw=1'),
+      api.get(DELIVERY_TABLE, '?maxRecords=1000').catch(() => []),
     ])
-      .then(([w, h, s, p, inv]) => {
+      .then(([w, h, s, p, inv, notes]) => {
         const byStruct = (arr, fld) => (Array.isArray(arr) ? arr : []).filter((r) => {
           const v = r[fld];
           if (Array.isArray(v)) return v.some((x) => String(x?.id ?? x) === sid);
@@ -154,6 +157,9 @@ function StructureDetails({ structure, api, onClose }) {
           sprays: byStruct(s, 'מבנה'),
           planting: byStruct(p, 'מבנה'),
           invoices: Array.isArray(inv) ? inv : [],
+          // תעודות משלוח: של המבנה (לטאב "מסמכים") + כל התעודות (לניווט עמוק בתוך הכרטיס)
+          notes: notesOfStructure(Array.isArray(notes) ? notes : [], sid),
+          allNotes: Array.isArray(notes) ? notes : [],
         });
       })
       .catch(() => {})
@@ -193,7 +199,7 @@ function StructureDetails({ structure, api, onClose }) {
           ) : tab === 'כספים' ? (
             <TabFinance works={data.works} invoices={data.invoices} />
           ) : (
-            <div className="empty-state">📄 אין מסמכים שמורים למבנה זה</div>
+            <TabDocuments structure={structure} notes={data.notes || []} allNotes={data.allNotes || []} api={api} />
           )}
         </div>
       </div>
@@ -406,6 +412,72 @@ function TabFinance({ works, invoices }) {
           סך כל חשבוניות הפרויקט. החשבוניות אינן מקושרות לרמת מבנה ספציפי, לכן הפדיון מוצג בטוטאל ואינו מפולח למבנה.
         </div>
       </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
+// טאב "מסמכים" בכרטיס מבנה: תעודות המשלוח המשויכות למבנה (סעיף 11/29).
+// לחיצה על תעודה פותחת את כרטיס התעודה המלא מעל כרטיס המבנה.
+// ------------------------------------------------------------
+function TabDocuments({ structure, notes, allNotes, api }) {
+  const [open, setOpen] = useState(null);
+  const sorted = [...notes].sort((a, b) => new Date(noteDate(b) || 0) - new Date(noteDate(a) || 0));
+  const cartons = notes.reduce((s, n) => s + (noteCartons(n) ?? 0), 0);
+  const weight = notes.reduce((s, n) => s + (noteWeight(n) ?? 0), 0);
+  const sketch = Array.isArray(structure['סקיצה']) && structure['סקיצה'][0];
+
+  return (
+    <div>
+      <div className="card">
+        <div className="section-title" style={{ marginTop: 0 }}>📄 תעודות משלוח</div>
+        {notes.length === 0 ? (
+          <div className="empty-state" style={{ padding: '14px 0' }}>אין תעודות משלוח משויכות למבנה זה</div>
+        ) : (
+          <>
+            <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(3,1fr)' }}>
+              <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>תעודות</span></div><div className="kpi-value" style={{ fontSize: 17 }}>{notes.length}</div></div>
+              <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>קרטונים</span></div><div className="kpi-value" style={{ fontSize: 17, color: 'var(--cartons)' }}>{formatNumber(cartons)}</div></div>
+              <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>משקל</span></div><div className="kpi-value" style={{ fontSize: 17, color: 'var(--weight)' }}>{formatNumber(weight)} ק"ג</div></div>
+            </div>
+            <div className="table-wrap" style={{ marginTop: 12 }}>
+              <table className="data-table compact">
+                <thead><tr><th>מס'</th><th>תאריך</th><th>משווק</th><th>שבוע</th><th>קרטונים</th><th>משקל</th><th>בדיקה</th><th>מסמך</th></tr></thead>
+                <tbody>
+                  {sorted.map((n) => {
+                    const doc = noteDocument(n);
+                    return (
+                      <tr key={n.id} {...activatable(() => setOpen(n), `פתיחת תעודה ${noteNumber(n) ?? ''}`)}>
+                        <td><b>{noteNumber(n) ?? '—'}</b></td>
+                        <td>{noteDate(n) ? formatDate(noteDate(n)) : 'לא זמין'}</td>
+                        <td>{noteMarketer(n)?.name || 'לא זמין'}</td>
+                        <td>{noteWeekCode(n) || '—'}</td>
+                        <td>{noteCartons(n) === null ? 'לא זמין' : formatNumber(noteCartons(n))}</td>
+                        <td>{noteWeight(n) === null ? 'לא זמין' : `${formatNumber(noteWeight(n))} ק"ג`}</td>
+                        <td><CheckBadge note={n} /></td>
+                        <td>{doc ? <a href={doc.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} aria-label={`פתיחת ${doc.filename}`}>📎</a> : <span className="badge badge-warn">חסר</span>}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+
+      {(sketch || (Array.isArray(structure['מצגת 1']) && structure['מצגת 1'].length) || (Array.isArray(structure['מצגת 2']) && structure['מצגת 2'].length)) ? (
+        <div className="card" style={{ marginTop: 14 }}>
+          <div className="section-title" style={{ marginTop: 0 }}>קבצים של המבנה</div>
+          {['סקיצה', 'מצגת 1', 'מצגת 2'].flatMap((f) => (Array.isArray(structure[f]) ? structure[f] : []).map((a, i) => (
+            <div key={`${f}${i}`} style={{ padding: '6px 0', borderBottom: '1px solid var(--border)', fontSize: 14 }}>
+              📎 <a href={a.url} target="_blank" rel="noopener noreferrer">{a.filename || f}</a> <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>({f})</span>
+            </div>
+          )))}
+        </div>
+      ) : null}
+
+      {open && <DeliveryNoteDrawer note={open} notes={allNotes} api={api} onClose={() => setOpen(null)} />}
     </div>
   );
 }

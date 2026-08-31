@@ -5,8 +5,15 @@ import { pick, num } from '../utils/field.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import PageHeader from '../components/PageHeader.jsx';
+import ChecksTab from '../components/ChecksTab.jsx';
+import { CHECKS_TABLE } from '../utils/checks.js';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { DELIVERY_TABLE, notesOfMarketer } from '../utils/deliveryNotes.js';
 
 const TABS = ['סקירה', 'הוצאות', "צ'קים", 'משווקים'];
+// מפתחות ל-URL (?tab=) — כדי שקישור/חזרה יפתחו את הטאב הנכון
+const TAB_KEYS = { overview: 'סקירה', expenses: 'הוצאות', checks: "צ'קים", marketers: 'משווקים' };
+const keyOfTab = (name) => Object.keys(TAB_KEYS).find((k) => TAB_KEYS[k] === name) || 'overview';
 
 export default function FinancePage() {
   const app = useApp();
@@ -15,23 +22,39 @@ export default function FinancePage() {
   const [marketers, setMarketers] = useState([]);
   const [checks, setChecks] = useState([]);
   const [invoices, setInvoices] = useState([]);
+  const [deliveries, setDeliveries] = useState([]); // תעודות משלוח — לכרטיס המשווק (סעיף 27)
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState('סקירה');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [tab, setTabState] = useState(() => TAB_KEYS[searchParams.get('tab')] || 'סקירה');
+  const setTab = (name) => {
+    setTabState(name);
+    const next = new URLSearchParams(searchParams);
+    next.set('tab', keyOfTab(name));
+    setSearchParams(next, { replace: true });
+  };
+
+  // רענון צ'קים אחרי סימון (האיפיון: לקרוא מחדש נתונים תלויים בסיום פעולה)
+  const reloadChecks = async () => {
+    const c = await app.api.get(CHECKS_TABLE, '?maxRecords=300');
+    setChecks(Array.isArray(c) ? c : []);
+  };
 
   useEffect(() => {
     Promise.all([
       app.api.get('סיכום שבועי', '?maxRecords=200'),
       app.api.get('הוצאות', '?maxRecords=400'),
       app.api.get('משווקים', '?maxRecords=100'),
-      app.api.get('צ׳קים', '?maxRecords=300'),
+      app.api.get(CHECKS_TABLE, '?maxRecords=300'),
       app.api.get('חשבוניות', '?maxRecords=400'),
+      app.api.get(DELIVERY_TABLE, '?maxRecords=1000').catch(() => []),
     ])
-      .then(([w, e, s, c, inv]) => {
+      .then(([w, e, s, c, inv, dn]) => {
         setWeekly(Array.isArray(w) ? w : []);
         setExpenses(Array.isArray(e) ? e : []);
         setMarketers(Array.isArray(s) ? s : []);
         setChecks(Array.isArray(c) ? c : []);
         setInvoices(Array.isArray(inv) ? inv : []);
+        setDeliveries(Array.isArray(dn) ? dn : []);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -57,9 +80,9 @@ export default function FinancePage() {
       ) : tab === 'הוצאות' ? (
         <ExpensesTab expenses={expenses} />
       ) : tab === "צ'קים" ? (
-        <ChecksTab checks={checks} />
+        <ChecksTab checks={checks} onRefresh={reloadChecks} />
       ) : (
-        <MarketersTab marketers={marketers} invoices={invoices} />
+        <MarketersTab marketers={marketers} invoices={invoices} deliveries={deliveries} />
       )}
     </div>
   );
@@ -215,77 +238,10 @@ function ExpensesTab({ expenses }) {
   );
 }
 
-// ---------- צ'קים ----------
-function ChecksTab({ checks }) {
-  const [showCancelled, setShowCancelled] = useState(false);
-
-  // לא שולם (כלומר לא מבוטל ולא שולם) ונשאר לפירעון
-  const pending = checks.filter((c) => {
-    const st = String(c['סטטוס'] || '').trim();
-    return st !== 'מבוטל' && !st.includes('שולם');
-  });
-  const cancelled = checks.filter((c) => String(c['סטטוס'] || '').trim() === 'מבוטל');
-  const totalPending = pending.reduce((s, c) => s + (Number(c["סכום צ'ק"]) || 0), 0);
-
-  // חלונות לפירעון — סכום צ'קים שתאריך פירעונם נופל החל מהיום
-  const sumDueBy = (endMs) =>
-    pending
-      .filter((c) => {
-        const t = new Date(c['תאריך פירעון']).getTime();
-        if (Number.isNaN(t)) return false;
-        const now = new Date();
-        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-        return t >= start && t <= endMs;
-      })
-      .reduce((s, c) => s + (Number(c["סכום צ'ק"]) || 0), 0);
-
-  const dueWeek = sumDueBy(new Date(new Date().getTime() + 7 * 24 * 3600 * 1000).getTime());
-  const endMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0, 23, 59, 59);
-  const dueMonth = sumDueBy(endMonth.getTime());
-
-  const visible = checks.filter((c) => (showCancelled ? true : String(c['סטטוס'] || '').toLowerCase().trim() !== 'מבוטל'));
-
-  return (
-    <div>
-      <div className="kpi-grid">
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>📅</div><span className="kpi-label">לפירעון השבוע</span></div><div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(dueWeek)}</div></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>🗓️</div><span className="kpi-label">לפירעון החודש</span></div><div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(dueMonth)}</div></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>🏦</div><span className="kpi-label">סכום לפירעון</span></div><div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(totalPending)}</div></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--error-soft)' }}>❌</div><span className="kpi-label">מבוטלים</span></div><div className="kpi-value" style={{ color: 'var(--error)' }}>{cancelled.length}</div></div>
-      </div>
-
-      <div className="card" style={{ marginTop: 18 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>רשימת צ'קים</div>
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
-            <input type="checkbox" checked={showCancelled} onChange={(e) => setShowCancelled(e.target.checked)} />
-            הצג מבוטלים
-          </label>
-        </div>
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead><tr><th>מוטב</th><th>סכום</th><th>תאריך פירעון</th><th>ספק</th><th>סטטוס</th></tr></thead>
-            <tbody>
-              {visible.slice(0, 40).map((c) => (
-                <tr key={c.id}>
-                  <td>{c['מוטב'] || c["שם בעל הצ'ק"] || 'לא זמין'}</td>
-                  <td>{formatMoney(c["סכום צ'ק"])}</td>
-                  <td>{formatDate(c['תאריך פירעון'])}</td>
-                  <td>{Array.isArray(c['ספק']) ? c['ספק'][0] : (c['ספק'] || '—')}</td>
-                  <td><span className={`badge ${String(c['סטטוס'] || '').trim() === 'מבוטל' ? 'badge-error' : 'badge-ok'}`}>{c['סטטוס'] || 'לא זמין'}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ---------- משווקים ----------
-function MarketersTab({ marketers, invoices }) {
+function MarketersTab({ marketers, invoices, deliveries = [] }) {
   const [active, setActive] = useState(null);
+  const navigate = useNavigate();
 
   // סכום נטו של חשבונית לפי id (מתאימות למזהים שמוחזרים ב-`חשבוניות` של המשווק)
   const invById = useMemo(() => {
@@ -342,7 +298,12 @@ function MarketersTab({ marketers, invoices }) {
             </div>
             <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 13 }}>
               <div><span className="kpi-label">חשבוניות</span><div className="kpi-value" style={{ fontSize: 18 }}>{invoiceCount}</div></div>
+              <div><span className="kpi-label">תעודות משלוח</span><div className="kpi-value" style={{ fontSize: 18, color: 'var(--docs)' }}>{notesOfMarketer(deliveries, mk.id).length}</div></div>
               <div><span className="kpi-label">פדיון בתקופה</span><div className="kpi-value" style={{ fontSize: 18, color: 'var(--revenue)' }}>{formatMoney(revenue)}</div></div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); navigate(`/delivery-notes?marketer=${encodeURIComponent(mk.id)}`); }}>📄 תעודות משלוח</button>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); navigate('/invoices'); }}>🧾 חשבוניות</button>
             </div>
             {count === 0 && invoiceCount > 0 && (
               <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>

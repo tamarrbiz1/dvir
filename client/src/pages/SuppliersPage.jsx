@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatMoney, formatDate, safeValue } from '../utils/format.js';
 import { pick, num } from '../utils/field.js';
@@ -6,6 +7,8 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
+import { CHECKS_TABLE, CHECK_FIELDS, checkBelongsToSupplier, checkNumber, checkPayee, sortByDue } from '../utils/checks.js';
+import { StatusBadge } from '../components/ChecksTab.jsx';
 
 // ============================================================
 // ספקים (סעיף 24)
@@ -21,12 +24,31 @@ export default function SuppliersPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [drawer, setDrawer] = useState(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+
+  // קישור עמוק: /suppliers?supplier=<id> פותח את כרטיס הספק (למשל מצ'ק)
+  useEffect(() => {
+    const id = searchParams.get('supplier');
+    if (!id || !items.length) return;
+    const found = items.find((x) => x.id === id);
+    if (found) setDrawer(found);
+  }, [items, searchParams]);
+
+  const closeDrawer = () => {
+    setDrawer(null);
+    if (searchParams.has('supplier')) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('supplier');
+      setSearchParams(next, { replace: true });
+    }
+  };
 
   useEffect(() => {
     Promise.all([
       app.api.get('ספקים', '?maxRecords=200'),
       app.api.get('הוצאות', '?maxRecords=400'),
-      app.api.get('צ׳קים', '?maxRecords=300'),
+      app.api.get(CHECKS_TABLE, '?maxRecords=300'),
     ])
       .then(([s, e, c]) => {
         setItems(Array.isArray(s) ? s : []);
@@ -48,11 +70,7 @@ export default function SuppliersPage() {
     return false;
   });
 
-  const supplierChecks = (id) => checks.filter((c) => {
-    const ref = c['ספק'];
-    if (Array.isArray(ref)) return ref.some((x) => String(x?.id ?? x) === id);
-    return false;
-  });
+  const supplierChecks = (id) => sortByDue(checks.filter((c) => checkBelongsToSupplier(c, id)));
 
   return (
     <div>
@@ -81,14 +99,15 @@ export default function SuppliersPage() {
           supplier={drawer}
           expenses={supplierExpenses(drawer.id)}
           checks={supplierChecks(drawer.id)}
-          onClose={() => setDrawer(null)}
+          onClose={closeDrawer}
+          onAllChecks={() => navigate(`/finance?tab=checks&supplier=${encodeURIComponent(drawer['שם ספק'] || '')}`)}
         />
       )}
     </div>
   );
 }
 
-function SupplierDrawer({ supplier, expenses, checks, onClose }) {
+function SupplierDrawer({ supplier, expenses, checks, onClose, onAllChecks }) {
   useEscapeClose(onClose); // סגירה במקש Escape
   const [tab, setTab] = useState('פרטים');
 
@@ -109,7 +128,7 @@ function SupplierDrawer({ supplier, expenses, checks, onClose }) {
         <div className="drawer-body">
           {tab === 'פרטים' && <DetailsTab s={supplier} />}
           {tab === 'הוצאות' && <ExpensesTab list={expenses} />}
-          {tab === "צ'קים" && <ChecksTab list={checks} />}
+          {tab === "צ'קים" && <ChecksTab list={checks} onAllChecks={onAllChecks} />}
           {tab === 'מלאי קשור' && <div className="empty-state">מידע מלאי קשור יוצג בעתיד</div>}
         </div>
       </div>
@@ -166,22 +185,36 @@ function ExpensesTab({ list }) {
   );
 }
 
-function ChecksTab({ list }) {
+function ChecksTab({ list, onAllChecks }) {
   if (!list.length) return <div className="empty-state">אין צ'קים רשומים לספק זה</div>;
+  const total = list.reduce((s, c) => s + (Number(pick(c, CHECK_FIELDS.amount)) || 0), 0);
   return (
-    <div className="table-wrap">
-      <table className="data-table">
-        <thead><tr><th>סכום</th><th>תאריך פירעון</th><th>סטטוס</th></tr></thead>
-        <tbody>
-          {list.map((c) => (
-            <tr key={c.id}>
-              <td>{formatMoney(c["סכום צ'ק"])}</td>
-              <td>{formatDate(c['תאריך פירעון'])}</td>
-              <td><span className={`badge ${String(c['סטטוס'] || '').trim() === 'מבוטל' ? 'badge-error' : 'badge-ok'}`}>{c['סטטוס'] || 'לא זמין'}</span></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div>
+      <div className="kpi-card" style={{ marginBottom: 14, padding: '14px 14px 0' }}>
+        <div className="kpi-top"><span className="kpi-label">סה"כ צ'קים ({list.length})</span></div>
+        <div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(total)}</div>
+      </div>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>מס׳</th><th>מוטב</th><th>סכום</th><th>תאריך פירעון</th><th>סטטוס</th></tr></thead>
+          <tbody>
+            {list.map((c) => (
+              <tr key={c.id}>
+                <td>{checkNumber(c) ?? '—'}</td>
+                <td>{checkPayee(c) || 'לא זמין'}</td>
+                <td style={{ fontWeight: 700 }}>{formatMoney(pick(c, CHECK_FIELDS.amount))}</td>
+                <td>{formatDate(pick(c, CHECK_FIELDS.due))}</td>
+                <td><StatusBadge check={c} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {onAllChecks && (
+        <div style={{ textAlign: 'center', marginTop: 12 }}>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onAllChecks}>כל הצ'קים של הספק במסך כספים ←</button>
+        </div>
+      )}
     </div>
   );
 }
