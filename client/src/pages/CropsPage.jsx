@@ -422,7 +422,6 @@ function QuarterlyTab({ quarterly, crops, api, canEdit, onChanged }) {
               </tbody>
             </table>
           </div>
-          <div className="hint">הערך: ק"ג לדונם לשבוע — משמש לחישוב התחזית.</div>
         </div>
       )}
       {form !== null && (
@@ -665,11 +664,6 @@ function PriceEditModal({ row, api, onClose, onSaved }) {
           {cropIcon(row.crop)} {row.crop} · {row.structure} · שבוע {formatDate(row.start)}
         </div>
         {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12 }}>⚠️ {error}</div>}
-        {row.priceUpdated == null && row.priceSuggested != null && (
-          <div className="hint" style={{ marginBottom: 10, marginTop: 0 }}>
-            הוצע כברירת מחדל: המחיר המשוער {formatMoney(row.priceSuggested)} — ניתן לעריכה.
-          </div>
-        )}
         <form onSubmit={submit}>
           <div className="form-group"><label>מחיר לק"ג (₪)</label>
             <input type="number" step="any" min="0" className="input" style={{ width: '100%' }} autoFocus

@@ -776,7 +776,7 @@ export default function PlantingPlanPage() {
               margin: '0 20px 10px', padding: '8px 12px', borderRadius: 8, fontSize: 12,
               background: 'var(--docs-soft)', color: 'var(--text-secondary)',
             }}>
-              ℹ️ חלק מהתוכניות של {year} חוצות שנה — הן מוצגות לפי טווח התאריכים האמיתי שלהן.
+              חלק מהתוכניות של {year} נמשכות אל השנה הבאה ומוצגות במלואן.
             </div>
           )}
 
@@ -879,6 +879,16 @@ export default function PlantingPlanPage() {
           info={planInfo(planDrawer)}
           forecasts={forecasts.filter((f) => firstId(f['תוכנית שתילה']) === planDrawer.id)}
           periods={periods.filter((p) => firstId(p['תוכנית שתילה']) === planDrawer.id)}
+          onDeletePeriod={async (p) => {
+            const yes = await confirmDialog({
+              title: 'מחיקת תקופה',
+              message: 'הפריט ימחק ולא יינתן לשחזור.\nהאם אתה בטוח שברצונך לבצע פעולה זו?',
+              confirmLabel: 'מחק', danger: true,
+            });
+            if (!yes) return;
+            const ok = await runAction(() => app.api.remove('תקופות תוכנית', p.id));
+            if (ok) toast('התקופה נמחקה בהצלחה');
+          }}
           busy={busy}
           error={actionError}
           onClose={() => setPlanDrawer(null)}
@@ -1174,7 +1184,7 @@ function CalendarGrid({ days, leadingBlanks, tall, eventsOnDate, nonWorkByKey, o
 // ============================================================
 // כרטיס תוכנית (סעיפים 14–15)
 // ============================================================
-function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate }) {
+function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate, onDeletePeriod }) {
   useEscapeClose(onClose, !busy); // סגירה במקש Escape
   const pairs = [
     ['תחילת שתילה', 'תחילת שתילה מקורית', 'תחילת שתילה מעודכנת'],
@@ -1274,7 +1284,7 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
             ) : (
               <div className="table-wrap">
                 <table className="data-table">
-                  <thead><tr><th>סטטוס</th><th>מתאריך</th><th>עד תאריך</th><th>מקור</th></tr></thead>
+                  <thead><tr><th>סטטוס</th><th>מתאריך</th><th>עד תאריך</th><th>מקור</th><th className="no-print" /></tr></thead>
                   <tbody>
                     {[...periods]
                       .sort((a, b) => String(a['מתאריך']).localeCompare(String(b['מתאריך'])))
@@ -1294,6 +1304,11 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
                               {p['מקור'] === 'שינוי ידני'
                                 ? <span className="badge badge-warn">ידני</span>
                                 : (p['מקור'] || 'לא זמין')}
+                            </td>
+                            <td className="no-print">
+                              <button className="btn btn-sm btn-ghost" aria-label="מחיקת התקופה" title="מחיקת התקופה"
+                                style={{ color: 'var(--error)' }} disabled={busy}
+                                onClick={() => onDeletePeriod(p)}>🗑</button>
                             </td>
                           </tr>
                         );
@@ -2049,7 +2064,7 @@ function PlanSheet({
 
       {planRows.length === 0 && (
         <div style={{ margin: '10px 20px 0', padding: '8px 12px', borderRadius: 8, fontSize: 12, background: 'var(--warning-soft)', color: 'var(--text-secondary)' }}>
-          ℹ️ אין תוכניות שתילה עם תאריכים לשנה {year} (או לפילטרים שנבחרו). הגיליון מציג את המבנים והשבועות בלבד.
+          אין תוכניות שתילה לשנה {year}. הגיליון מציג את המבנים והשבועות בלבד.
         </div>
       )}
 

@@ -140,7 +140,8 @@ export default function PricingPage() {
           </div>
         </>
       ) : (
-        <StructurePricingTable items={pricingByStruct} structName={structName} pricingName={pricingName} />
+        <StructurePricingTable items={pricingByStruct} structName={structName} pricingName={pricingName}
+          canEdit={canEdit} api={app.api} structures={structures} pricing={pricing} onChanged={reload} />
       )}
 
       {form !== null && (
@@ -160,9 +161,26 @@ export default function PricingPage() {
 // ============================================================
 // תמחור לפי מבנים — טבלה + Drawer גיאומטרי
 // ============================================================
-function StructurePricingTable({ items, structName, pricingName }) {
+function StructurePricingTable({ items, structName, pricingName, canEdit, api, structures, pricing, onChanged }) {
   const [drawer, setDrawer] = useState(null);
   const [geom, setGeom] = useState(null); // המבנה לגיאומטריה
+  const [addForm, setAddForm] = useState(null); // {structure, price}
+  const [saving, setSaving] = useState(false);
+  const [addError, setAddError] = useState('');
+
+  const saveLink = async () => {
+    if (saving || !addForm?.structure || !addForm?.price) { setAddError('יש לבחור מבנה ותמחור'); return; }
+    setSaving(true); setAddError('');
+    try {
+      await api.create('תמחור עבודות לפי מבנים', { 'מבנים': [addForm.structure], 'תמחור עבודות': [addForm.price] });
+      setAddForm(null);
+      await onChanged();
+      toast('השיוך נשמר בהצלחה');
+    } catch (e) {
+      setAddError(`לא ניתן היה להשלים את הפעולה. הנתונים לא עודכנו. (${e.message || e})`);
+    }
+    setSaving(false);
+  };
 
   const open = (row) => {
     setDrawer(row);
@@ -175,10 +193,15 @@ function StructurePricingTable({ items, structName, pricingName }) {
 
   return (
     <div>
+      {canEdit && (
+        <div style={{ marginBottom: 14 }}>
+          <button className="btn btn-primary no-print" onClick={() => { setAddError(''); setAddForm({ structure: '', price: '' }); }}>+ שיוך תמחור למבנה</button>
+        </div>
+      )}
       <div className="card">
         <div className="table-wrap">
           <table className="data-table">
-            <thead><tr><th>מבנה</th><th>תמחור עבודה</th><th>יחידת תמחור</th><th>מחיר</th><th>מחיר לגמלון ראשון</th></tr></thead>
+            <thead><tr><th>מבנה</th><th>תמחור עבודה</th><th>יחידת תמחור</th><th>מחיר</th><th>מחיר לגמלון ראשון</th>{canEdit && <th className="no-print" />}</tr></thead>
             <tbody>
               {items.map((r) => (
                 <tr key={r.id} onClick={() => open(r)} style={{ cursor: 'pointer' }}>
@@ -187,12 +210,43 @@ function StructurePricingTable({ items, structName, pricingName }) {
                   <td>{safeValue(r['יחידת תמחור'])}</td>
                   <td>{r['מחיר'] != null ? `${formatNumber(r['מחיר'])} ₪` : 'לא זמין'}</td>
                   <td>{r['מחיר לגמלון ראשון'] != null ? `${formatNumber(r['מחיר לגמלון ראשון'])} ₪` : '—'}</td>
+                  {canEdit && (
+                    <td className="no-print" onClick={(e) => e.stopPropagation()}>
+                      <button className="btn btn-sm btn-ghost" aria-label="מחיקת השיוך" title="מחיקת השיוך" style={{ color: 'var(--error)' }}
+                        onClick={async () => {
+                          if (await removeRecord(api, 'תמחור עבודות לפי מבנים', r.id, 'שיוך התמחור')) await onChanged();
+                        }}>🗑</button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </div>
+
+      {addForm && (
+        <div className="modal-overlay" onClick={() => !saving && setAddForm(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>שיוך תמחור למבנה</h3>
+            {addError && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12 }}>⚠️ {addError}</div>}
+            <div className="form-group"><label className="required">מבנה</label>
+              <select className="select" style={{ width: '100%' }} value={addForm.structure} onChange={(e) => setAddForm({ ...addForm, structure: e.target.value })}>
+                <option value="">בחר מבנה...</option>
+                {structures.map((st) => <option key={st.id} value={st.id}>{st['מספר מבנה'] || st['סוג מבנה'] || st.id}</option>)}
+              </select></div>
+            <div className="form-group"><label className="required">תמחור עבודה</label>
+              <select className="select" style={{ width: '100%' }} value={addForm.price} onChange={(e) => setAddForm({ ...addForm, price: e.target.value })}>
+                <option value="">בחר תמחור...</option>
+                {pricing.map((pr) => <option key={pr.id} value={pr.id}>{[pr['סוג עבודה'], pr['זן'], pr['מחיר'] != null ? `₪${pr['מחיר']}` : null].filter(Boolean).join(' · ')}</option>)}
+              </select></div>
+            <div className="form-actions">
+              <button type="button" className="btn btn-ghost" disabled={saving} onClick={() => setAddForm(null)}>ביטול</button>
+              <button type="button" className="btn btn-primary" disabled={saving} onClick={saveLink}>{saving ? 'שומר...' : 'שמור שיוך'}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {drawer && (
         <div className="drawer-overlay" onClick={() => setDrawer(null)}>

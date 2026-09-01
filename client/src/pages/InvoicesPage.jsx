@@ -396,7 +396,7 @@ export default function InvoicesPage() {
       </div>
 
       {kpi.missingDoc > 0 && !loading && (
-        <div className="hint no-print">ℹ️ {formatNumber(kpi.missingDoc)} חשבוניות ללא קובץ מצורף — ניתן להשלים דרך מסך <button type="button" className="crumb-link" onClick={() => navigate('/upload')}>העלאת מסמך</button>.</div>
+        <div className="hint no-print">{formatNumber(kpi.missingDoc)} חשבוניות ללא קובץ מצורף — <button type="button" className="crumb-link" onClick={() => navigate('/upload')}>העלאת מסמך</button></div>
       )}
 
       {drawer && (
