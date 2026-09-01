@@ -33,6 +33,33 @@ export const REQUEST_TYPES = {
   partial: 'חופש לחלק מהיום',
 };
 
+// בקשת "עדכון תאריך עבודה": רשימת סוגי הבקשה ב-Airtable סגורה,
+// לכן הסוג מסומן בתחילת "הערות עובד" ותוקף האישור נשמר ב"עד שעה" (ISO)
+export const DATE_CHANGE_MARK = '[עדכון תאריך]';
+
+export const isDateChangeReq = (r) =>
+  String(r?.[REQUEST_FIELDS.workerNotes] || '').startsWith(DATE_CHANGE_MARK);
+
+/** הערות העובד לתצוגה — בלי הסימון הטכני */
+export const workerNotesOf = (r) =>
+  String(r?.[REQUEST_FIELDS.workerNotes] || '').replace(DATE_CHANGE_MARK, '').trim();
+
+/** תוקף אישור שינוי-תאריך (Date) או null כשאין הגבלה */
+export function approvalExpiry(r) {
+  if (!isDateChangeReq(r)) return null;
+  const raw = String(r?.[REQUEST_FIELDS.to] || '').trim();
+  if (!raw) return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** האם אישור הזנת עבודה עדיין בתוקף */
+export function approvalValid(r) {
+  if (!r?.[REQUEST_FIELDS.allowsWork]) return false;
+  const exp = approvalExpiry(r);
+  return !exp || exp.getTime() > Date.now();
+}
+
 /** צבע + טקסט לפי האיפיון: ממתין כתום · אושר ירוק · לא אושר אדום */
 export function statusStyle(status) {
   if (status === REQUEST_STATUS.approved) return { color: 'var(--ok)', soft: 'var(--ok-soft)', icon: '✓' };

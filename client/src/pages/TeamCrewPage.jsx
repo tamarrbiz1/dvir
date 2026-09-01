@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { t, monthShort } from '../i18n.js';
 import { useApp } from '../App.jsx';
 import { activatable } from '../utils/a11y.js';
+import { useAutoRefresh } from '../utils/live.js';
 import { formatMoney, formatNumber } from '../utils/format.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps, yCategoryProps } from '../utils/chart.js';
@@ -22,18 +24,18 @@ export default function TeamCrewPage() {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
 
-  useEffect(() => {
-    Promise.all([
-      app.api.get('עובדים', '?maxRecords=300'),
-      app.api.get('עבודות עובדים', '?maxRecords=3000'),
-    ])
-      .then(([w, r]) => {
-        setWorkers(Array.isArray(w) ? w : []);
-        setRecords(Array.isArray(r) ? r : []);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  const load = useCallback(() => Promise.all([
+    app.api.get('עובדים', '?maxRecords=300'),
+    app.api.get('עבודות עובדים', '?maxRecords=3000'),
+  ])
+    .then(([w, r]) => {
+      setWorkers(Array.isArray(w) ? w : []);
+      setRecords(Array.isArray(r) ? r : []);
+    })
+    .catch(() => {}), [app.api]);
+
+  useEffect(() => { load().finally(() => setLoading(false)); }, [load]);
+  useAutoRefresh(load); // עדכון ממקום אחר מופיע בלי רענון ידני
 
   // סינון לפי שנה/חודש/טווח
   const filtered = useMemo(() => records.filter((r) => {
@@ -81,7 +83,7 @@ export default function TeamCrewPage() {
     filtered.forEach((r) => {
       const d = new Date(r['תאריך']);
       if (Number.isNaN(d.getTime())) return;
-      const label = `${MONTHS[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`;
+      const label = `${monthShort(d.getMonth())} ${String(d.getFullYear()).slice(2)}`;
       const ref = r['עובד'];
       let wId = Array.isArray(ref) ? (ref[0]?.id ?? ref[0]) : ref;
       const w = workers.find((x) => String(x.id) === String(wId));
@@ -122,10 +124,10 @@ export default function TeamCrewPage() {
   }, [filtered]);
 
   const kpis = [
-    { icon: '👷', label: 'עובדים פעילים', value: formatNumber(activeWorkers.filter((w) => workerRecs(w).length > 0 || w['סטטוס'] === 'פעיל').length), color: 'var(--workers)' },
-    { icon: '⏱️', label: 'סה"כ שעות', value: formatNumber(sumHours), color: 'var(--hours)' },
-    { icon: '💰', label: 'סה"כ תשלום לעובדים', value: formatMoney(sumPaid), color: 'var(--revenue)' },
-    { icon: '📈', label: 'ממוצע תשלום לעובד', value: formatMoney(avgPerWorker), color: 'var(--profit)' },
+    { icon: '👷', label: t('m_activeWorkers'), value: formatNumber(activeWorkers.filter((w) => workerRecs(w).length > 0 || w['סטטוס'] === 'פעיל').length), color: 'var(--workers)' },
+    { icon: '⏱️', label: t('m_totalHours'), value: formatNumber(sumHours), color: 'var(--hours)' },
+    { icon: '💰', label: t('m_totalPay'), value: formatMoney(sumPaid), color: 'var(--revenue)' },
+    { icon: '📈', label: t('m_avgPay'), value: formatMoney(avgPerWorker), color: 'var(--profit)' },
   ];
 
   return (
@@ -135,20 +137,20 @@ export default function TeamCrewPage() {
       {/* פילטרים */}
       <div className="card" style={{ marginBottom: 18 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'end' }}>
-          <div className="form-group"><label>שנה</label>
+          <div className="form-group"><label>{t('c_year')}</label>
             <select className="select" value={year} onChange={(e) => setYear(Number(e.target.value))}>
               {[2025, 2026, 2027, 2028].map((y) => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
-          <div className="form-group"><label>חודש</label>
+          <div className="form-group"><label>{t('c_month')}</label>
             <select className="select" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
-              <option value={0}>הכל</option>
-              {MONTHS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+              <option value={0}>{t('c_all')}</option>
+              {MONTHS.map((_, i) => <option key={i} value={i + 1}>{monthShort(i)}</option>)}
             </select>
           </div>
-          <div className="form-group"><label>מתאריך</label><input type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
-          <div className="form-group"><label>עד תאריך</label><input type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} /></div>
-          <button className="btn btn-ghost" onClick={() => { setYear(now.getFullYear()); setMonth(now.getMonth() + 1); setFrom(''); setTo(''); }}>איפוס</button>
+          <div className="form-group"><label>{t('c_from')}</label><input type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+          <div className="form-group"><label>{t('c_to')}</label><input type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+          <button className="btn btn-ghost" onClick={() => { setYear(now.getFullYear()); setMonth(now.getMonth() + 1); setFrom(''); setTo(''); }}>{t('c_reset')}</button>
         </div>
       </div>
 
@@ -172,19 +174,19 @@ export default function TeamCrewPage() {
               <div key={w.id} className="card clickable" {...activatable(() => navigate('/workers', { state: { openWorkerId: w.id } }), `פתיחת כרטיס העובד ${w.name}`)}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>👤 {w.name}</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, fontSize: 13 }}>
-                  <div><span style={{ color: 'var(--text-muted)' }}>שעות: </span><b>{formatNumber(w.hours)}</b></div>
-                  <div><span style={{ color: 'var(--text-muted)' }}>עבודות: </span><b>{w.jobs}</b></div>
-                  <div style={{ gridColumn: '1 / -1' }}><span style={{ color: 'var(--text-muted)' }}>הכנסה: </span><b style={{ color: 'var(--revenue)' }}>{formatMoney(w.paid)}</b></div>
+                  <div><span style={{ color: 'var(--text-muted)' }}>{t('w_hours')}: </span><b>{formatNumber(w.hours)}</b></div>
+                  <div><span style={{ color: 'var(--text-muted)' }}>{t('m_jobs')}: </span><b>{w.jobs}</b></div>
+                  <div style={{ gridColumn: '1 / -1' }}><span style={{ color: 'var(--text-muted)' }}>{t('m_income')}: </span><b style={{ color: 'var(--revenue)' }}>{formatMoney(w.paid)}</b></div>
                 </div>
               </div>
             ))}
-            {perWorker.length === 0 && <div className="empty-state" style={{ gridColumn: '1 / -1' }}>אין נתונים לתקופה זו</div>}
+            {perWorker.length === 0 && <div className="empty-state" style={{ gridColumn: '1 / -1' }}>{t('c_noData')}</div>}
           </div>
 
           {/* גרף 1: משכורת לפי עובד (Horizontal) */}
           {salaryByWorker.length > 0 && (
             <div className="card" style={{ marginTop: 20 }}>
-              <div className="section-title" style={{ marginTop: 0 }}>משכורת לפי עובד</div>
+              <div className="section-title" style={{ marginTop: 0 }}>{t('m_cSalaryWorker')}</div>
               <div style={{ direction: 'ltr' }}>
                 <ResponsiveContainer width="100%" height={Math.max(180, salaryByWorker.length * 42)}>
                   <BarChart data={salaryByWorker} layout="vertical" margin={CHART_MARGIN}>
@@ -202,7 +204,7 @@ export default function TeamCrewPage() {
           {/* גרף 2: משכורות עובדים לאורך זמן */}
           {salaryOverTime.length > 0 && (
             <div className="card" style={{ marginTop: 20 }}>
-              <div className="section-title" style={{ marginTop: 0 }}>משכורות עובדים לאורך זמן</div>
+              <div className="section-title" style={{ marginTop: 0 }}>{t('m_cSalaryTime')}</div>
               <div style={{ direction: 'ltr' }}>
                 <ResponsiveContainer width="100%" height={260}>
                   <BarChart data={salaryOverTime} margin={CHART_MARGIN_ROTATED}>
@@ -223,7 +225,7 @@ export default function TeamCrewPage() {
           {/* גרף 3: שעות לפי עובד */}
           {hoursByWorker.length > 0 && (
             <div className="card" style={{ marginTop: 20 }}>
-              <div className="section-title" style={{ marginTop: 0 }}>שעות עבודה לפי עובד</div>
+              <div className="section-title" style={{ marginTop: 0 }}>{t('m_cHoursWorker')}</div>
               <div style={{ direction: 'ltr' }}>
                 <ResponsiveContainer width="100%" height={240}>
                   <BarChart data={hoursByWorker} margin={CHART_MARGIN_ROTATED}>
@@ -241,7 +243,7 @@ export default function TeamCrewPage() {
           {/* גרף 4: עלות לפי סוג עבודה */}
           {costByType.length > 0 && (
             <div className="card" style={{ marginTop: 20 }}>
-              <div className="section-title" style={{ marginTop: 0 }}>עלות לפי סוג עבודה</div>
+              <div className="section-title" style={{ marginTop: 0 }}>{t('m_cCostType')}</div>
               <div style={{ direction: 'ltr' }}>
                 <ResponsiveContainer width="100%" height={240}>
                   <BarChart data={costByType} margin={CHART_MARGIN_ROTATED}>
@@ -259,7 +261,7 @@ export default function TeamCrewPage() {
           {/* גרף 5: עלות עובדים לפי מבנה */}
           {costByStructure.length > 0 && (
             <div className="card" style={{ marginTop: 20 }}>
-              <div className="section-title" style={{ marginTop: 0 }}>עלות עובדים לפי מבנה</div>
+              <div className="section-title" style={{ marginTop: 0 }}>{t('m_cCostStruct')}</div>
               <div style={{ direction: 'ltr' }}>
                 <ResponsiveContainer width="100%" height={240}>
                   <BarChart data={costByStructure} margin={CHART_MARGIN_ROTATED}>

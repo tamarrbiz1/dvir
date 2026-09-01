@@ -20,36 +20,28 @@ export default function LoginPage() {
     setError('');
   }, [role]);
 
+  // האימות והתפקיד נקבעים בצד השרת מטבלת ההרשאות (מקור האמת לתפקיד)
   const handleOwnerManager = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
     try {
-      const r = await fetch('/api/הרשאת מנהל?maxRecords=500');
+      const r = await fetch('/api/admin-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, code }),
+      });
       const data = await r.json();
-      const list = Array.isArray(data) ? data : [];
-      const norm = (s) => String(s || '').trim().toLowerCase();
-
-      const found = list.find((u) => norm(u['מייל']) === norm(email));
-      if (!found) {
-        setError('לא נמצא משתמש עם מייל זה במערכת');
+      if (!r.ok) {
+        setError(data?.error || 'ההתחברות נכשלה');
         setLoading(false);
         return;
       }
-      // אימות קוד אישי
-      if (norm(found['קוד אישי']) !== norm(code)) {
-        setError('הקוד האישי שגוי');
-        setLoading(false);
-        return;
-      }
-      const type = String(found['סוג'] || 'owner').trim().toLowerCase();
-      // "מנהל ראשי" = בעל העסק (גישה מלאה); רק "מנהל עבודה" מקבל תפקיד מצומצם
-      const isManager = type.includes('עבודה') || type === 'manager';
       login({
-        role: isManager ? 'manager' : 'owner',
-        name: found['Name'] || 'משתמש',
-        email: found['מייל'],
-        record: found,
+        role: data.role,
+        name: data.name,
+        email: data.email,
+        record: { 'מייל': data.email, 'סוג': data.type, Name: data.name },
         source: 'admin',
       });
     } catch (err) {

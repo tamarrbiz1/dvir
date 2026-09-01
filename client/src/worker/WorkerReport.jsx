@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react';
 import { t } from '../i18n.js';
 
-export default function WorkerReport({ api, worker, approvedDate = null, onDone }) {
+export default function WorkerReport({ api, worker, approvedDate = null, onDone, onAskDateChange }) {
   const [structures, setStructures] = useState([]);
   const [pricing, setPricing] = useState([]);
   // כלל סופי באיפיון: תאריך העבודה הוא תמיד היום ואינו ניתן לעריכה —
@@ -79,7 +79,7 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone 
       setAmount(''); setNotes(''); setStartTime(''); setEndTime(''); setWorkType('');
       setTimeout(() => setSuccess(false), 4000);
     } catch (err) {
-      setError(err.message || 'שגיאה בשמירת העבודה');
+      setError(err.message || t('w_saveError'));
     }
     setSaving(false);
   };
@@ -100,6 +100,11 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone 
           <div style={{ fontSize: 12, color: approvedDate ? 'var(--ok)' : 'var(--text-muted)', marginTop: 4 }}>
             {approvedDate ? `✓ ${t('w_dateApproved')}` : t('w_dateLocked')}
           </div>
+          {!approvedDate && onAskDateChange && (
+            <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={onAskDateChange}>
+              🔓 {t('w_askDateChange')}
+            </button>
+          )}
         </div>
 
         <div className="form-group">

@@ -146,6 +146,52 @@ export default function App() {
       .finally(() => setLoadingTables(false));
   }, []);
 
+  // סנכרון תפקיד חי מול מקור האמת (טבלת ההרשאות / העובדים):
+  // שינוי "סוג" ב-Airtable נתפס בטעינה ומחזורית — בלי להתנתק
+  useEffect(() => {
+    if (!user) return undefined;
+    let cancelled = false;
+    const revalidate = async () => {
+      try {
+        if (user.role === 'worker' || user.source === 'workers') {
+          const rec = user.record || {};
+          if (!rec['מייל'] || !rec['מספר דרכון']) return;
+          const r = await fetch('/api/worker-login', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: rec['מייל'], passport: rec['מספר דרכון'] }),
+          });
+          if (!r.ok || cancelled) return;
+          const d = await r.json();
+          if (d?.worker?.id && d.worker.id !== rec.id) {
+            setUser((u) => {
+              const nu = { ...u, record: { ...u.record, ...d.worker } };
+              try { sessionStorage.setItem('zite_user', JSON.stringify(nu)); } catch {}
+              return nu;
+            });
+          }
+        } else if (user.email) {
+          const r = await fetch('/api/admin-role', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: user.email }),
+          });
+          if (!r.ok || cancelled) return;
+          const d = await r.json();
+          if (d?.role && (d.role !== user.role || d.name !== user.name)) {
+            setUser((u) => {
+              const nu = { ...u, role: d.role, name: d.name, record: { ...u.record, 'סוג': d.type, Name: d.name } };
+              try { sessionStorage.setItem('zite_user', JSON.stringify(nu)); } catch {}
+              return nu;
+            });
+          }
+        }
+      } catch {}
+    };
+    revalidate();
+    const id = setInterval(revalidate, 90 * 1000);
+    return () => { cancelled = true; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.email, user?.role, user?.source]);
+
   // רענון מוני ההתראות והבקשות — כל 90 שניות וגם בחזרה לחלון
   useEffect(() => {
     if (!user || user.role === 'worker') return undefined;

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
+import { t } from '../i18n.js';
 import { formatDate } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
-import { REQUEST_TABLE, REQUEST_FIELDS, REQUEST_STATUS, statusStyle, requestTimeLabel, MissingRequestsTable } from '../utils/requests.jsx';
+import { REQUEST_TABLE, REQUEST_FIELDS, REQUEST_STATUS, isDateChangeReq, workerNotesOf, approvalExpiry, statusStyle, requestTimeLabel, MissingRequestsTable } from '../utils/requests.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
@@ -13,7 +14,20 @@ import { activatable } from '../utils/a11y.js';
 // ורק אחרי תשובת Airtable המסך נקרא מחדש.
 // ============================================================
 
-const TYPE_OPTIONS = ['חופש', 'מחלה', 'חופש לחלק מהיום'];
+const TYPE_OPTIONS = ['חופש', 'מחלה', 'חופש לחלק מהיום', 'עדכון תאריך עבודה'];
+
+// תרגום ערכי Airtable לתצוגה (הנתונים עצמם נשארים בעברית)
+const typeDisplay = (type) => ({
+  'חופש': t('w_reqVacation'),
+  'מחלה': t('w_reqSick'),
+  'חופש לחלק מהיום': t('w_reqPartial'),
+  'עדכון תאריך עבודה': t('w_reqDateChange'),
+}[type] || type);
+const statusDisplay = (s) => ({
+  [REQUEST_STATUS.pending]: t('w_stPending'),
+  [REQUEST_STATUS.approved]: t('w_stApproved'),
+  [REQUEST_STATUS.rejected]: t('w_stRejected'),
+}[s] || s);
 
 export default function WorkerRequestsPage() {
   const app = useApp();
@@ -54,10 +68,12 @@ export default function WorkerRequestsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // רענון מחזורי — בקשות חדשות של עובדים מגיעות בלי לרענן ידנית
+  // רענון אוטומטי — מחזורי + בכל חזרה לחלון (בלי כפתור ידני)
   useEffect(() => {
-    const id = setInterval(load, 60 * 1000);
-    return () => clearInterval(id);
+    const id = setInterval(() => { if (!document.hidden) load(); }, 60 * 1000);
+    const onVis = () => { if (!document.hidden) load(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVis); };
   }, [load]);
 
   const enriched = useMemo(() => items.map((r) => ({
@@ -65,7 +81,8 @@ export default function WorkerRequestsPage() {
     raw: r,
     workerId: firstId(r[REQUEST_FIELDS.worker]),
     worker: displayName(r[REQUEST_FIELDS.worker], 'לא זמין'),
-    type: r[REQUEST_FIELDS.type] || 'לא זמין',
+    type: isDateChangeReq(r) ? 'עדכון תאריך עבודה' : (r[REQUEST_FIELDS.type] || 'לא זמין'),
+    isDateChange: isDateChangeReq(r),
     date: r[REQUEST_FIELDS.date] || '',
     time: requestTimeLabel(r),
     created: r[REQUEST_FIELDS.created] || '',
@@ -73,7 +90,8 @@ export default function WorkerRequestsPage() {
     note: r[REQUEST_FIELDS.managerNote] || '',
     answeredAt: r[REQUEST_FIELDS.answeredAt] || '',
     allowsWork: !!r[REQUEST_FIELDS.allowsWork],
-    workerNotes: r[REQUEST_FIELDS.workerNotes] || '',
+    workerNotes: workerNotesOf(r),
+    expiry: approvalExpiry(r),
   })).sort((a, b) => String(b.created).localeCompare(String(a.created))), [items]);
 
   const counts = useMemo(() => ({
@@ -96,16 +114,23 @@ export default function WorkerRequestsPage() {
     return true;
   }), [enriched, tab, fWorker, fType, fFrom, fTo, search]);
 
-  const answer = async (req, status, note, allowsWork) => {
+  const answer = async (req, status, note, allowsWork, validityHours) => {
     if (busy) return;
     setBusy(true); setActionError('');
     try {
-      await app.api.update(REQUEST_TABLE, req.id, {
+      const fields = {
         [REQUEST_FIELDS.status]: status,
         [REQUEST_FIELDS.managerNote]: note || null,
         [REQUEST_FIELDS.answeredAt]: new Date().toISOString(),
         [REQUEST_FIELDS.allowsWork]: !!allowsWork,
-      });
+      };
+      // בקשת עדכון תאריך: זמן שהוקצב מראש לאישור (נשמר כתוקף)
+      if (req.isDateChange) {
+        fields[REQUEST_FIELDS.to] = (status === REQUEST_STATUS.approved && validityHours)
+          ? new Date(Date.now() + validityHours * 3600 * 1000).toISOString()
+          : null;
+      }
+      await app.api.update(REQUEST_TABLE, req.id, fields);
       await load();
       setDrawer(null);
     } catch (e) {
@@ -118,17 +143,15 @@ export default function WorkerRequestsPage() {
   if (missing) return <div><PageHeader icon="🗣️" title="בקשות עובדים" /><MissingRequestsTable /></div>;
 
   const tabs = [
-    [REQUEST_STATUS.pending, `ממתינות (${counts[REQUEST_STATUS.pending]})`],
-    [REQUEST_STATUS.approved, `אושרו (${counts[REQUEST_STATUS.approved]})`],
-    [REQUEST_STATUS.rejected, `לא אושרו (${counts[REQUEST_STATUS.rejected]})`],
-    ['all', 'הכל'],
+    [REQUEST_STATUS.pending, `${t('m_tPending')} (${counts[REQUEST_STATUS.pending]})`],
+    [REQUEST_STATUS.approved, `${t('m_tApproved')} (${counts[REQUEST_STATUS.approved]})`],
+    [REQUEST_STATUS.rejected, `${t('m_tRejected')} (${counts[REQUEST_STATUS.rejected]})`],
+    ['all', t('c_all')],
   ];
 
   return (
     <div>
-      <PageHeader icon="🗣️" title="בקשות עובדים">
-        <button className="btn btn-ghost btn-sm" onClick={load} disabled={busy}>⟳ רענן</button>
-      </PageHeader>
+      <PageHeader icon="🗣️" title="בקשות עובדים" />
       {loadError && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {loadError}</div>}
 
       {/* KPI */}
@@ -137,7 +160,7 @@ export default function WorkerRequestsPage() {
           const st = statusStyle(s);
           return (
             <div key={s} className="kpi-card clickable" {...activatable(() => setTab(s), `סינון לפי בקשות בסטטוס ${s}`)} style={{ cursor: 'pointer' }}>
-              <div className="kpi-top"><div className="kpi-icon" style={{ background: st.soft }}>{st.icon}</div><span className="kpi-label">בקשות {s === REQUEST_STATUS.pending ? 'ממתינות' : s === REQUEST_STATUS.approved ? 'שאושרו' : 'שלא אושרו'}</span></div>
+              <div className="kpi-top"><div className="kpi-icon" style={{ background: st.soft }}>{st.icon}</div><span className="kpi-label">{s === REQUEST_STATUS.pending ? t('m_reqPending') : s === REQUEST_STATUS.approved ? t('m_reqApproved') : t('m_reqRejected')}</span></div>
               <div className="kpi-value" style={{ color: st.color }}>{counts[s]}</div>
             </div>
           );
@@ -149,23 +172,23 @@ export default function WorkerRequestsPage() {
       </div>
 
       <div className="filter-bar" style={{ alignItems: 'flex-end' }}>
-        <div><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>עובד</label>
+        <div><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>{t('m_worker')}</label>
           <select className="select" value={fWorker} onChange={(e) => setFWorker(e.target.value)}>
-            <option value="">הכל</option>
+            <option value="">{t('c_all')}</option>
             {workers.map((w) => <option key={w.id} value={w.id}>{`${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || 'עובד'}</option>)}
           </select></div>
-        <div><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>סוג בקשה</label>
+        <div><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>{t('m_reqType')}</label>
           <select className="select" value={fType} onChange={(e) => setFType(e.target.value)}>
-            <option value="">הכל</option>{TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+            <option value="">{t('c_all')}</option>{TYPE_OPTIONS.map((o) => <option key={o} value={o}>{typeDisplay(o)}</option>)}
           </select></div>
-        <div><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>מתאריך</label><input type="date" className="input" value={fFrom} onChange={(e) => setFFrom(e.target.value)} /></div>
-        <div><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>עד תאריך</label><input type="date" className="input" value={fTo} onChange={(e) => setFTo(e.target.value)} /></div>
-        <div style={{ flex: 1, minWidth: 160 }}><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>חיפוש</label><input className="input" style={{ width: '100%' }} placeholder="חיפוש חופשי..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
+        <div><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>{t('c_from')}</label><input type="date" className="input" value={fFrom} onChange={(e) => setFFrom(e.target.value)} /></div>
+        <div><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>{t('c_to')}</label><input type="date" className="input" value={fTo} onChange={(e) => setFTo(e.target.value)} /></div>
+        <div style={{ flex: 1, minWidth: 160 }}><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>{t('c_search').replace('...', '')}</label><input className="input" style={{ width: '100%' }} placeholder={t('c_search')} value={search} onChange={(e) => setSearch(e.target.value)} /></div>
         {(fWorker || fType || fFrom || fTo || search) && <button className="btn btn-sm btn-ghost" onClick={() => { setFWorker(''); setFType(''); setFFrom(''); setFTo(''); setSearch(''); }}>✕ נקה</button>}
       </div>
 
       {visible.length === 0 ? (
-        <div className="card empty-state">אין בקשות להצגה.</div>
+        <div className="card empty-state">{t('m_noRequests')}</div>
       ) : (
         <div className="grid">
           {visible.map((r) => {
@@ -176,9 +199,9 @@ export default function WorkerRequestsPage() {
                 style={{ borderRight: `5px solid ${st.color}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <b style={{ fontSize: 16 }}>👤 {r.worker}</b>
-                  <span className="badge" style={{ background: st.soft, color: st.color }}>{st.icon} {r.status}</span>
+                  <span className="badge" style={{ background: st.soft, color: st.color }}>{st.icon} {statusDisplay(r.status)}</span>
                 </div>
-                <div style={{ fontWeight: 600 }}>{r.type}</div>
+                <div style={{ fontWeight: 600 }}>{typeDisplay(r.type)}</div>
                 <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>📅 {formatDate(r.date)}{r.time ? ` · ${r.time}` : ''}</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>נשלח: {fmtDateTime(r.created)}</div>
                 {r.note && <div style={{ fontSize: 13, marginTop: 8, background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: 8 }}>הערת מנהל: {r.note}</div>}
@@ -196,7 +219,8 @@ export default function WorkerRequestsPage() {
 function RequestDrawer({ req, busy, error, onClose, onAnswer, canAct = true }) {
   useEscapeClose(onClose, !busy); // סגירה במקש Escape
   const [note, setNote] = useState(req.note || '');
-  const [allowsWork, setAllowsWork] = useState(req.allowsWork);
+  const [allowsWork, setAllowsWork] = useState(req.isDateChange ? true : req.allowsWork);
+  const [validity, setValidity] = useState(48); // שעות תוקף לאישור עדכון-תאריך
   const st = statusStyle(req.status);
   const row = (l, v) => <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 14 }}><span style={{ color: 'var(--text-secondary)' }}>{l}</span><b>{v}</b></div>;
   return (
@@ -206,40 +230,58 @@ function RequestDrawer({ req, busy, error, onClose, onAnswer, canAct = true }) {
         <div className="drawer-body">
           {error && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
           <div className="card">
-            {row('העובד', req.worker)}
-            {row('סוג הבקשה', req.type)}
-            {row('תאריך', formatDate(req.date))}
-            {req.time && row('שעות', req.time)}
-            {row('נשלח', fmtDateTime(req.created))}
-            {row('סטטוס', <span className="badge" style={{ background: st.soft, color: st.color }}>{st.icon} {req.status}</span>)}
-            {req.answeredAt && row('תאריך תשובה', fmtDateTime(req.answeredAt))}
-            {req.workerNotes && <div style={{ marginTop: 10, fontSize: 13 }}><span style={{ color: 'var(--text-secondary)' }}>הערת העובד: </span>{req.workerNotes}</div>}
+            {row(t('m_theWorker'), req.worker)}
+            {row(t('m_reqType'), typeDisplay(req.type))}
+            {row(t('w_date'), formatDate(req.date))}
+            {req.time && row(t('w_hours'), req.time)}
+            {row(t('m_sent'), fmtDateTime(req.created))}
+            {row(t('c_status'), <span className="badge" style={{ background: st.soft, color: st.color }}>{st.icon} {statusDisplay(req.status)}</span>)}
+            {req.answeredAt && row(t('m_answerDate'), fmtDateTime(req.answeredAt))}
+            {req.workerNotes && <div style={{ marginTop: 10, fontSize: 13 }}><span style={{ color: 'var(--text-secondary)' }}>{t('m_workerNote')}: </span>{req.workerNotes}</div>}
+            {req.isDateChange && req.expiry && (
+              <div style={{ marginTop: 6, fontSize: 13 }}>
+                <span style={{ color: 'var(--text-secondary)' }}>{t('m_validUntil')}: </span>
+                <b style={{ color: req.expiry.getTime() < Date.now() ? 'var(--error)' : 'var(--ok)' }}>{formatDate(req.expiry)} {String(req.expiry.getHours()).padStart(2, '0')}:{String(req.expiry.getMinutes()).padStart(2, '0')}</b>
+              </div>
+            )}
           </div>
 
           {!canAct && req.note && (
             <div className="card" style={{ marginTop: 14 }}>
-              <div className="section-title" style={{ marginTop: 0 }}>תשובת המנהל</div>
+              <div className="section-title" style={{ marginTop: 0 }}>{t('m_managerAnswer')}</div>
               <div style={{ fontSize: 14 }}>{req.note}</div>
             </div>
           )}
           {canAct && <div className="card" style={{ marginTop: 14 }}>
-            <div className="section-title" style={{ marginTop: 0 }}>תשובת המנהל</div>
+            <div className="section-title" style={{ marginTop: 0 }}>{t('m_managerAnswer')}</div>
             <div className="form-group">
-              <label>הערה לעובד</label>
-              <textarea className="input" style={{ width: '100%' }} value={note} onChange={(e) => setNote(e.target.value)} placeholder="הערה שתוצג לעובד (לא חובה)" />
+              <label>{t('m_noteToWorker')}</label>
+              <textarea className="input" style={{ width: '100%' }} value={note} onChange={(e) => setNote(e.target.value)} placeholder={t('m_notePlaceholder')} />
             </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, marginBottom: 14 }}>
               <input type="checkbox" checked={allowsWork} onChange={(e) => setAllowsWork(e.target.checked)} />
-              מאפשר לעובד להזין עבודה עבור תאריך הבקשה
+              {t('m_allowWork')}
             </label>
+            {req.isDateChange && (
+              <div className="form-group">
+                <label>{t('m_validity')}</label>
+                <select className="select" style={{ width: '100%' }} value={validity} onChange={(e) => setValidity(Number(e.target.value))}>
+                  <option value={24}>24 {t('w_hoursUnit')}</option>
+                  <option value={48}>48 {t('w_hoursUnit')}</option>
+                  <option value={72}>72 {t('w_hoursUnit')}</option>
+                  <option value={168}>{t('m_week1')}</option>
+                  <option value={0}>{t('m_noLimit')}</option>
+                </select>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              <button className="btn btn-success" disabled={busy} onClick={() => onAnswer(req, REQUEST_STATUS.approved, note, allowsWork)}>✓ אשר ושלח תשובה</button>
-              <button className="btn btn-danger" disabled={busy} onClick={() => onAnswer(req, REQUEST_STATUS.rejected, note, false)}>✕ לא מאשר ושלח תשובה</button>
+              <button className="btn btn-success" disabled={busy} onClick={() => onAnswer(req, REQUEST_STATUS.approved, note, allowsWork, validity)}>{t('m_approveSend')}</button>
+              <button className="btn btn-danger" disabled={busy} onClick={() => onAnswer(req, REQUEST_STATUS.rejected, note, false, 0)}>{t('m_rejectSend')}</button>
               {req.status !== REQUEST_STATUS.pending && (
-                <button className="btn btn-ghost" disabled={busy} onClick={() => onAnswer(req, REQUEST_STATUS.pending, note, false)}>החזר להמתנה</button>
+                <button className="btn btn-ghost" disabled={busy} onClick={() => onAnswer(req, REQUEST_STATUS.pending, note, false)}>{t('m_backToPending')}</button>
               )}
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>ההחלטה נשמרת ומופיעה מיד באזור האישי של העובד.</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>{t('m_decisionSaved')}</div>
           </div>}
         </div>
       </div>

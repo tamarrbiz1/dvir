@@ -114,6 +114,46 @@ app.post('/api/upload-document', upload.single('file'), async (req, res) => {
 });
 
 // ============================================================
+// התחברות מנהל/בעל עסק — האימות (מייל + קוד אישי) בצד השרת.
+// מקור האמת לתפקיד: טבלת "הרשאת מנהל", שדה "סוג".
+// הקוד האישי לעולם לא נשלח לדפדפן.
+// ============================================================
+function adminRoleOf(rec) {
+  const type = String(rec?.['סוג'] || 'מנהל ראשי').trim();
+  return (type.includes('עבודה') || type.toLowerCase() === 'manager') ? 'manager' : 'owner';
+}
+
+app.post('/api/admin-login', async (req, res) => {
+  try {
+    const { email, code } = req.body || {};
+    if (!email || !code) return res.status(400).json({ error: 'יש להזין אימייל וקוד אישי' });
+    const admins = await fetchRecords('הרשאת מנהל', {});
+    const norm = (s) => String(s || '').trim().toLowerCase();
+    const found = admins.find((a) => norm(a['מייל']) === norm(email));
+    if (!found) return res.status(401).json({ error: 'לא נמצא משתמש עם מייל זה במערכת' });
+    if (norm(found['קוד אישי']) !== norm(code)) return res.status(401).json({ error: 'הקוד האישי שגוי' });
+    res.json({ ok: true, role: adminRoleOf(found), name: found['Name'] || 'משתמש', email: found['מייל'] || email, type: found['סוג'] || '' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// רענון תפקיד חי — נקרא בכל טעינה ומחזורית, כדי ששינוי "סוג" ב-Airtable ייתפס מיד
+app.post('/api/admin-role', async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ error: 'חסר אימייל' });
+    const admins = await fetchRecords('הרשאת מנהל', {});
+    const norm = (s) => String(s || '').trim().toLowerCase();
+    const found = admins.find((a) => norm(a['מייל']) === norm(email));
+    if (!found) return res.status(404).json({ error: 'לא נמצא' });
+    res.json({ ok: true, role: adminRoleOf(found), name: found['Name'] || 'משתמש', type: found['סוג'] || '' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
 // כניסת עובד — אימות כפול (אימייל + מספר דרכון) בצד השרת
 // ============================================================
 app.post('/api/worker-login', async (req, res) => {

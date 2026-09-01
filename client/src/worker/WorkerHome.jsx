@@ -1,7 +1,8 @@
 // ============================================================
 // מסך בית לעובד — כרטיסי רווחים
 // ============================================================
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useAutoRefresh } from '../utils/live.js';
 import { formatMoney, formatNumber } from '../utils/format.js';
 import { t } from '../i18n.js';
 
@@ -10,12 +11,12 @@ export default function WorkerHome({ api, worker }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    api.get('עבודות עובדים', '?maxRecords=1000')
-      .then((d) => setRecords(Array.isArray(d) ? d : []))
-      .catch(() => setError('שגיאת טעינת נתונים'))
-      .finally(() => setLoading(false));
-  }, []);
+  const load = useCallback(() => api.get('עבודות עובדים', '?maxRecords=1000')
+    .then((d) => { setRecords(Array.isArray(d) ? d : []); setError(''); })
+    .catch(() => setError(t('w_loadError'))), [api]);
+
+  useEffect(() => { load().finally(() => setLoading(false)); }, [load]);
+  useAutoRefresh(load); // הדיווחים מתעדכנים אוטומטית
 
   // מסנן רק את העבודות של העובד המחובר
   const workerId = worker?.id || userRecordId();

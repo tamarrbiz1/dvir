@@ -5,16 +5,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { t } from '../i18n.js';
 import { formatDate } from '../utils/format.js';
 import { firstId } from '../utils/resolve.js';
-import { REQUEST_TABLE, REQUEST_FIELDS, REQUEST_STATUS, REQUEST_TYPES, statusStyle, requestTimeLabel } from '../utils/requests.jsx';
+import { REQUEST_TABLE, REQUEST_FIELDS, REQUEST_STATUS, REQUEST_TYPES, DATE_CHANGE_MARK, isDateChangeReq, workerNotesOf, approvalExpiry, approvalValid, statusStyle, requestTimeLabel } from '../utils/requests.jsx';
 
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 
-export default function WorkerRequests({ api, worker, onEnterWork, initialOpen = false }) {
+export default function WorkerRequests({ api, worker, onEnterWork, initialOpen = false, initialType = '' }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState('');
-  const [showForm, setShowForm] = useState(initialOpen);
+  const [showForm, setShowForm] = useState(initialOpen || !!initialType);
   const [busy, setBusy] = useState(false);
 
   const workerId = worker?.id;
@@ -63,12 +63,23 @@ export default function WorkerRequests({ api, worker, onEnterWork, initialOpen =
         const status = r[REQUEST_FIELDS.status] || REQUEST_STATUS.pending;
         const st = statusStyle(status);
         const note = r[REQUEST_FIELDS.managerNote];
-        const canEnterWork = status === REQUEST_STATUS.approved && r[REQUEST_FIELDS.allowsWork];
+        const dateChange = isDateChangeReq(r);
+        const expiry = approvalExpiry(r);
+        const canEnterWork = status === REQUEST_STATUS.approved && approvalValid(r);
         return (
           <div key={r.id} className="card" style={{ marginBottom: 12, borderRight: `5px solid ${st.color}` }}>
-            <div style={{ fontWeight: 700, fontSize: 15 }}>{typeLabel(r[REQUEST_FIELDS.type])}</div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>{dateChange ? `🔓 ${t('w_reqDateChange')}` : typeLabel(r[REQUEST_FIELDS.type])}</div>
             <div style={{ fontSize: 14 }}>📅 {formatDate(r[REQUEST_FIELDS.date])}</div>
-            {requestTimeLabel(r, t('w_untilEndOfDay')) && <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>🕒 {requestTimeLabel(r, t('w_untilEndOfDay'))}</div>}
+            {!dateChange && requestTimeLabel(r, t('w_untilEndOfDay')) && <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>🕒 {requestTimeLabel(r, t('w_untilEndOfDay'))}</div>}
+            {dateChange && status === REQUEST_STATUS.approved && (
+              <div style={{ fontSize: 13, color: expiry && expiry.getTime() < Date.now() ? 'var(--error)' : 'var(--text-secondary)' }}>
+                ⏳ {expiry
+                  ? `${t('w_validUntil')}: ${formatDate(expiry)} ${String(expiry.getHours()).padStart(2, '0')}:${String(expiry.getMinutes()).padStart(2, '0')}`
+                  : t('w_noExpiry')}
+                {expiry && expiry.getTime() < Date.now() && ` — ${t('w_expired')}`}
+              </div>
+            )}
+            {workerNotesOf(r) && <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>📝 {workerNotesOf(r)}</div>}
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('w_sentAt')}: {formatDate(r[REQUEST_FIELDS.created])}</div>
             <div style={{ marginTop: 8 }}>
               <span className="badge" style={{ background: st.soft, color: st.color }}>{st.icon} {statusLabel(status)}</span>
@@ -88,13 +99,13 @@ export default function WorkerRequests({ api, worker, onEnterWork, initialOpen =
         );
       })}
 
-      {showForm && <RequestForm api={api} workerId={workerId} onClose={() => setShowForm(false)} onSaved={async () => { setShowForm(false); await load(); }} />}
+      {showForm && <RequestForm api={api} workerId={workerId} initialType={initialType && showForm ? initialType : ''} onClose={() => setShowForm(false)} onSaved={async () => { setShowForm(false); await load(); }} />}
     </div>
   );
 }
 
-function RequestForm({ api, workerId, onClose, onSaved }) {
-  const [type, setType] = useState('');
+function RequestForm({ api, workerId, onClose, onSaved, initialType = '' }) {
+  const [type, setType] = useState(initialType);
   const [date, setDate] = useState(today());
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -106,22 +117,25 @@ function RequestForm({ api, workerId, onClose, onSaved }) {
   const submit = async (e) => {
     e.preventDefault();
     if (saving) return;
-    if (!type || !date) { setError(t('w_requiredFields')); return; }
+    if ((!type && type !== 'dateChange') || !date) { setError(t('w_requiredFields')); return; }
     if (type === REQUEST_TYPES.partial && (!from || (!to && !endOfDay))) { setError(t('w_requiredHours')); return; }
-    if (!workerId) { setError('חסר שדה: עובד'); return; }
+    if (!workerId) { setError(t('w_requiredFields')); return; }
     setSaving(true); setError('');
+    const isDateChange = type === 'dateChange';
     const fields = {
       [REQUEST_FIELDS.worker]: [workerId],
-      [REQUEST_FIELDS.type]: type,
       [REQUEST_FIELDS.date]: date,
       [REQUEST_FIELDS.status]: REQUEST_STATUS.pending,
     };
+    // סוג "עדכון תאריך" אינו קיים ברשימת הסוגים — מסומן בהערות העובד
+    if (!isDateChange) fields[REQUEST_FIELDS.type] = type;
     if (type === REQUEST_TYPES.partial) {
       fields[REQUEST_FIELDS.from] = from;
       fields[REQUEST_FIELDS.endOfDay] = endOfDay;
       if (!endOfDay) fields[REQUEST_FIELDS.to] = to;
     }
-    if (notes) fields[REQUEST_FIELDS.workerNotes] = notes;
+    if (isDateChange) fields[REQUEST_FIELDS.workerNotes] = `${DATE_CHANGE_MARK}${notes ? ` ${notes}` : ''}`;
+    else if (notes) fields[REQUEST_FIELDS.workerNotes] = notes;
     try { await api.create(REQUEST_TABLE, fields); await onSaved(); }
     catch (err) { setError(err.message || 'שגיאה'); }
     setSaving(false);
@@ -137,12 +151,16 @@ function RequestForm({ api, workerId, onClose, onSaved }) {
             <button className="btn btn-ghost" style={{ minHeight: 56, fontSize: 16 }} onClick={() => setType(REQUEST_TYPES.vacation)}>🏖️ {t('w_reqVacation')}</button>
             <button className="btn btn-ghost" style={{ minHeight: 56, fontSize: 16 }} onClick={() => setType(REQUEST_TYPES.sick)}>🤒 {t('w_reqSick')}</button>
             <button className="btn btn-ghost" style={{ minHeight: 56, fontSize: 16 }} onClick={() => setType(REQUEST_TYPES.partial)}>⏰ {t('w_reqPartial')}</button>
+            <button className="btn btn-ghost" style={{ minHeight: 56, fontSize: 16 }} onClick={() => setType('dateChange')}>🔓 {t('w_reqDateChange')}</button>
             <button className="btn btn-ghost" onClick={onClose}>{t('w_cancel')}</button>
           </div>
         ) : (
           <form onSubmit={submit}>
-            <div style={{ marginBottom: 12 }}><span className="badge badge-workers">{typeLabel(type)}</span> <button type="button" className="btn btn-sm btn-ghost" onClick={() => setType('')}>{t('w_change')}</button></div>
-            <div className="form-group"><label className="required">{t('w_date')}</label><input type="date" className="input" style={{ width: '100%' }} value={date} onChange={(e) => setDate(e.target.value)} /></div>
+            <div style={{ marginBottom: 12 }}><span className="badge badge-workers">{type === 'dateChange' ? `🔓 ${t('w_reqDateChange')}` : typeLabel(type)}</span> <button type="button" className="btn btn-sm btn-ghost" onClick={() => setType('')}>{t('w_change')}</button></div>
+            {type === 'dateChange' && (
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 10 }}>{t('w_dateChangeExplain')}</div>
+            )}
+            <div className="form-group"><label className="required">{type === 'dateChange' ? t('w_requestedDate') : t('w_date')}</label><input type="date" className="input" style={{ width: '100%' }} value={date} onChange={(e) => setDate(e.target.value)} /></div>
             {type === REQUEST_TYPES.partial && (
               <>
                 <div className="form-group"><label className="required">{t('w_fromHour')}</label><input type="time" className="input" style={{ width: '100%' }} value={from} onChange={(e) => setFrom(e.target.value)} /></div>

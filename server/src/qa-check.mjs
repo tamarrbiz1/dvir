@@ -207,6 +207,53 @@ await test('העלאת מסמך: קובץ → רשומה עם צרופה', async
   return 'קובץ מוצמד';
 });
 
+// ---- הרשאות מנהל (מקור אמת בצד השרת) ----
+await test('כניסת מנהל: מייל+קוד נכונים → תפקיד מהטבלה', async () => {
+  const admins = await get('הרשאת מנהל', '?raw=1');
+  const admin = admins.find((a) => a['מייל'] && a['קוד אישי']);
+  if (!admin) return 'דולג — אין רשומת מנהל עם קוד';
+  const res = await api('POST', 'admin-login', { email: admin['מייל'], code: admin['קוד אישי'] });
+  if (!res?.role) throw new Error('לא הוחזר תפקיד');
+  return `${res.name} → ${res.role}`;
+});
+await test('כניסת מנהל: קוד שגוי נדחה', async () => {
+  const admins = await get('הרשאת מנהל', '?raw=1');
+  const admin = admins.find((a) => a['מייל']);
+  try {
+    await api('POST', 'admin-login', { email: admin['מייל'], code: 'wrong-code-000' });
+    throw new Error('התקבלה כניסה עם קוד שגוי!');
+  } catch (e) {
+    if (String(e.message).startsWith('401')) return 'נדחה (401)';
+    throw e;
+  }
+});
+await test('רענון תפקיד חי (admin-role)', async () => {
+  const admins = await get('הרשאת מנהל', '?raw=1');
+  const admin = admins.find((a) => a['מייל']);
+  const res = await api('POST', 'admin-role', { email: admin['מייל'] });
+  if (!res?.role) throw new Error('לא הוחזר תפקיד');
+  return `${res.role} (סוג: ${res.type || 'ריק'})`;
+});
+
+// ---- בקשת עדכון תאריך עבודה: עובד מבקש → מנהל מאשר עם תוקף ----
+await test('עדכון תאריך: בקשה → אישור עם תוקף 48ש → הרשאה בתוקף', async () => {
+  const MARKD = '[עדכון תאריך]';
+  const rec = await create('בקשות עובדים', {
+    'עובד': [wId], 'תאריך': today, 'סטטוס': 'ממתין לאישור',
+    'הערות עובד': `${MARKD} ${MARK}`,
+  });
+  const expiry = new Date(Date.now() + 48 * 3600 * 1000).toISOString();
+  await patch('בקשות עובדים', rec.id, {
+    'סטטוס': 'אושר', 'מאפשר הזנת עבודה לתאריך': true, 'עד שעה': expiry, 'תאריך תשובה': new Date().toISOString(),
+  });
+  const back = await api('GET', `${enc('בקשות עובדים')}/${rec.id}`);
+  if (!back['מאפשר הזנת עבודה לתאריך']) throw new Error('ההרשאה לא נשמרה');
+  const exp = new Date(String(back['עד שעה']));
+  if (Number.isNaN(exp.getTime()) || exp.getTime() < Date.now()) throw new Error('התוקף לא נשמר נכון');
+  if (!String(back['הערות עובד'] || '').startsWith(MARKD)) throw new Error('סימון הסוג לא נשמר');
+  return 'אושר, בתוקף 48ש';
+});
+
 // ============ 4. ניקוי מלא ============
 let cleaned = 0, cleanFailed = 0;
 for (const c of cleanup.reverse()) {

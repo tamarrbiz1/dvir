@@ -23,7 +23,10 @@ export default function WorkerApp() {
   const [view, setView] = useState('home');
   // תאריך שאושר על ידי המנהל להזנת עבודה (החריג היחיד לכלל "תאריך = היום")
   const [approvedDate, setApprovedDate] = useState(null);
+  const [requestPreset, setRequestPreset] = useState('');
   const enterWorkFor = (date) => { setApprovedDate(date); setView('report'); };
+  // מהדיווח: פתיחת טופס "עדכון תאריך עבודה" במסך הבקשות
+  const askDateChange = () => { setRequestPreset('dateChange'); setView('requests'); };
 
   // נתוני העובד המחובר (מההתחברות)
   const worker = user?.record || {};
@@ -53,8 +56,8 @@ export default function WorkerApp() {
       <main className="worker-body">
         {view === 'home' && <WorkerHome api={api} worker={worker} />}
         {view === 'earnings' && <WorkerEarnings api={api} worker={worker} />}
-        {view === 'report' && <WorkerReport api={api} worker={worker} approvedDate={approvedDate} onDone={() => setApprovedDate(null)} />}
-        {view === 'requests' && <WorkerRequests api={api} worker={worker} onEnterWork={enterWorkFor} />}
+        {view === 'report' && <WorkerReport api={api} worker={worker} approvedDate={approvedDate} onDone={() => setApprovedDate(null)} onAskDateChange={askDateChange} />}
+        {view === 'requests' && <WorkerRequests key={requestPreset || 'plain'} api={api} worker={worker} onEnterWork={enterWorkFor} initialType={requestPreset} />}
       </main>
 
       {/* סרגל ניווט תחתון */}

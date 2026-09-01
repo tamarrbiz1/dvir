@@ -8,6 +8,7 @@
 // ============================================================
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
+import { t, monthShort } from '../i18n.js';
 import { useApp } from '../App.jsx';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
@@ -18,6 +19,7 @@ import { exportCsv, fileStamp, inDateRange } from '../utils/table.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
+import { useAutoRefresh } from '../utils/live.js';
 import { activatable } from '../utils/a11y.js';
 
 const SHORT_MONTHS = ['ינו', 'פבר', 'מרץ', 'אפר', 'מאי', 'יונ', 'יול', 'אוג', 'ספט', 'אוק', 'נוב', 'דצמ'];
@@ -34,11 +36,11 @@ function timeOf(v) {
 // תווית כמות דינמית (סעיף 15): דונם → שורות · קרטון → קרטונים · גמלון → גמלונים
 function unitLabel(unit) {
   const u = String(unit || '').trim();
-  if (!u) return 'כמות';
-  if (u.includes('דונם')) return 'כמות שורות';
-  if (u.includes('קרטון')) return 'כמות קרטונים';
-  if (u.includes('גמלון')) return 'כמות גמלונים';
-  return 'כמות';
+  if (!u) return t('w_amount');
+  if (u.includes('דונם')) return t('w_qtyRows');
+  if (u.includes('קרטון')) return t('w_qtyCartons');
+  if (u.includes('גמלון')) return t('w_qtyGables');
+  return t('w_amount');
 }
 
 export default function WorkersPage() {
@@ -65,6 +67,8 @@ export default function WorkersPage() {
       return Array.isArray(w) ? w : [];
     })
     .catch(() => []), [app.api]);
+
+  useAutoRefresh(load); // עדכון ממקום אחר מופיע בלי רענון ידני
 
   useEffect(() => {
     load().then((arr) => {
@@ -114,14 +118,14 @@ export default function WorkersPage() {
     <div>
       <PageHeader icon="👥" title="עובדים ועבודות">
         {tab === 'workers' && (
-          <input className="input no-print" aria-label="חיפוש עובד" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input className="input no-print" aria-label="חיפוש עובד" placeholder={t('c_search')} value={search} onChange={(e) => setSearch(e.target.value)} />
         )}
-        {tab === 'workers' && canEdit && <button className="btn btn-primary no-print" onClick={() => setForm({})}>+ עובד חדש</button>}
+        {tab === 'workers' && canEdit && <button className="btn btn-primary no-print" onClick={() => setForm({})}>{t('m_newWorker')}</button>}
       </PageHeader>
 
       <div className="tabs no-print" style={{ marginBottom: 18 }}>
-        <button className={`tab ${tab === 'workers' ? 'active' : ''}`} onClick={() => switchTab('workers')}>👥 עובדים</button>
-        <button className={`tab ${tab === 'jobs' ? 'active' : ''}`} onClick={() => switchTab('jobs')}>📋 עבודות</button>
+        <button className={`tab ${tab === 'workers' ? 'active' : ''}`} onClick={() => switchTab('workers')}>👥 {t('m_tabWorkers')}</button>
+        <button className={`tab ${tab === 'jobs' ? 'active' : ''}`} onClick={() => switchTab('jobs')}>📋 {t('m_tabJobs')}</button>
       </div>
 
       {loading ? (
@@ -144,7 +148,7 @@ export default function WorkersPage() {
         />
       ) : (
         <div className="grid">
-          {filteredWorkers.length === 0 && <div className="empty-state" style={{ gridColumn: '1 / -1' }}>אין נתונים לתקופה זו</div>}
+          {filteredWorkers.length === 0 && <div className="empty-state" style={{ gridColumn: '1 / -1' }}>{t('c_noData')}</div>}
           {filteredWorkers.map((w) => {
             const name = `${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || 'עובד';
             const recs = recordsFor(w);
@@ -158,15 +162,15 @@ export default function WorkersPage() {
                   </div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 700 }}>{name}</div>
-                    <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{w['סוג עובד'] ?? 'לא זמין'}</div>
+                    <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{w['סוג עובד'] ?? t('c_notAvailable')}</div>
                   </div>
-                  <span className={`badge ${w['סטטוס'] === 'פעיל' ? 'badge-ok' : 'badge-warn'}`}>{w['סטטוס'] || 'לא זמין'}</span>
+                  <span className={`badge ${w['סטטוס'] === 'פעיל' ? 'badge-ok' : 'badge-warn'}`}>{w['סטטוס'] || t('c_notAvailable')}</span>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, fontSize: 13 }}>
-                  <div><span style={{ color: 'var(--text-muted)' }}>שעות החודש: </span><b>{formatNumber(hoursOf(cur))}</b></div>
-                  <div><span style={{ color: 'var(--text-muted)' }}>עבודות: </span><b>{cur.length}</b></div>
-                  <div><span style={{ color: 'var(--text-muted)' }}>הרוויח החודש: </span><b style={{ color: 'var(--revenue)' }}>{formatMoney(paidOf(cur))}</b></div>
-                  <div><span style={{ color: 'var(--text-muted)' }}>חודש קודם: </span><b style={{ color: 'var(--workers)' }}>{formatMoney(paidOf(prev))}</b></div>
+                  <div><span style={{ color: 'var(--text-muted)' }}>{t('m_hoursMonth')}: </span><b>{formatNumber(hoursOf(cur))}</b></div>
+                  <div><span style={{ color: 'var(--text-muted)' }}>{t('m_jobs')}: </span><b>{cur.length}</b></div>
+                  <div><span style={{ color: 'var(--text-muted)' }}>{t('m_earnedMonth')}: </span><b style={{ color: 'var(--revenue)' }}>{formatMoney(paidOf(cur))}</b></div>
+                  <div><span style={{ color: 'var(--text-muted)' }}>{t('m_prevMonth')}: </span><b style={{ color: 'var(--workers)' }}>{formatMoney(paidOf(prev))}</b></div>
                 </div>
                 {canEdit && (
                   <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
@@ -287,36 +291,36 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
     <div>
       {/* KPI קטן על המסונן */}
       <div className="kpi-grid" style={{ marginBottom: 16 }}>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--workers-soft)' }}>📋</div><span className="kpi-label">עבודות</span></div><div className="kpi-value" style={{ color: 'var(--workers)' }}>{formatNumber(filtered.length)}</div><div style={{ height: 12 }} /></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--hours-soft)' }}>⏱️</div><span className="kpi-label">שעות</span></div><div className="kpi-value" style={{ color: 'var(--hours)' }}>{formatNumber(Math.round(totalHours * 10) / 10)}</div><div style={{ height: 12 }} /></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">סכום לתשלום</span></div><div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(totalPaid)}</div><div style={{ height: 12 }} /></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--workers-soft)' }}>📋</div><span className="kpi-label">{t('m_jobs')}</span></div><div className="kpi-value" style={{ color: 'var(--workers)' }}>{formatNumber(filtered.length)}</div><div style={{ height: 12 }} /></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--hours-soft)' }}>⏱️</div><span className="kpi-label">{t('w_hours')}</span></div><div className="kpi-value" style={{ color: 'var(--hours)' }}>{formatNumber(Math.round(totalHours * 10) / 10)}</div><div style={{ height: 12 }} /></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">{t('m_pay')}</span></div><div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(totalPaid)}</div><div style={{ height: 12 }} /></div>
       </div>
 
       <div className="filter-bar no-print">
-        <input className="input" aria-label="חיפוש עבודה" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input className="input" aria-label="חיפוש עבודה" placeholder={t('c_search')} value={search} onChange={(e) => setSearch(e.target.value)} />
         <select className="select" aria-label="סינון לפי עובד" value={fWorker} onChange={(e) => setFWorker(e.target.value)}>
-          <option value="">כל העובדים</option>
+          <option value="">{t('m_allWorkers')}</option>
           {workers.map((w) => <option key={w.id} value={w.id}>{`${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || w.id}</option>)}
         </select>
-        <label className="date-field">מתאריך<input type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
-        <label className="date-field">עד תאריך<input type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} /></label>
-        {hasFilters && <button className="btn btn-ghost" onClick={() => { setSearch(''); setFWorker(''); setFrom(''); setTo(''); }}>נקה פילטרים</button>}
+        <label className="date-field">{t('c_from')}<input type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
+        <label className="date-field">{t('c_to')}<input type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} /></label>
+        {hasFilters && <button className="btn btn-ghost" onClick={() => { setSearch(''); setFWorker(''); setFrom(''); setTo(''); }}>{t('c_clearFilters')}</button>}
         <span style={{ marginInlineStart: 'auto', display: 'flex', gap: 8 }}>
-          <button type="button" className="btn btn-ghost" onClick={() => window.print()}>🖨️ הדפסה</button>
-          <button type="button" className="btn btn-ghost" onClick={doExport} disabled={!filtered.length}>⬇️ ייצוא</button>
-          {canEdit && <button className="btn btn-primary" onClick={() => setForm({})}>+ עבודה חדשה</button>}
+          <button type="button" className="btn btn-ghost" onClick={() => window.print()}>🖨️ {t('c_print')}</button>
+          <button type="button" className="btn btn-ghost" onClick={doExport} disabled={!filtered.length}>⬇️ {t('c_export')}</button>
+          {canEdit && <button className="btn btn-primary" onClick={() => setForm({})}>{t('m_newJob')}</button>}
         </span>
       </div>
 
       <div className="card">
-        <div className="section-title" style={{ marginTop: 0 }}>עבודות עובדים ({formatNumber(filtered.length)})</div>
-        {filtered.length === 0 ? <div className="empty-state"><div className="icon">📋</div>אין נתונים לתקופה זו</div> : (
+        <div className="section-title" style={{ marginTop: 0 }}>{t('m_jobsList')} ({formatNumber(filtered.length)})</div>
+        {filtered.length === 0 ? <div className="empty-state"><div className="icon">📋</div>{t('c_noData')}</div> : (
           <div className="table-wrap">
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>תאריך</th><th>עובד</th><th>מבנה</th><th>סוג עבודה</th><th>זן</th><th>כמות</th><th>שעות</th><th>מחיר</th><th>סכום לתשלום</th>
-                  {canEdit && <th className="no-print">פעולות</th>}
+                  <th>{t('w_date')}</th><th>{t('m_worker')}</th><th>{t('w_structure')}</th><th>{t('m_workType')}</th><th>{t('m_variety')}</th><th>{t('w_amount')}</th><th>{t('w_hours')}</th><th>{t('m_price')}</th><th>{t('m_pay')}</th>
+                  {canEdit && <th className="no-print">{t('c_actions')}</th>}
                 </tr>
               </thead>
               <tbody>
@@ -339,7 +343,7 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
                     {canEdit && (
                       <td className="no-print">
                         <div style={{ display: 'flex', gap: 4 }}>
-                          <button className="btn btn-sm btn-ghost" disabled={busyId === r.id} aria-label="רענן מחיר" title='רענן מחיר'
+                          <button className="btn btn-sm btn-ghost" disabled={busyId === r.id} aria-label={t('m_refreshPrice')} title={t('m_refreshPrice')}
                             onClick={() => refreshPrice(r)}>{busyId === r.id ? '…' : '🔄'}</button>
                           <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={() => setForm(r)}>✎</button>
                           <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
@@ -357,7 +361,7 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
         )}
         {filtered.length > limit && (
           <div style={{ textAlign: 'center', marginTop: 12 }}>
-            <button className="btn btn-ghost no-print" onClick={() => setLimit((l) => l + 50)}>הצג עוד ({formatNumber(filtered.length - limit)} נוספות)</button>
+            <button className="btn btn-ghost no-print" onClick={() => setLimit((l) => l + 50)}>{t('c_showMore')} ({formatNumber(filtered.length - limit)})</button>
           </div>
         )}
       </div>
@@ -557,7 +561,7 @@ function WorkerDetails({ worker, records, onClose }) {
     filtered.forEach((r) => {
       const d = new Date(r['תאריך']);
       if (Number.isNaN(d.getTime())) return;
-      const label = SHORT_MONTHS[d.getMonth()];
+      const label = monthShort(d.getMonth());
       b[label] = (b[label] || 0) + (Number(r[field === 'hours' ? 'סכום שעות' : 'סכום לתשלום']) || 0);
     });
     return Object.entries(b).map(([k, v]) => ({ label: k, value: Math.round(v) }));
@@ -588,12 +592,12 @@ function WorkerDetails({ worker, records, onClose }) {
   const structChart = byStructure();
 
   const kpis = [
-    { label: 'שעות היום', value: formatNumber(sumField(dayRecs, 'סכום שעות')), color: 'var(--hours)' },
-    { label: 'שעות השבוע', value: formatNumber(sumField(weekRecs, 'סכום שעות')), color: 'var(--weight)' },
-    { label: 'שעות החודש', value: formatNumber(sumField(monthRecs, 'סכום שעות')), color: 'var(--cartons)' },
-    { label: 'הכנסה החודש', value: formatMoney(sumField(monthRecs, 'סכום לתשלום')), color: 'var(--revenue)' },
-    { label: 'הכנסה חודש קודם', value: formatMoney(sumField(prevMonthRecs, 'סכום לתשלום')), color: 'var(--workers)' },
-    { label: 'מספר עבודות', value: formatNumber(filtered.length), color: 'var(--pallets)' },
+    { label: t('m_hToday'), value: formatNumber(sumField(dayRecs, 'סכום שעות')), color: 'var(--hours)' },
+    { label: t('m_hWeek'), value: formatNumber(sumField(weekRecs, 'סכום שעות')), color: 'var(--weight)' },
+    { label: t('m_hoursMonth'), value: formatNumber(sumField(monthRecs, 'סכום שעות')), color: 'var(--cartons)' },
+    { label: t('m_incMonth'), value: formatMoney(sumField(monthRecs, 'סכום לתשלום')), color: 'var(--revenue)' },
+    { label: t('m_incPrev'), value: formatMoney(sumField(prevMonthRecs, 'סכום לתשלום')), color: 'var(--workers)' },
+    { label: t('m_numJobs'), value: formatNumber(filtered.length), color: 'var(--pallets)' },
   ];
 
   return (
@@ -618,34 +622,34 @@ function WorkerDetails({ worker, records, onClose }) {
           {/* פילטר טווח */}
           <div className="card" style={{ marginTop: 16, background: 'var(--bg-secondary)' }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
-              <div className="form-group"><label>מתאריך</label><input type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
-              <div className="form-group"><label>עד תאריך</label><input type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} /></div>
+              <div className="form-group"><label>{t('c_from')}</label><input type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+              <div className="form-group"><label>{t('c_to')}</label><input type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} /></div>
             </div>
             <div style={{ marginTop: 6, fontWeight: 700 }}>
-              סה"כ בתקופה: {formatNumber(totalHours)} שעות · {formatMoney(totalPaid)} · {formatNumber(filtered.length)} עבודות · ממוצע ליום {formatMoney(avgPerDay)}
+              {t('m_periodTotal')}: {formatNumber(totalHours)} {t('w_hoursUnit')} · {formatMoney(totalPaid)} · {formatNumber(filtered.length)} {t('m_jobs')} · {t('m_avgDay')} {formatMoney(avgPerDay)}
             </div>
           </div>
 
           {/* גרף 1: שעות לאורך זמן */}
-          <Chart title="שעות לאורך זמן" data={hoursChart} barColor="var(--hours)" />
+          <Chart title={t('m_cHoursTime')} data={hoursChart} barColor="var(--hours)" />
           {/* גרף 2: הכנסה לאורך זמן */}
-          <Chart title="הכנסה לאורך זמן" data={incomeChart} barColor="var(--revenue)" money />
+          <Chart title={t('m_cIncTime')} data={incomeChart} barColor="var(--revenue)" money />
 
           {/* גרפים לפי חודש */}
           <div className="card" style={{ marginTop: 16 }}>
-            <div className="section-title" style={{ marginTop: 0 }}>הכנסה לפי חודש</div>
+            <div className="section-title" style={{ marginTop: 0 }}>{t('m_cIncMonth')}</div>
             <PieChartWrap data={monthIncome.map((x) => ({ name: x.label, value: x.value }))} money />
           </div>
           <div className="card" style={{ marginTop: 16 }}>
-            <div className="section-title" style={{ marginTop: 0 }}>שעות לפי סוג עבודה</div>
+            <div className="section-title" style={{ marginTop: 0 }}>{t('m_cHoursType')}</div>
             <PieChartWrap data={typeHours} />
           </div>
           <div className="card" style={{ marginTop: 16 }}>
-            <div className="section-title" style={{ marginTop: 0 }}>הכנסה לפי סוג עבודה</div>
+            <div className="section-title" style={{ marginTop: 0 }}>{t('m_cIncType')}</div>
             <PieChartWrap data={typeIncome} money />
           </div>
           <div className="card" style={{ marginTop: 16 }}>
-            <div className="section-title" style={{ marginTop: 0 }}>עבודות לפי מבנה</div>
+            <div className="section-title" style={{ marginTop: 0 }}>{t('m_cJobsStruct')}</div>
             <PieChartWrap data={structChart} />
           </div>
 
@@ -656,7 +660,7 @@ function WorkerDetails({ worker, records, onClose }) {
 }
 
 function Chart({ title, data, barColor, money }) {
-  if (!data || !data.length) return <div className="card" style={{ marginTop: 16 }}><div className="section-title" style={{ marginTop: 0 }}>{title}</div><div className="empty-state">אין נתונים לתקופה זו</div></div>;
+  if (!data || !data.length) return <div className="card" style={{ marginTop: 16 }}><div className="section-title" style={{ marginTop: 0 }}>{title}</div><div className="empty-state">{t('c_noData')}</div></div>;
   return (
     <div className="card" style={{ marginTop: 16 }}>
       <div className="section-title" style={{ marginTop: 0 }}>{title}</div>
@@ -677,7 +681,7 @@ function Chart({ title, data, barColor, money }) {
 
 const PIE_COLORS = ['#08A878', '#2878D0', '#8B5CF6', '#F59E0B', '#F04444', '#09A7B2', '#10A66A'];
 function PieChartWrap({ data, money }) {
-  if (!data || !data.length) return <div className="empty-state">אין נתונים לתקופה זו</div>;
+  if (!data || !data.length) return <div className="empty-state">{t('c_noData')}</div>;
   return (
     <ResponsiveContainer width="100%" height={200}>
       <PieChart>
