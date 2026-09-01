@@ -24,7 +24,7 @@ const TABLE = 'קטיפים';
 
 export default function HarvestsPage() {
   const app = useApp();
-  const canEdit = ['owner', 'manager'].includes(app.user?.role || 'owner');
+  const canEdit = (app.user?.role || 'owner') === 'owner'; // עדכונים למנהל הראשי בלבד
   const [harvests, setHarvests] = useState([]);
   const [structures, setStructures] = useState([]);
   const [loading, setLoading] = useState(true);

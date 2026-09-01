@@ -453,7 +453,7 @@ function CheckDrawer({ check, statusChoices, escapeEnabled, onClose, onZoom, onO
                   type="button"
                   className="btn btn-danger"
                   disabled={saving || !cancelAllowed}
-                  title={cancelAllowed ? 'הצ׳ק יסומן כמבוטל ויוסתר מהתצוגה (ניתן להציגו דרך "הצג מבוטלים")' : 'האפשרות "מבוטל" אינה קיימת עדיין בשדה הסטטוס ב-Airtable'}
+                  title={cancelAllowed ? 'הצ׳ק יסומן כמבוטל ויוסתר מהתצוגה (ניתן להציגו דרך "הצג מבוטלים")' : 'האפשרות "מבוטל" אינה קיימת עדיין ברשימת הסטטוסים'}
                   onClick={() => setStatus(STATUS.CANCELLED, `לבטל את ${checkTitle(check)}? הצ׳ק לא יימחק — הוא יסומן כמבוטל ויוסתר מהתצוגה.`)}
                 >
                   ✕ בטל צ׳ק

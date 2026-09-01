@@ -30,7 +30,7 @@ const PIE = ['#2878D0', '#09A7B2', '#8B5CF6', '#F59E0B', '#F04444', '#10A66A', '
 // ------------------------------------------------------------
 // עטיפה: מחסנית אובייקטים + Breadcrumb
 // ------------------------------------------------------------
-export default function DeliveryNoteDrawer({ note, notes = [], api, onClose, canEdit = false, onEdit, initial = null }) {
+export default function DeliveryNoteDrawer({ note, notes = [], api, onClose, canEdit = false, onEdit, onDelete, initial = null }) {
   const [stack, setStack] = useState(() => {
     const base = note ? [{ kind: 'note', note }] : [];
     return initial ? [...base, initial] : base;
@@ -79,7 +79,7 @@ export default function DeliveryNoteDrawer({ note, notes = [], api, onClose, can
         )}
 
         <div className="drawer-body">
-          {top.kind === 'note' && <NotePanel note={top.note} push={push} canEdit={canEdit} onEdit={onEdit} />}
+          {top.kind === 'note' && <NotePanel note={top.note} push={push} canEdit={canEdit} onEdit={onEdit} onDelete={onDelete} />}
           {top.kind === 'marketer' && <MarketerPanel entry={top} notes={notes} api={api} push={push} />}
           {top.kind === 'structure' && <StructurePanel entry={top} notes={notes} api={api} push={push} />}
           {top.kind === 'week' && <WeekPanel entry={top} notes={notes} push={push} />}
@@ -129,7 +129,7 @@ export function CheckBadge({ note }) {
 // ------------------------------------------------------------
 // כרטיס התעודה
 // ------------------------------------------------------------
-function NotePanel({ note, push, canEdit, onEdit }) {
+function NotePanel({ note, push, canEdit, onEdit, onDelete }) {
   const navigate = useNavigate();
   const daily = useMemo(() => parseDailySummary(note['סיכום יומי']), [note]);
   const marketer = noteMarketer(note);
@@ -169,6 +169,7 @@ function NotePanel({ note, push, canEdit, onEdit }) {
         <div className="section-title" style={{ marginTop: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>פרטים</span>
           {canEdit && onEdit && <button type="button" className="btn btn-ghost btn-sm" onClick={() => onEdit(note)} aria-label="עריכת התעודה">✎ עריכה</button>}
+          {canEdit && onDelete && <button type="button" className="btn btn-ghost btn-sm" style={{ color: 'var(--error)' }} onClick={() => onDelete(note)} aria-label="מחיקת התעודה">🗑 מחיקה</button>}
         </div>
         <Row l="תאריך תעודה" v={noteDate(note) ? formatDate(noteDate(note)) : null} />
         <Row l="משווק" v={marketer ? <ObjChip icon="🚚" label={marketer.name} onClick={marketer.id ? () => push({ kind: 'marketer', id: marketer.id, name: marketer.name }) : null} /> : null} />

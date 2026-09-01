@@ -10,6 +10,7 @@ export default function LoginPage() {
   const { login } = useApp();
   const [role, setRole] = useState('owner');
   const [email, setEmail] = useState('');
+  const [passport, setPassport] = useState('');
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -57,38 +58,26 @@ export default function LoginPage() {
     setLoading(false);
   };
 
+  // כניסת עובד: אימות כפול — אימייל + מספר דרכון, נבדק בצד השרת
   const handleWorker = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
     try {
-      // ניתן להתחבר לפי מייל או מספר דרכון
-      const isEmail = email.includes('@');
-      const r = await fetch(`/api/עובדים?maxRecords=500`);
+      const r = await fetch('/api/worker-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, passport }),
+      });
       const data = await r.json();
-      const workers = Array.isArray(data) ? data : [];
-      const norm = (s) => String(s || '').trim().toLowerCase();
-
-      const found = workers.find((w) =>
-        isEmail
-          ? norm(w['מייל']) === norm(email)
-          : norm(w['מספר דרכון']) === norm(email)
-      );
-      if (!found) {
-        setError('עובד עם פרטים אלה לא נמצא');
+      if (!r.ok) {
+        setError(data?.error || 'ההתחברות נכשלה');
         setLoading(false);
         return;
       }
-      // אימות קוד — בהתחלה נשתמש בשדה "מספר עובד" או "טלפון" כקוד מקומי זמני;
-      // לביצוע מקצה, ניתן להשוות מול שדה ייעודי זמין בעובדים.
-      // כאן נשתמש ב-4 הספרות הראשונות של מספר דרכון או 1234 בפרויקט.
-      const passCode = (found['מספר עובד'] ? String(found['מספר עובד']).split('').reverse().slice(0, 4).join('') : '1234');
-      if (norm(code) !== norm(passCode) && norm(code) !== '1234') {
-        setError('קוד אימות שגוי');
-        setLoading(false);
-        return;
-      }
+      const found = data.worker;
       const name = `${found['שם פרטי'] || ''} ${found['שם משפחה'] || ''}`.trim() || 'עובד';
+      try { sessionStorage.setItem('zite_user_recId', found.id); } catch {}
       login({ role: 'worker', name, email: found['מייל'], record: found, source: 'workers' });
     } catch (err) {
       setError('שגיאת התחברות לשרת');
@@ -129,13 +118,20 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit}>
           <div className="form-group">
-            <label>{role === 'worker' ? 'מספר דרכון או מייל' : 'אימייל'}</label>
-            <input className="input" style={{ width: '100%' }} value={email} onChange={(e) => setEmail(e.target.value)} placeholder={role === 'worker' ? 'לדוגמה: AB1234567 או me@mail.com' : 'you@example.com'} />
+            <label>אימייל</label>
+            <input className="input" style={{ width: '100%' }} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
           </div>
-          <div className="form-group">
-            <label>קוד אימות</label>
-            <input className="input" style={{ width: '100%' }} value={code} onChange={(e) => setCode(e.target.value)} placeholder="הקוד האישי" />
-          </div>
+          {role === 'worker' ? (
+            <div className="form-group">
+              <label>מספר דרכון</label>
+              <input className="input" style={{ width: '100%' }} value={passport} onChange={(e) => setPassport(e.target.value)} placeholder="לדוגמה: AB1234567" />
+            </div>
+          ) : (
+            <div className="form-group">
+              <label>קוד אישי</label>
+              <input className="input" style={{ width: '100%' }} type="password" value={code} onChange={(e) => setCode(e.target.value)} placeholder="הקוד האישי" />
+            </div>
+          )}
           <button className="btn btn-primary" style={{ width: '100%', minHeight: 46 }} disabled={loading}>
             {loading ? 'מתחבר...' : 'התחבר'}
           </button>

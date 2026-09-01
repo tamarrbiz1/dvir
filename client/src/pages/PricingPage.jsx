@@ -2,6 +2,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { formatNumber, safeValue } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
+import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
+import { toast } from '../utils/ui.js';
+
+const PRICING_FORM_FIELDS = [
+  { name: 'זן', label: 'זן', type: 'text' },
+  { name: 'סוג עבודה', label: 'סוג עבודה', type: 'text', required: true },
+  { name: 'סוג עבודה-תאילנדית', label: 'סוג עבודה בתאילנדית', type: 'text' },
+  { name: 'יחידת תמחור', label: 'יחידת תמחור', type: 'text' },
+  { name: 'מחיר', label: 'מחיר (₪)', type: 'number', required: true },
+];
 
 // ============================================================
 // תמחור עבודות (סעיף 16) + תמחור לפי מבנים (סעיף 17)
@@ -10,6 +20,8 @@ import PageHeader from '../components/PageHeader.jsx';
 
 export default function PricingPage() {
   const app = useApp();
+  const canEdit = (app.user?.role || 'owner') === 'owner';
+  const [form, setForm] = useState(null);
   const [view, setView] = useState('pricing'); // pricing | byStructure
   const [pricing, setPricing] = useState([]);
   const [pricingByStruct, setPricingByStruct] = useState([]);
@@ -20,6 +32,14 @@ export default function PricingPage() {
   const [fZan, setFZan] = useState('');
   const [fWorkType, setFWorkType] = useState('');
   const [fUnit, setFUnit] = useState('');
+
+  const reload = () => Promise.all([
+    app.api.get('תמחור עבודות', '?maxRecords=800'),
+    app.api.get('תמחור עבודות לפי מבנים', '?maxRecords=800'),
+  ]).then(([p, ps]) => {
+    setPricing(Array.isArray(p) ? p : []);
+    setPricingByStruct(Array.isArray(ps) ? ps : []);
+  }).catch(() => {});
 
   useEffect(() => {
     Promise.all([
@@ -58,7 +78,9 @@ export default function PricingPage() {
 
   return (
     <div>
-      <PageHeader icon="🏷️" title="תמחור עבודות" />
+      <PageHeader icon="🏷️" title="תמחור עבודות">
+        {canEdit && view === 'pricing' && <button className="btn btn-primary no-print" onClick={() => setForm({})}>+ תמחור חדש</button>}
+      </PageHeader>
 
       <div className="tabs" style={{ marginBottom: 18 }}>
         <button className={`tab ${view === 'pricing' ? 'active' : ''}`} onClick={() => setView('pricing')}>תמחור עבודות</button>
@@ -90,7 +112,7 @@ export default function PricingPage() {
           <div className="card">
             <div className="table-wrap">
               <table className="data-table">
-                <thead><tr><th>זן</th><th>סוג עבודה</th><th>סוג עבודה בתאילנדית</th><th>יחידת תמחור</th><th>מחיר</th></tr></thead>
+                <thead><tr><th>זן</th><th>סוג עבודה</th><th>סוג עבודה בתאילנדית</th><th>יחידת תמחור</th><th>מחיר</th>{canEdit && <th className="no-print">פעולות</th>}</tr></thead>
                 <tbody>
                   {filtered.map((p) => (
                     <tr key={p.id}>
@@ -99,6 +121,17 @@ export default function PricingPage() {
                       <td>{safeValue(p['סוג עבודה-תאילנדית'])}</td>
                       <td>{safeValue(p['יחידת תמחור'])}</td>
                       <td style={{ fontWeight: 700 }}>{p['מחיר'] != null ? `${formatNumber(p['מחיר'])} ₪` : 'לא זמין'}</td>
+                      {canEdit && (
+                        <td className="no-print">
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={() => setForm(p)}>✎</button>
+                            <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
+                              onClick={async () => {
+                                if (await removeRecord(app.api, 'תמחור עבודות', p.id, p['סוג עבודה'] || 'התמחור')) await reload();
+                              }}>🗑</button>
+                          </div>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -108,6 +141,17 @@ export default function PricingPage() {
         </>
       ) : (
         <StructurePricingTable items={pricingByStruct} structName={structName} pricingName={pricingName} />
+      )}
+
+      {form !== null && (
+        <RecordForm
+          api={app.api} table="תמחור עבודות"
+          title={form.id ? `עריכת ${form['סוג עבודה'] || 'תמחור'}` : 'תמחור חדש'}
+          record={form.id ? form : null}
+          fields={PRICING_FORM_FIELDS}
+          onClose={() => setForm(null)}
+          onSaved={async () => { setForm(null); await reload(); toast('התמחור נשמר בהצלחה'); }}
+        />
       )}
     </div>
   );

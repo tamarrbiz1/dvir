@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -6,7 +7,8 @@ import {
 import { useApp } from '../App.jsx';
 import { formatDate, formatMoney, formatNumber } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
-import { holidayInfo, jewishHoliday, jewishHolidaysOfYear, thaiHolidaysOfYear, KIND_STYLE } from '../utils/holidays.js';
+import { holidayInfo, jewishHoliday, KIND_STYLE } from '../utils/holidays.js';
+import { confirmDialog, toast } from '../utils/ui.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
@@ -212,7 +214,7 @@ export default function PlantingPlanPage() {
       setCrops(Array.isArray(c) ? c : []);
       setNonWorkDays(Array.isArray(nw) ? nw : []);
     } catch (e) {
-      setLoadError(e.message || 'לא ניתן היה לטעון את הנתונים מ-Airtable.');
+      setLoadError(e.message || 'לא ניתן היה לטעון את הנתונים.');
     }
     setLoading(false);
   }, [app.api]);
@@ -425,6 +427,22 @@ export default function PlantingPlanPage() {
       setBusy(false);
       return false;
     }
+  };
+
+  // עדכון התוכנית לפי ימי אי העבודה — רק לפי בחירה מפורשת של הלקוח
+  const recalcYearPlans = async () => {
+    const list = plans.filter((pl) => String(pl['שנת תוכנית'] || '') === String(year));
+    if (!list.length) { toast('אין תוכניות שתילה לשנה זו', 'warn'); return; }
+    const yes = await confirmDialog({
+      title: 'עדכון התוכנית לפי ימי אי העבודה',
+      message: `החישוב יופעל מחדש על ${list.length} תוכניות של ${year}.\nהתאריכים, התקופות והתחזיות יתעדכנו לפי רשימת ימי אי העבודה.`,
+      confirmLabel: 'עדכן תוכנית',
+    });
+    if (!yes) return;
+    const ok = await runAction(async () => {
+      for (const pl of list) await app.api.update('תוכניות שתילה', pl.id, { 'חשב תוכנית': true });
+    });
+    if (ok) toast('החישוב הופעל — התוכנית תתעדכן בעוד רגע');
   };
 
   const savePlan = async () => {
@@ -1038,7 +1056,7 @@ export default function PlantingPlanPage() {
               <button type="button" className="drawer-close" onClick={() => setShowNonWork(false)} aria-label="סגירה" title="סגירה">✕</button>
             </div>
             <div className="drawer-body">
-              <NonWorkQuickAdd app={app} year={year} existing={nonWorkDays} onChanged={() => load({ silent: true })} />
+              <NonWorkQuickAdd app={app} year={year} onChanged={() => load({ silent: true })} onRecalc={recalcYearPlans} />
               <div className="table-wrap">
                 <table className="data-table">
                   <thead><tr><th>תאריך</th><th>חג</th><th>סוג החג</th></tr></thead>
@@ -1994,6 +2012,9 @@ function PlanSheet({
     });
   };
 
+  // מצב תצוגה: משולב / תכנון (צפי בלבד) / ביצוע (בפועל בלבד)
+  const [mode, setMode] = useState('combined');
+
   // משקל ממוצע לקרטון — מחושב מתעודות המשלוח האמיתיות (ברירת מחדל 12.3)
   const [avgCarton, setAvgCarton] = useState(12.3);
   useEffect(() => {
@@ -2016,6 +2037,12 @@ function PlanSheet({
     <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
       <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <b style={{ fontSize: 16 }}>גיליון שנתי — {year}</b>
+        <div className="tabs" style={{ padding: 3 }}>
+          {[['combined', 'משולב'], ['plan', 'תכנון (צפי)'], ['actual', 'ביצוע (בפועל)']].map(([k, l]) => (
+            <button key={k} type="button" className={`tab ${mode === k ? 'active' : ''}`}
+              style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => setMode(k)}>{l}</button>
+          ))}
+        </div>
         <div style={{ flex: 1 }} />
         <ViewSwitch view={view} onView={onView} />
       </div>
@@ -2109,8 +2136,10 @@ function PlanSheet({
                       {...activatable(() => onPlan(main.r.plan.id), `פתיחת תוכנית ${main.r.info.crop} ב${row.name}`)}>
                       {main.phase === 'harvest' ? (
                         <>
-                          <div className="ps-exp">{main.expected === null ? '—' : fmt(main.expected)}</div>
-                          {main.actual !== null && <div className="ps-act">{fmt(main.actual)}</div>}
+                          {mode !== 'actual' && <div className="ps-exp">{main.expected === null ? '—' : fmt(main.expected)}</div>}
+                          {mode !== 'plan' && (main.actual !== null
+                            ? <div className="ps-act">{fmt(main.actual)}</div>
+                            : (mode === 'actual' && <div className="ps-exp" style={{ color: 'var(--text-muted)', fontWeight: 400 }}>טרם</div>))}
                         </>
                       ) : (
                         <div className="ps-plant-label">{main.label}</div>
@@ -2129,50 +2158,50 @@ function PlanSheet({
             ))}
 
             {/* ---------- סיכומים — במקום שהלקוח רגיל אליו, מתחת למבנים ---------- */}
-            <tr className="ps-total">
-              {labelCell('ק"ג שבועי')}
+            {mode !== 'actual' && <tr className="ps-total">
+              {labelCell('ק"ג שבועי — צפי')}
               {summary.perWeek.map((p) => (
                 <td key={p.week.key} className={`ps-num ${p.fcRows.length ? 'ps-clickable' : ''}`} onClick={() => openWeek(p)}>
                   {p.expected ? fmt(p.expected) : '0'}
                 </td>
               ))}
-            </tr>
-            <tr className="ps-total ps-actual-row">
+            </tr>}
+            {mode !== 'plan' && <tr className="ps-total ps-actual-row">
               {labelCell('ק"ג בפועל')}
               {summary.perWeek.map((p) => (
                 <td key={p.week.key} className="ps-num" style={{ color: p.actual !== null ? ACTUAL_COLOR : 'var(--text-muted)' }}>
                   {p.actual !== null ? fmt(p.actual) : (p.expected ? 'טרם' : '')}
                 </td>
               ))}
-            </tr>
-            <tr className="ps-total">
+            </tr>}
+            {mode !== 'actual' && <tr className="ps-total">
               {labelCell('קרטונים צפי')}
               {summary.perWeek.map((p) => (
                 <td key={p.week.key} className="ps-num">{p.expected ? formatNumber(Math.round(p.expected / avgCarton)) : '0'}</td>
               ))}
-            </tr>
-            <tr className="ps-total">
-              {labelCell('משטח שבועי')}
+            </tr>}
+            {mode !== 'actual' && <tr className="ps-total">
+              {labelCell('משטח שבועי — צפי')}
               {summary.perWeek.map((p) => (
                 <td key={p.week.key} className="ps-num">{p.expected ? formatNumber(p.expected / KG_PER_PALLET, 1) : '0'}</td>
               ))}
-            </tr>
-            <tr className="ps-total">
+            </tr>}
+            {mode !== 'actual' && <tr className="ps-total">
               {labelCell('הכנסה צפויה ₪')}
               {summary.perWeek.map((p) => (
                 <td key={p.week.key} className="ps-num">{p.revenue ? fmt(p.revenue) : '0'}</td>
               ))}
-            </tr>
-            <tr className="ps-total ps-month-row">
-              {labelCell('סה"כ לחודש ₪')}
+            </tr>}
+            {mode !== 'actual' && <tr className="ps-total ps-month-row">
+              {labelCell('סה"כ לחודש ₪ — צפי')}
               {summary.months.map((m) => (
                 <td key={m.key} colSpan={m.span} className="ps-num ps-month-total" title={`${fmt(m.expected)} ק"ג`}>
                   {fmt(m.revenue)}
                 </td>
               ))}
-            </tr>
-            <tr className="ps-total ps-year-row">
-              {labelCell('סה"כ שנתי ₪')}
+            </tr>}
+            {mode !== 'actual' && <tr className="ps-total ps-year-row">
+              {labelCell('סה"כ שנתי ₪ — צפי')}
               {summary.yearGroups.map((g) => (
                 <td key={g.year} colSpan={g.span} className="ps-num ps-year-total">
                   {/* התא משתרע על כל השנה — הטקסט נשאר גלוי בזמן גלילה אופקית */}
@@ -2181,8 +2210,8 @@ function PlanSheet({
                   </span>
                 </td>
               ))}
-            </tr>
-            <tr className="ps-total ps-actual-row">
+            </tr>}
+            {mode !== 'plan' && <tr className="ps-total ps-actual-row">
               {labelCell(summary.anyActualRevenue
                 ? `הכנסות בפועל ₪ (${formatMoney(Math.round(summary.totalActualRevenue))})`
                 : 'הכנסות בפועל ₪')}
@@ -2191,7 +2220,7 @@ function PlanSheet({
                   {p.actualRevenue !== null ? fmt(p.actualRevenue) : ''}
                 </td>
               ))}
-            </tr>
+            </tr>}
           </tbody>
         </table>
       </div>
@@ -2209,9 +2238,12 @@ function PlanSheet({
 }
 
 // ============================================================
-// הוספה מהירה של ימי אי עבודה + ייבוא חגים לשנה — מתוך התוכנית
+// הוספה מהירה של יום אי עבודה — מתוך התוכנית
+// הייבוא ההמוני נעשה במסך "ימי אי עבודה" (עם בחירת ימים),
+// והחלה על התוכנית קורית רק בלחיצה מפורשת על "עדכן תוכנית".
 // ============================================================
-function NonWorkQuickAdd({ app, year, existing, onChanged }) {
+function NonWorkQuickAdd({ app, year, onChanged, onRecalc }) {
+  const navigate = useNavigate();
   const [date, setDate] = useState('');
   const [type, setType] = useState('');
   const [typeOptions, setTypeOptions] = useState([]);
@@ -2230,8 +2262,6 @@ function NonWorkQuickAdd({ app, year, existing, onChanged }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const existingDates = new Set((existing || []).map((d) => String(d['תאריך'] || '').slice(0, 10)));
-
   const add = async () => {
     if (busy || !date) return;
     setBusy(true); setMsg('');
@@ -2239,32 +2269,12 @@ function NonWorkQuickAdd({ app, year, existing, onChanged }) {
       await app.api.create('ימי אי עבודה', { 'תאריך': date, ...(type ? { 'סוג החג': type } : {}) });
       setDate('');
       await onChanged();
-      setMsg('✓ היום נוסף — הגיליון מתעדכן');
+      setMsg('✓ היום נוסף לרשימה');
     } catch (e) {
       setMsg(`✕ לא ניתן היה להוסיף (${e.message || e})`);
     }
     setBusy(false);
   };
-
-  const importSet = async (list, typeName) => {
-    if (busy) return;
-    setBusy(true); setMsg('');
-    let created = 0;
-    let failed = 0;
-    for (const h of list) {
-      if (existingDates.has(h.iso)) continue;
-      try {
-        await app.api.create('ימי אי עבודה', { 'תאריך': h.iso, ...(typeName ? { 'סוג החג': typeName } : {}) });
-        created += 1;
-      } catch { failed += 1; }
-    }
-    await onChanged();
-    setMsg(`✓ יובאו ${created} ימים${failed ? ` · ${failed} נכשלו` : ''} — התוכנית מתעדכנת`);
-    setBusy(false);
-  };
-
-  const heType = typeOptions.find((x) => x.includes('יהודי')) || typeOptions[0] || '';
-  const thType = typeOptions.find((x) => x.includes('תילאנדי') || x.includes('תאילנדי')) || typeOptions[1] || '';
 
   return (
     <div className="card" style={{ marginBottom: 14, background: 'var(--bg-secondary)' }}>
@@ -2282,11 +2292,11 @@ function NonWorkQuickAdd({ app, year, existing, onChanged }) {
         <button type="button" className="btn btn-primary" disabled={busy || !date} onClick={add}>{busy ? 'שומר...' : '+ הוסף יום'}</button>
       </div>
       <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-        <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => importSet(jewishHolidaysOfYear(Number(year)), heType)}>
-          📥 ייבוא חגי ישראל {year}
+        <button type="button" className="btn btn-success btn-sm" disabled={busy} onClick={onRecalc}>
+          🔄 עדכן את התוכנית לפי ימי אי העבודה
         </button>
-        <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => importSet(thaiHolidaysOfYear(Number(year)), thType)}>
-          📥 ייבוא חגי תאילנד {year}
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate('/nonworkdays')}>
+          🗓️ ייבוא חגים ובחירת ימים — במסך המלא
         </button>
       </div>
       {msg && <div style={{ marginTop: 8, fontSize: 13, fontWeight: 600 }}>{msg}</div>}

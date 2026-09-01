@@ -7,6 +7,18 @@ import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxi
 import PageHeader from '../components/PageHeader.jsx';
 import ChecksTab from '../components/ChecksTab.jsx';
 import ExpensesTab from '../components/ExpensesTab.jsx';
+import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
+import { toast } from '../utils/ui.js';
+
+const MARKETER_FORM_FIELDS = [
+  { name: 'שם משווק', label: 'שם משווק', type: 'text', required: true },
+  { name: 'איש קשר', label: 'איש קשר', type: 'text' },
+  { name: 'טלפון', label: 'טלפון', type: 'text' },
+  { name: 'אימייל', label: 'אימייל', type: 'text' },
+  { name: 'כתובת', label: 'כתובת', type: 'text' },
+  { name: 'תנאי תשלום', label: 'תנאי תשלום', type: 'select' },
+  { name: 'הערות', label: 'הערות', type: 'textarea' },
+];
 import { CHECKS_TABLE } from '../utils/checks.js';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { DELIVERY_TABLE, notesOfMarketer } from '../utils/deliveryNotes.js';
@@ -44,6 +56,10 @@ export default function FinancePage() {
   const reloadExpenses = async () => {
     const e = await app.api.get('הוצאות', '?maxRecords=400');
     setExpenses(Array.isArray(e) ? e : []);
+  };
+  const reloadMarketers = async () => {
+    const s = await app.api.get('משווקים', '?maxRecords=100');
+    setMarketers(Array.isArray(s) ? s : []);
   };
 
   useEffect(() => {
@@ -91,7 +107,7 @@ export default function FinancePage() {
       ) : tab === "צ'קים" ? (
         <ChecksTab checks={checks} onRefresh={reloadChecks} />
       ) : (
-        <MarketersTab marketers={marketers} invoices={invoices} deliveries={deliveries} />
+        <MarketersTab marketers={marketers} invoices={invoices} deliveries={deliveries} app={app} onChanged={reloadMarketers} />
       )}
     </div>
   );
@@ -167,8 +183,10 @@ function Overview({ weekly, expenses, bruto, neto, expSum, profit }) {
 }
 
 // ---------- משווקים ----------
-function MarketersTab({ marketers, invoices, deliveries = [] }) {
+function MarketersTab({ marketers, invoices, deliveries = [], app, onChanged }) {
   const [active, setActive] = useState(null);
+  const [form, setForm] = useState(null);
+  const canEdit = (app?.user?.role || 'owner') === 'owner';
   const navigate = useNavigate();
 
   // סכום נטו של חשבונית לפי id (מתאימות למזהים שמוחזרים ב-`חשבוניות` של המשווק)
@@ -209,6 +227,11 @@ function MarketersTab({ marketers, invoices, deliveries = [] }) {
 
   return (
     <div>
+      {canEdit && (
+        <div style={{ marginBottom: 14 }}>
+          <button className="btn btn-primary no-print" onClick={() => setForm({})}>+ משווק חדש</button>
+        </div>
+      )}
       <div className="grid">
         {cards.map(({ mk, revenue, count, trend, invoiceCount }) => (
           <div
@@ -232,6 +255,16 @@ function MarketersTab({ marketers, invoices, deliveries = [] }) {
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
               <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); navigate(`/delivery-notes?marketer=${encodeURIComponent(mk.id)}`); }}>📄 תעודות משלוח</button>
               <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); navigate('/invoices'); }}>🧾 חשבוניות</button>
+              {canEdit && (
+                <span style={{ marginInlineStart: 'auto', display: 'flex', gap: 4 }}>
+                  <button type="button" className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={(e) => { e.stopPropagation(); setForm(mk); }}>✎</button>
+                  <button type="button" className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      if (await removeRecord(app.api, 'משווקים', mk.id, mk['שם משווק'] || 'המשווק')) await onChanged();
+                    }}>🗑</button>
+                </span>
+              )}
             </div>
             {count === 0 && invoiceCount > 0 && (
               <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
@@ -262,6 +295,17 @@ function MarketersTab({ marketers, invoices, deliveries = [] }) {
         ))}
         {marketers.length === 0 && <div className="empty-state">אין נתונים לתקופה זו</div>}
       </div>
+
+      {form !== null && (
+        <RecordForm
+          api={app.api} table="משווקים"
+          title={form.id ? `עריכת ${form['שם משווק'] || 'משווק'}` : 'משווק חדש'}
+          record={form.id ? form : null}
+          fields={MARKETER_FORM_FIELDS}
+          onClose={() => setForm(null)}
+          onSaved={async () => { setForm(null); await onChanged(); toast('המשווק נשמר בהצלחה'); }}
+        />
+      )}
     </div>
   );
 }

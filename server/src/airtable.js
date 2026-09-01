@@ -107,6 +107,18 @@ export async function createRecord(tableName, fields) {
   return { id: created.id, ...created.fields };
 }
 
+/** יצירת כמה רשומות במנות של 10 (מגבלת Airtable לבקשה) */
+export async function createRecords(tableName, fieldsList) {
+  const base = getBase();
+  const out = [];
+  for (let i = 0; i < fieldsList.length; i += 10) {
+    const chunk = fieldsList.slice(i, i + 10).map((fields) => ({ fields }));
+    const created = await base(tableName).create(chunk);
+    created.forEach((r) => out.push({ id: r.id, ...r.fields }));
+  }
+  return out;
+}
+
 export async function updateRecord(tableName, recordId, fields) {
   const base = getBase();
   const updated = await base(tableName).update(recordId, fields);

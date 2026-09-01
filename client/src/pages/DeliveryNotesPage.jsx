@@ -16,7 +16,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatNumber, formatDate, formatWeight, formatPercent } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
-import RecordForm from '../components/RecordForm.jsx';
+import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import DeliveryNoteDrawer, { ObjChip, CheckBadge } from '../components/DeliveryNoteDrawer.jsx';
 import { activatable } from '../utils/a11y.js';
 import { exportCsv, fileStamp, inDateRange, paginate, sortRows, dateValue } from '../utils/table.js';
@@ -320,10 +320,6 @@ export default function DeliveryNotesPage() {
         )}
       </div>
 
-      {kpi.missingDoc > 0 && !loading && (
-        <div className="hint no-print">ℹ️ {formatNumber(kpi.missingDoc)} תעודות ללא קובץ מצורף — ניתן להשלים דרך מסך <button type="button" className="crumb-link" onClick={() => navigate('/upload')}>העלאת מסמך</button>.</div>
-      )}
-
       {drawer && (
         <DeliveryNoteDrawer
           note={drawer.note}
@@ -332,6 +328,12 @@ export default function DeliveryNotesPage() {
           api={app.api}
           canEdit={canEdit}
           onEdit={(n) => setForm(n)}
+          onDelete={async (n) => {
+            if (await removeRecord(app.api, DELIVERY_TABLE, n.id, `תעודת המשלוח ${noteNumber(n) ?? ''}`)) {
+              setDrawer(null);
+              await load();
+            }
+          }}
           onClose={() => setDrawer(null)}
         />
       )}

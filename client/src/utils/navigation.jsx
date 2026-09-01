@@ -67,11 +67,11 @@ export const NAV_GROUPS = [
 // הרשאות לפי תפקיד (סעיף 7 באיפיון)
 // ============================================================
 
-// כתובות שמותרות למנהל עבודה (owner רואה הכל)
-export const OPERATIONS = [
-  '/structures', '/planting', '/harvests', '/spraying', '/materials', '/treatments',
-  '/workers', '/crew', '/requests', '/spray-reports',
-];
+// כתובות שמותרות למנהל עבודה — צפייה במצב העבודה והעובדים בלבד (owner רואה הכל)
+export const OPERATIONS = ['/workers', '/crew', '/requests'];
+
+/** הרשאת עדכון/מחיקה — למנהל הראשי בלבד; מנהל עבודה צופה בלבד */
+export const canWrite = (role) => role === 'owner';
 
 export const INITIAL_ROUTE = (role) => {
   if (role === 'worker') return '/worker';

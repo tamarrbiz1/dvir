@@ -36,7 +36,7 @@ function dateLabel(v) {
 export default function SprayReportsPage() {
   const app = useApp();
   const navigate = useNavigate();
-  const canEdit = ['owner', 'manager'].includes(app.user?.role || 'owner');
+  const canEdit = (app.user?.role || 'owner') === 'owner'; // עדכונים למנהל הראשי בלבד
   const [sprays, setSprays] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null);

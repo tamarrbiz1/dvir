@@ -52,8 +52,8 @@ export default function WorkersPage() {
   const [drawer, setDrawer] = useState(null);
   const [form, setForm] = useState(null); // {} = עובד חדש, רשומה = עריכה
   const [search, setSearch] = useState('');
-  const canEdit = (app.user?.role || 'owner') === 'owner'; // CRUD עובדים למנהל ראשי בלבד
-  const canEditJobs = ['owner', 'manager'].includes(app.user?.role || 'owner');
+  const canEdit = (app.user?.role || 'owner') === 'owner'; // עדכונים למנהל הראשי בלבד
+  const canEditJobs = canEdit; // מנהל עבודה צופה בלבד
 
   const load = useCallback(() => Promise.all([
     app.api.get('עובדים', '?maxRecords=200'),
@@ -259,7 +259,7 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
     try {
       await app.api.update(WORKS_TABLE, r.id, { 'עדכון מחיר': false });
       await app.api.update(WORKS_TABLE, r.id, { 'עדכון מחיר': true });
-      toast('האוטומציה של Airtable מחשבת — הסכום יתעדכן בעוד רגע');
+      toast('המחיר מחושב מחדש — הסכום יתעדכן בעוד רגע');
       // האוטומציה נמדדה כ~13 שניות; רענון ראשון מהיר ושני אחרי סיום
       setTimeout(() => { onChanged(); }, 5000);
       setTimeout(() => { onChanged(); }, 14000);
@@ -339,7 +339,7 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
                     {canEdit && (
                       <td className="no-print">
                         <div style={{ display: 'flex', gap: 4 }}>
-                          <button className="btn btn-sm btn-ghost" disabled={busyId === r.id} aria-label="רענן מחיר" title='רענן מחיר — מפעיל מחדש את "עדכון מחיר" ב-Airtable'
+                          <button className="btn btn-sm btn-ghost" disabled={busyId === r.id} aria-label="רענן מחיר" title='רענן מחיר'
                             onClick={() => refreshPrice(r)}>{busyId === r.id ? '…' : '🔄'}</button>
                           <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={() => setForm(r)}>✎</button>
                           <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
@@ -370,7 +370,7 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
           onClose={() => setForm(null)}
           onSaved={async () => {
             setForm(null); await onChanged();
-            toast('העבודה נשמרה — הסכום לתשלום מחושב ב-Airtable ויופיע בעוד רגע');
+            toast('העבודה נשמרה — הסכום לתשלום יופיע בעוד רגע');
             setTimeout(() => { onChanged(); }, 13000);
           }}
         />

@@ -30,7 +30,7 @@ const MATERIAL_FORM_FIELDS = [
 
 export default function SprayingPage({ initialTab }) {
   const app = useApp();
-  const canEdit = ['owner', 'manager'].includes(app.user?.role || 'owner');
+  const canEdit = (app.user?.role || 'owner') === 'owner'; // עדכונים למנהל הראשי בלבד
   const isOwner = (app.user?.role || 'owner') === 'owner';
   const [params, setParams] = useSearchParams();
   const [tab, setTab] = useState(initialTab || (params.get('tab') === 'materials' ? 'materials' : 'sprays'));

@@ -422,7 +422,7 @@ function QuarterlyTab({ quarterly, crops, api, canEdit, onChanged }) {
               </tbody>
             </table>
           </div>
-          <div className="hint">הערך: ק"ג לדונם לשבוע. Airtable משתמש בנתונים אלה לחישוב התחזית.</div>
+          <div className="hint">הערך: ק"ג לדונם לשבוע — משמש לחישוב התחזית.</div>
         </div>
       )}
       {form !== null && (

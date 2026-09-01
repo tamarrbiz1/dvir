@@ -7,6 +7,8 @@ import { displayName } from '../utils/resolve.js';
 import { BarChart, Bar, Line, LineChart, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps, yCategoryProps } from '../utils/chart.js';
 import PageHeader from '../components/PageHeader.jsx';
+import { removeRecord } from '../components/RecordForm.jsx';
+import { toast } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 
 // ============================================================
@@ -40,32 +42,35 @@ const LIST_QS = `?maxRecords=200&raw=1&fields=${LIST_FIELDS.map(encodeURICompone
 export default function WeeklySummaryPage() {
   const app = useApp();
   const [params] = useSearchParams();
+  const canEdit = (app.user?.role || 'owner') === 'owner';
   const [weeks, setWeeks] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [drawer, setDrawer] = useState(null);
+  const [newWeek, setNewWeek] = useState(false);
 
-  useEffect(() => {
-    Promise.all([
+  const load = useCallback(async (handleParam = false) => {
+    const [w, e] = await Promise.all([
       app.api.get(TABLE, LIST_QS),
       app.api.get('הוצאות', '?maxRecords=400'),
-    ])
-      .then(([w, e]) => {
-        const list = (Array.isArray(w) ? w : []).map(cleanRecord);
-        // החדש למעלה — קוד השבוע הוא YYYYMMDD ולכן מיון מחרוזתי נכון גם כשהתאריך שגוי
-        list.sort((a, b) => String(b[F.code] || '').localeCompare(String(a[F.code] || '')));
-        setWeeks(list);
-        // קישור עמוק: /weekly?week=<קוד שבוע> פותח את כרטיס השבוע (מתעודות משלוח / חשבוניות / חריגות)
-        const wanted = params.get('week');
-        if (wanted) {
-          const hit = list.find((x) => String(x[F.code]) === wanted);
-          if (hit) setDrawer(hit);
-        }
-        setExpenses(Array.isArray(e) ? e : []);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+    ]);
+    const list = (Array.isArray(w) ? w : []).map(cleanRecord);
+    // החדש למעלה — קוד השבוע הוא YYYYMMDD ולכן מיון מחרוזתי נכון גם כשהתאריך שגוי
+    list.sort((a, b) => String(b[F.code] || '').localeCompare(String(a[F.code] || '')));
+    setWeeks(list);
+    setExpenses(Array.isArray(e) ? e : []);
+    if (handleParam) {
+      // קישור עמוק: /weekly?week=<קוד שבוע> פותח את כרטיס השבוע
+      const wanted = params.get('week');
+      if (wanted) {
+        const hit = list.find((x) => String(x[F.code]) === wanted);
+        if (hit) setDrawer(hit);
+      }
+    }
+    return list;
+  }, [app.api, params]);
+
+  useEffect(() => { load(true).catch(() => {}).finally(() => setLoading(false)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
   // ------ חישובים ------
   // ערכי שבוע: ה-Rollup, ואם הוא ריק — סכימה מ"JSON לפי ימים מאוחד"
@@ -125,7 +130,9 @@ export default function WeeklySummaryPage() {
 
   return (
     <div>
-      <PageHeader icon="📆" title="סיכום שבועי" />
+      <PageHeader icon="📆" title="סיכום שבועי">
+        {canEdit && <button className="btn btn-primary no-print" onClick={() => setNewWeek(true)}>+ סיכום שבועי</button>}
+      </PageHeader>
       {loading ? (
         <div className="skeleton skeleton-card" />
       ) : (
@@ -156,7 +163,7 @@ export default function WeeklySummaryPage() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>שבוע</th><th>פדיון ברוטו</th><th>פדיון נטו</th><th>משקל</th><th>מסמכים</th><th>סטטוס מסמכים</th><th>סטטוס קטיף</th>
+                      <th>שבוע</th><th>פדיון ברוטו</th><th>פדיון נטו</th><th>משקל</th><th>מסמכים</th><th>סטטוס מסמכים</th><th>סטטוס קטיף</th>{canEdit && <th className="no-print">פעולות</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -172,6 +179,16 @@ export default function WeeklySummaryPage() {
                         <td style={{ whiteSpace: 'nowrap', fontSize: 13 }}>🧾 {countOf(w[F.invoices])} · 📄 {countOf(w[F.deliveries])}</td>
                         <td><StatusBadge v={w[F.docStatus]} /></td>
                         <td><StatusBadge v={w[F.harvestStatus]} /></td>
+                        {canEdit && (
+                          <td className="no-print">
+                            <button className="btn btn-sm btn-ghost" aria-label="הסרת הסיכום" title="הסרת הסיכום מהתצוגה"
+                              style={{ color: 'var(--error)' }}
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                if (await removeRecord(app.api, TABLE, w.id, `סיכום השבוע ${displayName(w[F.code])}`)) await load();
+                              }}>🗑</button>
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>
@@ -183,6 +200,21 @@ export default function WeeklySummaryPage() {
       )}
 
       {drawer && <WeekDrawer summary={drawer} onClose={() => setDrawer(null)} />}
+
+      {newWeek && (
+        <NewWeekModal
+          existingCodes={new Set(weeks.map((w) => String(w[F.code] || '')))}
+          onClose={() => setNewWeek(false)}
+          onCreate={async (code) => {
+            const created = await app.api.create(TABLE, { [F.code]: code });
+            toast('סיכום השבוע נוצר — שאר הנתונים יתמלאו אוטומטית');
+            setNewWeek(false);
+            const list = await load();
+            const hit = list.find((x) => x.id === created.id);
+            if (hit) setDrawer(hit);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -245,7 +277,7 @@ function WeekDrawer({ summary, onClose }) {
             <span style={{ fontSize: 11.5, fontWeight: 400, color: 'var(--text-secondary)', marginInlineStart: 10, direction: 'ltr', unicodeBidi: 'embed' }}>{code}</span>
           </span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => load(false)} disabled={refreshing} title="טעינה מחדש מ-Airtable">
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => load(false)} disabled={refreshing} title="טעינה מחדש">
               {refreshing ? <span className="spinner spinner-sm" /> : '🔄'} {loadedAt ? `עודכן ${hhmm(loadedAt)}` : 'טוען...'}
             </button>
             <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
@@ -517,7 +549,7 @@ function KgTab({ kg, calcError }) {
   if (!m) {
     return (
       <div>
-        {calcError && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12, whiteSpace: 'normal', textAlign: 'right' }}>⚠️ שגיאת חישוב ק"ג לפי מבנים — הנתונים לא חושבו ב-Airtable</div>}
+        {calcError && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12, whiteSpace: 'normal', textAlign: 'right' }}>⚠️ שגיאת חישוב ק"ג לפי מבנים — הנתונים טרם חושבו</div>}
         <div className="empty-state">אין נתונים לתקופה זו</div>
       </div>
     );
@@ -1049,4 +1081,67 @@ function parseDeliveriesJson(json) {
     date: d.date, cartons: num(d.cartons), weight: num(d.weight), pallets: num(d.pallets),
     count: Array.isArray(d.source_delivery_records) ? d.source_delivery_records.length : '—',
   }));
+}
+
+
+// ============================================================
+// יצירת סיכום שבועי חדש — בחירת שבוע עסקי (שבת–חמישי) ואישור.
+// נכתב רק "קוד שבוע"; שאר השדות מתמלאים אוטומטית.
+// ============================================================
+function NewWeekModal({ existingCodes, onClose, onCreate }) {
+  const ymd = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  const weekOf = (base) => {
+    const d0 = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+    d0.setDate(d0.getDate() - ((d0.getDay() + 1) % 7)); // שבת
+    const end = new Date(d0); end.setDate(d0.getDate() + 5); // חמישי
+    return { start: d0, end };
+  };
+  // ברירת המחדל: השבוע העסקי הקודם
+  const [week, setWeek] = useState(() => {
+    const prev = new Date(); prev.setDate(prev.getDate() - 7);
+    return weekOf(prev);
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  useEscapeClose(onClose, !saving);
+
+  const code = `${ymd(week.start)}-${ymd(week.end)}`;
+  const exists = existingCodes.has(code);
+  const shift = (n) => setWeek((w) => {
+    const s2 = new Date(w.start); s2.setDate(s2.getDate() + n * 7);
+    return weekOf(s2);
+  });
+
+  const submit = async () => {
+    if (saving || exists) return;
+    setSaving(true); setError('');
+    try { await onCreate(code); }
+    catch (e) {
+      setError(`לא ניתן היה להשלים את הפעולה. הנתונים לא עודכנו. (${e.message || e})`);
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={() => !saving && onClose()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>סיכום שבועי חדש</h3>
+        {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12 }}>⚠️ {error}</div>}
+        <div style={{ textAlign: 'center', marginBottom: 6, color: 'var(--text-secondary)', fontSize: 13 }}>שבוע המסמך (שבת – חמישי)</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginBottom: 8 }}>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => shift(-1)}>→ שבוע קודם</button>
+          <b style={{ fontSize: 17, whiteSpace: 'nowrap' }}>{formatDate(week.start)} – {formatDate(week.end)}</b>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => shift(1)}>שבוע הבא ←</button>
+        </div>
+        <div className="muted" style={{ textAlign: 'center', fontSize: 12, direction: 'ltr' }}>{code}</div>
+        {exists && <div className="badge badge-warn" style={{ width: '100%', marginTop: 12 }}>⚠️ כבר קיים סיכום שבועי לשבוע הזה</div>}
+        <div className="form-actions">
+          <button type="button" className="btn btn-ghost" disabled={saving} onClick={onClose}>ביטול</button>
+          <button type="button" className="btn btn-primary" disabled={saving || exists} onClick={submit}>
+            {saving ? 'יוצר...' : 'צור סיכום שבועי'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

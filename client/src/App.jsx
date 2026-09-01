@@ -1,5 +1,5 @@
-import { Routes, Route, Navigate, NavLink } from 'react-router-dom';
-import { useState, useEffect, createContext, useContext } from 'react';
+import { Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom';
+import { useState, useEffect, useMemo, useCallback, createContext, useContext } from 'react';
 import { t, setLang } from './i18n.js';
 import LanguageSwitcher from './components/LanguageSwitcher.jsx';
 import { NAV_GROUPS, INITIAL_ROUTE, canSee, NavigationProvider } from './utils/navigation.jsx';
@@ -35,6 +35,16 @@ import AlertsPage from './pages/AlertsPage.jsx';
 import UploadDocumentPage from './pages/UploadDocumentPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import FinancialForecastPage from './pages/FinancialForecastPage.jsx';
+
+// שער הרשאות: כתובת שאינה מותרת לתפקיד מנותבת לעמוד הבית שלו
+function RoleGate({ role, children }) {
+  const location = useLocation();
+  const path = location.pathname;
+  if (role !== 'owner' && path !== '/worker' && !canSee(role, path)) {
+    return <Navigate to={INITIAL_ROUTE(role)} replace />;
+  }
+  return children;
+}
 
 // ============================================================
 // הקשר גלובלי: שפה, משתמש, נתוני מטה
@@ -98,6 +108,9 @@ function Sidebar() {
         );
       })}
       <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+        <div style={{ padding: '0 12px 8px', fontSize: 12, color: 'var(--text-muted)' }}>
+          מחובר: <b style={{ color: 'var(--text-secondary)' }}>{user?.name || 'משתמש'}</b> · {role === 'owner' ? 'מנהל ראשי' : 'מנהל עבודה'}
+        </div>
         <button type="button" className="nav-item" onClick={logout}>
           <span className="nav-icon" aria-hidden="true">🚪</span>
           <span>{t('logout')}</span>
@@ -116,11 +129,11 @@ export default function App() {
   const [badges, setBadges] = useState({ requests: 0, alerts: 0 });
 
   // מעדכן שפה: state, מודול i18n, ומאפיין data-lang לסקיילינג CSS בתאילנדית
-  const setAppLang = (l) => {
+  const setAppLang = useCallback((l) => {
     setUI(l);
     setLang(l);
     try { document.documentElement.setAttribute('data-lang', l); } catch {}
-  };
+  }, []);
 
   // טעינת המטא-נתונים (רשימת טבלאות) מהשרת
   useEffect(() => {
@@ -183,16 +196,49 @@ export default function App() {
     } catch {}
   }, []);
 
-  const login = (u) => {
+  const login = useCallback((u) => {
     setUser(u);
     try { sessionStorage.setItem('zite_user', JSON.stringify(u)); } catch {}
-  };
-  const logout = () => {
+  }, []);
+  const logout = useCallback(() => {
     setUser(null);
     try { sessionStorage.removeItem('zite_user'); } catch {}
-  };
+  }, []);
 
-  const appValue = {
+  // חשוב: אובייקט ה-API חייב להיות יציב בין רינדורים — אחרת כל מסך
+  // שטוען נתונים לפי [app.api] נטען מחדש בכל עדכון מונים (כל 90 שניות)
+  const api = useMemo(() => ({
+    async get(table, qs = '') {
+      const r = await fetch(`/api/${encodeURIComponent(table)}${qs}`);
+      if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
+      return r.json();
+    },
+    async create(table, body) {
+      const r = await fetch(`/api/${encodeURIComponent(table)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
+      return r.json();
+    },
+    async update(table, id, body) {
+      const r = await fetch(`/api/${encodeURIComponent(table)}/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
+      return r.json();
+    },
+    async remove(table, id) {
+      const r = await fetch(`/api/${encodeURIComponent(table)}/${id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
+      return r.json();
+    },
+  }), []);
+
+  const appValue = useMemo(() => ({
     user,
     login,
     logout,
@@ -201,37 +247,8 @@ export default function App() {
     tables,
     loadingTables,
     badges,
-    api: {
-      async get(table, qs = '') {
-        const r = await fetch(`/api/${encodeURIComponent(table)}${qs}`);
-        if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
-        return r.json();
-      },
-      async create(table, body) {
-        const r = await fetch(`/api/${encodeURIComponent(table)}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
-        return r.json();
-      },
-      async update(table, id, body) {
-        const r = await fetch(`/api/${encodeURIComponent(table)}/${id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
-        return r.json();
-      },
-      async remove(table, id) {
-        const r = await fetch(`/api/${encodeURIComponent(table)}/${id}`, { method: 'DELETE' });
-        if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
-        return r.json();
-      },
-    },
-  };
+    api,
+  }), [user, login, logout, lang, setAppLang, tables, loadingTables, badges, api]);
 
   // אם אין משתמש מחובר — מסך התחברות
   if (!user) {
@@ -258,6 +275,7 @@ export default function App() {
         <div className="app-shell">
           <Sidebar />
           <main className="main-area" id="main-content" tabIndex={-1}>
+            <RoleGate role={user.role}>
             <Routes>
               <Route path="/" element={<DashboardPage />} />
               <Route path="/structures" element={<StructuresPage />} />
@@ -286,6 +304,7 @@ export default function App() {
               <Route path="/worker" element={<WorkerApp />} />
               <Route path="*" element={<Navigate to={INITIAL_ROUTE(user.role)} replace />} />
             </Routes>
+            </RoleGate>
           </main>
         </div>
       </NavigationProvider>

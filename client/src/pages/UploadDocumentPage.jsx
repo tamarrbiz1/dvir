@@ -209,7 +209,7 @@ export default function UploadDocumentPage() {
       if (!r.ok || data.error) throw new Error(data.error || `שגיאה ${r.status}`);
       // הצלחה מוצגת רק אחרי ש-Airtable החזיר את הרשומה שנוצרה בפועל
       const recId = data.record?.id;
-      if (!recId) throw new Error('Airtable לא החזיר את הרשומה שנוצרה');
+      if (!recId) throw new Error('השמירה לא הושלמה — נסו שוב');
       setStatus('done');
       setMessage('');
       setCreatedRec(data.record);

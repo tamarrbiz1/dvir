@@ -4,7 +4,7 @@
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
-import { getMeta, fetchRecords, createRecord, updateRecord, deleteRecord, uploadAttachmentToRecord } from './airtable.js';
+import { getMeta, fetchRecords, createRecord, createRecords, updateRecord, deleteRecord, uploadAttachmentToRecord } from './airtable.js';
 import { attachLinkedNames, invalidateIndex } from './resolve-links.js';
 
 const app = express();
@@ -114,6 +114,32 @@ app.post('/api/upload-document', upload.single('file'), async (req, res) => {
 });
 
 // ============================================================
+// כניסת עובד — אימות כפול (אימייל + מספר דרכון) בצד השרת
+// ============================================================
+app.post('/api/worker-login', async (req, res) => {
+  try {
+    const { email, passport } = req.body || {};
+    if (!email || !passport) return res.status(400).json({ error: 'יש להזין אימייל ומספר דרכון' });
+    const workers = await fetchRecords('עובדים', {});
+    const norm = (s) => String(s || '').trim().toLowerCase();
+    const found = workers.find((w) => norm(w['מייל']) === norm(email) && norm(w['מספר דרכון']) === norm(passport));
+    if (!found) return res.status(401).json({ error: 'האימייל ומספר הדרכון אינם תואמים לעובד רשום' });
+    res.json({
+      ok: true,
+      worker: {
+        id: found.id,
+        'שם פרטי': found['שם פרטי'] || '',
+        'שם משפחה': found['שם משפחה'] || '',
+        'מייל': found['מייל'] || '',
+        'מספר דרכון': found['מספר דרכון'] || '',
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
 // מטמון קריאה קצר
 //
 // מסך אחד טוען לרוב 4–6 טבלאות, וכמה מסכים חולקים את אותן טבלאות
@@ -209,9 +235,15 @@ app.get('/api/:table/:id', async (req, res) => {
   }
 });
 
-// יצירת רשומה
+// יצירת רשומה (או כמה רשומות — כשנשלח מערך, למשל בייבוא חגים)
 app.post('/api/:table', async (req, res) => {
   try {
+    if (Array.isArray(req.body)) {
+      if (req.body.length > 100) return res.status(400).json({ error: 'עד 100 רשומות בבקשה אחת' });
+      const created = await createRecords(req.params.table, req.body);
+      invalidateReads(req.params.table);
+      return res.status(201).json(created);
+    }
     const created = await createRecord(req.params.table, req.body);
     invalidateReads(req.params.table); // כדי שהרשומה החדשה תיקרא מיד ותיפתר לשם
     res.status(201).json(created);

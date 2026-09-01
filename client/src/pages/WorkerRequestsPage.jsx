@@ -188,12 +188,12 @@ export default function WorkerRequestsPage() {
         </div>
       )}
 
-      {drawer && <RequestDrawer req={drawer} busy={busy} error={actionError} onClose={() => setDrawer(null)} onAnswer={answer} />}
+      {drawer && <RequestDrawer canAct={(app.user?.role || 'owner') === 'owner'} req={drawer} busy={busy} error={actionError} onClose={() => setDrawer(null)} onAnswer={answer} />}
     </div>
   );
 }
 
-function RequestDrawer({ req, busy, error, onClose, onAnswer }) {
+function RequestDrawer({ req, busy, error, onClose, onAnswer, canAct = true }) {
   useEscapeClose(onClose, !busy); // סגירה במקש Escape
   const [note, setNote] = useState(req.note || '');
   const [allowsWork, setAllowsWork] = useState(req.allowsWork);
@@ -216,7 +216,13 @@ function RequestDrawer({ req, busy, error, onClose, onAnswer }) {
             {req.workerNotes && <div style={{ marginTop: 10, fontSize: 13 }}><span style={{ color: 'var(--text-secondary)' }}>הערת העובד: </span>{req.workerNotes}</div>}
           </div>
 
-          <div className="card" style={{ marginTop: 14 }}>
+          {!canAct && req.note && (
+            <div className="card" style={{ marginTop: 14 }}>
+              <div className="section-title" style={{ marginTop: 0 }}>תשובת המנהל</div>
+              <div style={{ fontSize: 14 }}>{req.note}</div>
+            </div>
+          )}
+          {canAct && <div className="card" style={{ marginTop: 14 }}>
             <div className="section-title" style={{ marginTop: 0 }}>תשובת המנהל</div>
             <div className="form-group">
               <label>הערה לעובד</label>
@@ -233,8 +239,8 @@ function RequestDrawer({ req, busy, error, onClose, onAnswer }) {
                 <button className="btn btn-ghost" disabled={busy} onClick={() => onAnswer(req, REQUEST_STATUS.pending, note, false)}>החזר להמתנה</button>
               )}
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>ההחלטה נשמרת ב-Airtable ומופיעה מיד באזור האישי של העובד.</div>
-          </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>ההחלטה נשמרת ומופיעה מיד באזור האישי של העובד.</div>
+          </div>}
         </div>
       </div>
     </div>

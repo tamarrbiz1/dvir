@@ -40,6 +40,7 @@ export default function NonWorkDaysPage() {
   const [year, setYear] = useState(String(new Date().getFullYear()));
   const [view, setView] = useState('list');
   const [importing, setImporting] = useState(false);
+  const [preview, setPreview] = useState(null); // {label, type, items:[{iso,he,checked}]}
   const [notice, setNotice] = useState('');
 
   const load = useCallback(async () => {
@@ -117,21 +118,35 @@ export default function NonWorkDaysPage() {
     setSaving(false);
   };
 
-  /** ייבוא רשימת תאריכים — כל כישלון נספר ומדווח */
-  const importDates = async (list, type, label) => {
+  /** ייבוא: קודם תצוגה מקדימה עם בחירת ימים — הייבוא מוסיף רק לרשימה כאן */
+  const openImportPreview = (list, type, label) => {
     if (importing) return;
-    if (!type) { setNotice(`לא ניתן לייבא — סוג החג "${label}" אינו קיים ברשימת האפשרויות ב-Airtable.`); return; }
-    setImporting(true); setNotice('');
+    if (!type) { setNotice(`לא ניתן לייבא — סוג החג "${label}" אינו קיים ברשימת האפשרויות.`); return; }
     const missing = list.filter((h) => !byDate.has(h.iso));
-    let created = 0, failed = 0;
-    for (const h of missing) {
-      try { await app.api.create('ימי אי עבודה', { 'תאריך': h.iso, 'סוג החג': type }); created++; }
-      catch { failed++; }
+    if (!missing.length) { setNotice(`כל ${label} של ${year} כבר קיימים ברשימה.`); return; }
+    setNotice('');
+    setPreview({
+      label,
+      type,
+      // ערבי חג אינם מסומנים כברירת מחדל — הבחירה בידי הלקוח
+      items: missing.map((h) => ({ ...h, checked: !String(h.he || '').startsWith('ערב') })),
+    });
+  };
+
+  const runImport = async () => {
+    if (!preview || importing) return;
+    const chosen = preview.items.filter((i) => i.checked);
+    if (!chosen.length) { setPreview(null); return; }
+    setImporting(true);
+    try {
+      // יצירה קבוצתית — בקשה אחת במקום בקשה לכל יום
+      await app.api.create('ימי אי עבודה', chosen.map((h) => ({ 'תאריך': h.iso, 'סוג החג': preview.type })));
+      setNotice(`נוספו ${chosen.length} ימים — ${preview.label} ${year}. התוכנית תתעדכן רק כשתבחרו בכך במסך תוכנית השתילה.`);
+    } catch (e) {
+      setNotice(`הייבוא נכשל: ${e.message || e}`);
     }
     setImporting(false);
-    if (!missing.length) setNotice(`כל ${label} של ${year} כבר קיימים במערכת.`);
-    else if (failed) setNotice(`נוספו ${created} ימים (${label}). ${failed} נכשלו ולא נשמרו.`);
-    else setNotice(`נוספו ${created} ימים — ${label} ${year}.`);
+    setPreview(null);
     await load();
   };
 
@@ -159,21 +174,49 @@ export default function NonWorkDaysPage() {
             {yearsAvailable.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
           <button className="btn btn-primary" disabled={!holidayTypes.length} onClick={() => openAdd()}>+ הוסף יום</button>
-          <button className="btn btn-ghost" disabled={importing || !jewishType} onClick={() => importDates(jewishHolidaysOfYear(Number(year)), jewishType, 'חגי ישראל')}>
+          <button className="btn btn-ghost" disabled={importing || !jewishType} onClick={() => openImportPreview(jewishHolidaysOfYear(Number(year)), jewishType, 'חגי ישראל')}>
             {importing ? 'מייבא...' : `✡️ ייבא חגי ישראל ${year}`}
           </button>
-          <button className="btn btn-ghost" disabled={importing || !thaiType} onClick={() => importDates(thaiHolidaysOfYear(Number(year)), thaiType, 'חגי תאילנד')}>
+          <button className="btn btn-ghost" disabled={importing || !thaiType} onClick={() => openImportPreview(thaiHolidaysOfYear(Number(year)), thaiType, 'חגי תאילנד')}>
             🇹🇭 ייבא חגי תאילנד
           </button>
-          <button className="btn btn-ghost" disabled={importing || !jewishType} onClick={() => importDates(saturdaysOfYear(), jewishType, 'שבתות')}>
+          <button className="btn btn-ghost" disabled={importing || !jewishType} onClick={() => openImportPreview(saturdaysOfYear().map((s) => ({ ...s, he: 'שבת' })), jewishType, 'שבתות')}>
             🕯️ ייבא שבתות
           </button>
         </div>
       </PageHeader>
 
-      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 14 }}>
-        ימים אלו משמשים את Airtable לחישוב לוחות העבודה והזזת התוכניות. שבתות מודגשות בלוח גם ללא רשומה.
-      </div>
+      {preview && (
+        <div className="modal-overlay" onClick={() => !importing && setPreview(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>ייבוא {preview.label} — {year}</h3>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 10, textAlign: 'center' }}>
+              בחרו אילו ימים להוסיף לרשימה. ({preview.items.filter((i) => i.checked).length} מתוך {preview.items.length} מסומנים)
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginBottom: 10 }}>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={() => setPreview({ ...preview, items: preview.items.map((i) => ({ ...i, checked: true })) })}>בחר הכל</button>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={() => setPreview({ ...preview, items: preview.items.map((i) => ({ ...i, checked: false })) })}>נקה הכל</button>
+            </div>
+            <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 10, padding: '6px 12px' }}>
+              {preview.items.map((it, idx) => (
+                <label key={it.iso} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={it.checked}
+                    onChange={(e) => setPreview({ ...preview, items: preview.items.map((x, j) => (j === idx ? { ...x, checked: e.target.checked } : x)) })} />
+                  <b style={{ minWidth: 86 }}>{formatDate(it.iso)}</b>
+                  <span>{it.he || preview.label}</span>
+                </label>
+              ))}
+            </div>
+            <div className="form-actions">
+              <button type="button" className="btn btn-ghost" disabled={importing} onClick={() => setPreview(null)}>ביטול</button>
+              <button type="button" className="btn btn-primary" disabled={importing || !preview.items.some((i) => i.checked)} onClick={runImport}>
+                {importing ? 'מייבא...' : `ייבא ${preview.items.filter((i) => i.checked).length} ימים`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {loadError && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {loadError}</div>}
       {notice && <div className="badge" style={{ marginBottom: 14, background: 'var(--docs-soft)' }}>{notice}</div>}

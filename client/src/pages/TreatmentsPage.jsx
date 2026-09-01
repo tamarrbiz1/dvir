@@ -127,7 +127,7 @@ export default function TreatmentsPage() {
       setWorkers(Array.isArray(w) ? w : []);
       setPlans(Array.isArray(p) ? p : []);
     } catch (e) {
-      setLoadError(e.message || 'לא ניתן היה לטעון את הנתונים מ-Airtable.');
+      setLoadError(e.message || 'לא ניתן היה לטעון את הנתונים.');
     }
     setLoading(false);
   }, [app.api]);
