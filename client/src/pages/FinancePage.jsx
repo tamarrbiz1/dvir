@@ -6,6 +6,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import PageHeader from '../components/PageHeader.jsx';
 import ChecksTab from '../components/ChecksTab.jsx';
+import ExpensesTab from '../components/ExpensesTab.jsx';
 import { CHECKS_TABLE } from '../utils/checks.js';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { DELIVERY_TABLE, notesOfMarketer } from '../utils/deliveryNotes.js';
@@ -23,6 +24,7 @@ export default function FinancePage() {
   const [checks, setChecks] = useState([]);
   const [invoices, setInvoices] = useState([]);
   const [deliveries, setDeliveries] = useState([]); // תעודות משלוח — לכרטיס המשווק (סעיף 27)
+  const [suppliers, setSuppliers] = useState([]); // ל"קשר לספק" בטאב ההוצאות
   const [loading, setLoading] = useState(true);
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTabState] = useState(() => TAB_KEYS[searchParams.get('tab')] || 'סקירה');
@@ -38,6 +40,11 @@ export default function FinancePage() {
     const c = await app.api.get(CHECKS_TABLE, '?maxRecords=300');
     setChecks(Array.isArray(c) ? c : []);
   };
+  // רענון הוצאות אחרי כתיבה (קשר לספק / עריכה / מחיקה)
+  const reloadExpenses = async () => {
+    const e = await app.api.get('הוצאות', '?maxRecords=400');
+    setExpenses(Array.isArray(e) ? e : []);
+  };
 
   useEffect(() => {
     Promise.all([
@@ -47,8 +54,10 @@ export default function FinancePage() {
       app.api.get(CHECKS_TABLE, '?maxRecords=300'),
       app.api.get('חשבוניות', '?maxRecords=400'),
       app.api.get(DELIVERY_TABLE, '?maxRecords=1000').catch(() => []),
+      app.api.get('ספקים', '?maxRecords=200').catch(() => []),
     ])
-      .then(([w, e, s, c, inv, dn]) => {
+      .then(([w, e, s, c, inv, dn, sup]) => {
+        setSuppliers(Array.isArray(sup) ? sup : []);
         setWeekly(Array.isArray(w) ? w : []);
         setExpenses(Array.isArray(e) ? e : []);
         setMarketers(Array.isArray(s) ? s : []);
@@ -78,7 +87,7 @@ export default function FinancePage() {
       ) : tab === 'סקירה' ? (
         <Overview weekly={weekly} expenses={expenses} bruto={bruto} neto={neto} expSum={expSum} profit={profit} />
       ) : tab === 'הוצאות' ? (
-        <ExpensesTab expenses={expenses} />
+        <ExpensesTab app={app} expenses={expenses} suppliers={suppliers} onChanged={reloadExpenses} />
       ) : tab === "צ'קים" ? (
         <ChecksTab checks={checks} onRefresh={reloadChecks} />
       ) : (
@@ -154,87 +163,6 @@ function Overview({ weekly, expenses, bruto, neto, expSum, profit }) {
         </ResponsiveContainer>
       </div>
     </>
-  );
-}
-
-// ---------- הוצאות ----------
-function ExpensesTab({ expenses }) {
-  const total = expenses.reduce((s, e) => s + num(e, ['סכום כולל-AI', 'סכום', 'סכום כולל']), 0);
-  const byMonth = useMemo(() => {
-    const b = {};
-    expenses.forEach((e) => {
-      const d = new Date(pick(e, ['תאריך חשבונית-AI', 'תאריך העלאת החשבונית', 'תאריך']));
-      if (Number.isNaN(d.getTime())) return;
-      const k = `${d.getMonth() + 1}/${d.getFullYear()}`;
-      b[k] = (b[k] || 0) + num(e, ['סכום כולל-AI', 'סכום', 'סכום כולל']);
-    });
-    return Object.entries(b).map(([k, v]) => ({ month: k, סכום: Math.round(v) }));
-  }, [expenses]);
-
-  const bySupplier = useMemo(() => {
-    const b = {};
-    expenses.forEach((e) => {
-      const k = pick(e, ['שם ספק', 'ספק-AI', 'ספק']) || 'אחר';
-      b[k] = (b[k] || 0) + num(e, ['סכום כולל-AI', 'סכום', 'סכום כולל']);
-    });
-    return Object.entries(b).map(([k, v]) => ({ name: k, value: Math.round(v) }));
-  }, [expenses]);
-
-  return (
-    <div>
-      <div className="kpi-grid">
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--expense-soft)' }}>🧾</div><span className="kpi-label">סה"כ הוצאות</span></div><div className="kpi-value" style={{ color: 'var(--expense)' }}>{formatMoney(total)}</div></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--expense-soft)' }}>📄</div><span className="kpi-label">מספר חשבוניות</span></div><div className="kpi-value">{expenses.length}</div></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--expense-soft)' }}>🚚</div><span className="kpi-label">ספקים</span></div><div className="kpi-value">{new Set(expenses.map((e) => pick(e, ['שם ספק', 'ספק-AI', 'ספק'])).filter(Boolean)).size}</div></div>
-      </div>
-
-      <div className="card" style={{ marginTop: 20 }}>
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead><tr><th>תאריך</th><th>ספק</th><th>קטגוריה</th><th>סכום</th></tr></thead>
-            <tbody>
-              {expenses.slice(0, 40).map((e) => (
-                <tr key={e.id}>
-                  <td>{formatDate(pick(e, ['תאריך חשבונית-AI', 'תאריך העלאת החשבונית', 'תאריך']))}</td>
-                  <td>{pick(e, ['שם ספק', 'ספק-AI', 'ספק']) || 'לא זמין'}</td>
-                  <td>{pick(e, ['קטגוריית חשבונית-AI', 'קטגוריה', 'סוג הוצאה']) || '—'}</td>
-                  <td style={{ fontWeight: 700 }}>{formatMoney(num(e, ['סכום כולל-AI', 'סכום', 'סכום כולל']))}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px,1fr))', gap: 16, marginTop: 18 }}>
-        <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>הוצאות לפי חודש</div>
-          <div style={{ direction: 'ltr' }}>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={byMonth} margin={CHART_MARGIN}>
-                <CartesianGrid {...GRID_PROPS} />
-                <XAxis dataKey="month" {...xAxisProps(byMonth.length)} />
-                <YAxis {...yAxisProps({ money: true })} />
-                <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
-                <Bar dataKey="סכום" fill="#F04444" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-        <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>הוצאות לפי ספק</div>
-          <ResponsiveContainer width="100%" height={220}>
-            <PieChart>
-              <Pie data={bySupplier} dataKey="value" nameKey="name" innerRadius={50} outerRadius={78}>
-                {bySupplier.map((_, i) => <Cell key={i} fill={['#F79009', '#F04444', '#09A7B2', '#8B5CF6', '#2878D0'][i % 5]} />)}
-              </Pie>
-              <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
-              <Legend wrapperStyle={LEGEND_STYLE} />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-    </div>
   );
 }
 

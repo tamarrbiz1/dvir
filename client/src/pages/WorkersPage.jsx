@@ -1,36 +1,74 @@
-import { useEffect, useMemo, useState } from 'react';
+// ============================================================
+// עובדים ועבודות (סעיפים 12 + 15)
+// ------------------------------------------------------------
+// טאב "עובדים": כרטיסים + כרטיס עובד מלא (KPI, פילטר, 6 גרפים).
+// טאב "עבודות": טבלת "עבודות עובדים" עם חיפוש ופילטרים, תווית
+// כמות דינמית לפי יחידת התמחור, פעולת "רענן מחיר" (עדכון מחיר
+// false → true → המתנה לאוטומציה → קריאה מחדש), יצירה/עריכה/מחיקה.
+// ============================================================
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
-import { displayName } from '../utils/resolve.js';
+import { displayName, firstId } from '../utils/resolve.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import PageHeader from '../components/PageHeader.jsx';
+import { toast } from '../utils/ui.js';
+import { exportCsv, fileStamp, inDateRange } from '../utils/table.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell } from 'recharts';
-import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 
 const SHORT_MONTHS = ['ינו', 'פבר', 'מרץ', 'אפר', 'מאי', 'יונ', 'יול', 'אוג', 'ספט', 'אוק', 'נוב', 'דצמ'];
+const WORKS_TABLE = 'עבודות עובדים';
+
+// תווית כמות דינמית (סעיף 15): דונם → שורות · קרטון → קרטונים · גמלון → גמלונים
+function unitLabel(unit) {
+  const u = String(unit || '').trim();
+  if (!u) return 'כמות';
+  if (u.includes('דונם')) return 'כמות שורות';
+  if (u.includes('קרטון')) return 'כמות קרטונים';
+  if (u.includes('גמלון')) return 'כמות גמלונים';
+  return 'כמות';
+}
 
 export default function WorkersPage() {
   const app = useApp();
+  const location = useLocation();
+  const [params, setParams] = useSearchParams();
+  const [tab, setTab] = useState(params.get('tab') === 'jobs' ? 'jobs' : 'workers');
   const [workers, setWorkers] = useState([]);
   const [workRecords, setWorkRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [drawer, setDrawer] = useState(null);
   const [form, setForm] = useState(null); // {} = עובד חדש, רשומה = עריכה
-  const canEdit = (app.user?.role || 'owner') === 'owner'; // CRUD למנהל ראשי בלבד
+  const [search, setSearch] = useState('');
+  const canEdit = (app.user?.role || 'owner') === 'owner'; // CRUD עובדים למנהל ראשי בלבד
+  const canEditJobs = ['owner', 'manager'].includes(app.user?.role || 'owner');
 
-  const load = () => Promise.all([
+  const load = useCallback(() => Promise.all([
     app.api.get('עובדים', '?maxRecords=200'),
-    app.api.get('עבודות עובדים', '?maxRecords=2000'),
+    app.api.get(WORKS_TABLE, '?maxRecords=3000'),
   ])
     .then(([w, wr]) => {
       setWorkers(Array.isArray(w) ? w : []);
       setWorkRecords(Array.isArray(wr) ? wr : []);
+      return Array.isArray(w) ? w : [];
     })
-    .catch(() => {});
+    .catch(() => []), [app.api]);
 
-  useEffect(() => { load().finally(() => setLoading(false)); }, []);
+  useEffect(() => {
+    load().then((arr) => {
+      // הגעה מ"צוות עובדים": פתיחת כרטיס העובד שנבחר
+      const openId = location.state?.openWorkerId;
+      if (openId) {
+        const found = arr.find((w) => w.id === openId);
+        if (found) { setTab('workers'); setDrawer(found); }
+      }
+    }).finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
 
   // סיוע: שעות וסכום
   const hoursOf = (arr) => arr.reduce((s, r) => s + (Number(r['סכום שעות'] ?? r['שעות']) || 0), 0);
@@ -51,19 +89,55 @@ export default function WorkersPage() {
     return d.getFullYear() === tgt.getFullYear() && d.getMonth() === tgt.getMonth();
   };
 
+  const filteredWorkers = workers.filter((w) => {
+    if (!search) return true;
+    const hay = [w['שם פרטי'], w['שם משפחה'], w['טלפון'], w['סוג עובד']].filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(search.toLowerCase());
+  });
+
+  const switchTab = (t) => {
+    setTab(t);
+    const next = new URLSearchParams(params);
+    if (t === 'jobs') next.set('tab', 'jobs'); else next.delete('tab');
+    setParams(next, { replace: true });
+  };
+
   return (
     <div>
       <PageHeader icon="👥" title="עובדים ועבודות">
-        {canEdit && <button className="btn btn-primary" onClick={() => setForm({})}>+ עובד חדש</button>}
+        {tab === 'workers' && (
+          <input className="input no-print" aria-label="חיפוש עובד" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        )}
+        {tab === 'workers' && canEdit && <button className="btn btn-primary no-print" onClick={() => setForm({})}>+ עובד חדש</button>}
       </PageHeader>
+
+      <div className="tabs no-print" style={{ marginBottom: 18 }}>
+        <button className={`tab ${tab === 'workers' ? 'active' : ''}`} onClick={() => switchTab('workers')}>👥 עובדים</button>
+        <button className={`tab ${tab === 'jobs' ? 'active' : ''}`} onClick={() => switchTab('jobs')}>📋 עבודות</button>
+      </div>
 
       {loading ? (
         <div className="grid">
           {[1, 2, 3, 4, 5, 6].map((i) => <div key={i} className="skeleton skeleton-card" />)}
         </div>
+      ) : tab === 'jobs' ? (
+        <JobsTab
+          app={app}
+          works={workRecords}
+          workers={workers}
+          canEdit={canEditJobs}
+          onChanged={load}
+          openNew={params.get('new') === '1'}
+          clearNew={() => {
+            const next = new URLSearchParams(params);
+            next.delete('new');
+            setParams(next, { replace: true });
+          }}
+        />
       ) : (
         <div className="grid">
-          {workers.map((w) => {
+          {filteredWorkers.length === 0 && <div className="empty-state" style={{ gridColumn: '1 / -1' }}>אין נתונים לתקופה זו</div>}
+          {filteredWorkers.map((w) => {
             const name = `${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || 'עובד';
             const recs = recordsFor(w);
             const cur = recs.filter((r) => inMonth(r, 0));
@@ -93,8 +167,7 @@ export default function WorkersPage() {
                     <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
                       onClick={async (e) => {
                         e.stopPropagation();
-                        try { if (await removeRecord(app.api, 'עובדים', w.id, name)) await load(); }
-                        catch (err) { window.alert(`המחיקה נכשלה: ${err.message || err}`); }
+                        if (await removeRecord(app.api, 'עובדים', w.id, name)) await load();
                       }}>🗑</button>
                   </div>
                 )}
@@ -134,6 +207,276 @@ const WORKER_FORM_FIELDS = [
 ];
 
 // ============================================================
+// טאב עבודות (סעיף 15) — טבלה + "רענן מחיר" + טופס עבודה
+// ============================================================
+function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew }) {
+  const [search, setSearch] = useState('');
+  const [fWorker, setFWorker] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [limit, setLimit] = useState(30);
+  const [busyId, setBusyId] = useState(null);
+  const [form, setForm] = useState(null);
+
+  useEffect(() => {
+    if (openNew) { setForm({}); clearNew(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openNew]);
+
+  const workerName = (r) => displayName(r['עובד'], '');
+  const structName = (r) => displayName(r['מבנה'], '');
+  const workType = (r) => r['סוג עבודה (from תמחור עבודות)'] ?? '';
+  const unit = (r) => r['יחידת תמחור (from תמחור עבודות)'];
+
+  const filtered = useMemo(() => works.filter((r) => {
+    if (fWorker && String(firstId(r['עובד']) || '') !== fWorker) return false;
+    if (!inDateRange(r['תאריך'], from, to)) return false;
+    if (search) {
+      const hay = [workerName(r), structName(r), workType(r), r['זן (from תמחור עבודות)'], r['הערות']]
+        .filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(search.toLowerCase())) return false;
+    }
+    return true;
+  }).sort((a, b) => String(b['תאריך'] || '').localeCompare(String(a['תאריך'] || ''))), [works, search, fWorker, from, to]);
+
+  const totalPaid = filtered.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0);
+  const totalHours = filtered.reduce((s, r) => s + (Number(r['סכום שעות']) || 0), 0);
+  const hasFilters = search || fWorker || from || to;
+
+  // "רענן מחיר" (סעיף 15): עדכון מחיר=false → true → המתנה לאוטומציה → קריאה מחדש.
+  // אין חישוב מחיר ב-Zite — הערך המעודכן נקרא מ-Airtable בלבד.
+  const refreshPrice = async (r) => {
+    if (busyId) return;
+    setBusyId(r.id);
+    try {
+      await app.api.update(WORKS_TABLE, r.id, { 'עדכון מחיר': false });
+      await app.api.update(WORKS_TABLE, r.id, { 'עדכון מחיר': true });
+      await new Promise((res) => setTimeout(res, 4000)); // המתנה לאוטומציה של Airtable
+      await onChanged();
+      toast('המחיר רוענן — "סכום לתשלום" נקרא מחדש מ-Airtable');
+    } catch {
+      toast('לא ניתן היה להשלים את הפעולה. הנתונים לא עודכנו.', 'error');
+    }
+    setBusyId(null);
+  };
+
+  const doExport = () => exportCsv(`עבודות-עובדים-${fileStamp()}`, [
+    { label: 'תאריך', get: (r) => formatDate(r['תאריך']) },
+    { label: 'עובד', get: workerName },
+    { label: 'מבנה', get: structName },
+    { label: 'סוג עבודה', get: workType },
+    { label: 'זן', get: (r) => r['זן (from תמחור עבודות)'] || '' },
+    { label: 'כמות', get: (r) => r['כמות'] ?? '' },
+    { label: 'יחידת תמחור', get: (r) => unit(r) || '' },
+    { label: 'שעות', get: (r) => r['סכום שעות'] ?? '' },
+    { label: 'מחיר', get: (r) => r['מחיר (from תמחור עבודות)'] ?? '' },
+    { label: 'סכום לתשלום (₪)', get: (r) => r['סכום לתשלום'] ?? '' },
+    { label: 'הערות', get: (r) => r['הערות'] || '' },
+  ], filtered);
+
+  return (
+    <div>
+      {/* KPI קטן על המסונן */}
+      <div className="kpi-grid" style={{ marginBottom: 16 }}>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--workers-soft)' }}>📋</div><span className="kpi-label">עבודות</span></div><div className="kpi-value" style={{ color: 'var(--workers)' }}>{formatNumber(filtered.length)}</div><div style={{ height: 12 }} /></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--hours-soft)' }}>⏱️</div><span className="kpi-label">שעות</span></div><div className="kpi-value" style={{ color: 'var(--hours)' }}>{formatNumber(Math.round(totalHours * 10) / 10)}</div><div style={{ height: 12 }} /></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">סכום לתשלום</span></div><div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(totalPaid)}</div><div style={{ height: 12 }} /></div>
+      </div>
+
+      <div className="filter-bar no-print">
+        <input className="input" aria-label="חיפוש עבודה" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <select className="select" aria-label="סינון לפי עובד" value={fWorker} onChange={(e) => setFWorker(e.target.value)}>
+          <option value="">כל העובדים</option>
+          {workers.map((w) => <option key={w.id} value={w.id}>{`${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || w.id}</option>)}
+        </select>
+        <label className="date-field">מתאריך<input type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
+        <label className="date-field">עד תאריך<input type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} /></label>
+        {hasFilters && <button className="btn btn-ghost" onClick={() => { setSearch(''); setFWorker(''); setFrom(''); setTo(''); }}>נקה פילטרים</button>}
+        <span style={{ marginInlineStart: 'auto', display: 'flex', gap: 8 }}>
+          <button type="button" className="btn btn-ghost" onClick={() => window.print()}>🖨️ הדפסה</button>
+          <button type="button" className="btn btn-ghost" onClick={doExport} disabled={!filtered.length}>⬇️ ייצוא</button>
+          {canEdit && <button className="btn btn-primary" onClick={() => setForm({})}>+ עבודה חדשה</button>}
+        </span>
+      </div>
+
+      <div className="card">
+        <div className="section-title" style={{ marginTop: 0 }}>עבודות עובדים ({formatNumber(filtered.length)})</div>
+        {filtered.length === 0 ? <div className="empty-state"><div className="icon">📋</div>אין נתונים לתקופה זו</div> : (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>תאריך</th><th>עובד</th><th>מבנה</th><th>סוג עבודה</th><th>זן</th><th>כמות</th><th>שעות</th><th>מחיר</th><th>סכום לתשלום</th>
+                  {canEdit && <th className="no-print">פעולות</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.slice(0, limit).map((r) => (
+                  <tr key={r.id}>
+                    <td>{formatDate(r['תאריך'])}</td>
+                    <td>{workerName(r) ? <span className="obj-chip static">👤 {workerName(r)}</span> : 'לא זמין'}</td>
+                    <td>{structName(r) ? <span className="obj-chip static">🏗️ {structName(r)}</span> : '—'}</td>
+                    <td>{workType(r) || '—'}</td>
+                    <td>{r['זן (from תמחור עבודות)'] || '—'}</td>
+                    <td>
+                      {r['כמות'] != null ? formatNumber(r['כמות']) : '—'}
+                      {r['כמות'] != null && unit(r) && (
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)', display: 'block' }}>{unitLabel(unit(r))}</span>
+                      )}
+                    </td>
+                    <td>{r['סכום שעות'] != null ? formatNumber(r['סכום שעות']) : '—'}</td>
+                    <td>{r['מחיר (from תמחור עבודות)'] != null ? formatMoney(r['מחיר (from תמחור עבודות)']) : '—'}</td>
+                    <td style={{ fontWeight: 700, color: 'var(--revenue)' }}>{r['סכום לתשלום'] != null ? formatMoney(r['סכום לתשלום']) : 'לא זמין'}</td>
+                    {canEdit && (
+                      <td className="no-print">
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <button className="btn btn-sm btn-ghost" disabled={busyId === r.id} aria-label="רענן מחיר" title='רענן מחיר — מפעיל מחדש את "עדכון מחיר" ב-Airtable'
+                            onClick={() => refreshPrice(r)}>{busyId === r.id ? '…' : '🔄'}</button>
+                          <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={() => setForm(r)}>✎</button>
+                          <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
+                            onClick={async () => {
+                              if (await removeRecord(app.api, WORKS_TABLE, r.id, 'העבודה')) await onChanged();
+                            }}>🗑</button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {filtered.length > limit && (
+          <div style={{ textAlign: 'center', marginTop: 12 }}>
+            <button className="btn btn-ghost no-print" onClick={() => setLimit((l) => l + 50)}>הצג עוד ({formatNumber(filtered.length - limit)} נוספות)</button>
+          </div>
+        )}
+      </div>
+
+      {form !== null && (
+        <WorkForm
+          api={app.api}
+          workers={workers}
+          record={form.id ? form : null}
+          onClose={() => setForm(null)}
+          onSaved={async () => { setForm(null); await onChanged(); toast('העבודה נשמרה בהצלחה'); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// טופס עבודה — "תמחור עבודות" הוא הקישור שקובע סוג/מחיר/יחידה;
+// Airtable מחשב את "סכום לתשלום" (אין חישוב ב-Zite).
+// ============================================================
+function WorkForm({ api, workers, record, onClose, onSaved }) {
+  const todayStr = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const [structures, setStructures] = useState([]);
+  const [pricing, setPricing] = useState([]);
+  const [date, setDate] = useState(record?.['תאריך'] ? String(record['תאריך']).slice(0, 10) : todayStr());
+  const [worker, setWorker] = useState(firstId(record?.['עובד']) || '');
+  const [structure, setStructure] = useState(firstId(record?.['מבנה']) || '');
+  const [priceId, setPriceId] = useState(firstId(record?.['תמחור עבודות']) || '');
+  const [amount, setAmount] = useState(record?.['כמות'] ?? '');
+  const [startTime, setStartTime] = useState(record?.['שעת התחלה'] || '');
+  const [endTime, setEndTime] = useState(record?.['שעת סיום'] || '');
+  const [notes, setNotes] = useState(record?.['הערות'] || '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  useEscapeClose(onClose, !saving);
+
+  useEffect(() => {
+    Promise.all([
+      api.get('מבנים', '?maxRecords=200'),
+      api.get('תמחור עבודות', '?maxRecords=800&raw=1'),
+    ]).then(([s, p]) => {
+      setStructures(Array.isArray(s) ? s : []);
+      setPricing(Array.isArray(p) ? p : []);
+    }).catch(() => {});
+  }, [api]);
+
+  const selected = pricing.find((p) => p.id === priceId);
+  const amtLabel = unitLabel(selected?.['יחידת תמחור']);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (saving) return;
+    if (!worker) { setError('חסר שדה חובה: עובד'); return; }
+    if (!structure) { setError('חסר שדה חובה: מבנה'); return; }
+    setSaving(true); setError('');
+    const fields = {
+      'תאריך': date,
+      'עובד': [worker],
+      'מבנה': [structure],
+      'תמחור עבודות': priceId ? [priceId] : null,
+      'כמות': amount !== '' ? Number(amount) : null,
+      'שעת התחלה': startTime || null,
+      'שעת סיום': endTime || null,
+      'הערות': notes || null,
+    };
+    if (!record) Object.keys(fields).forEach((k) => { if (fields[k] == null) delete fields[k]; });
+    try {
+      if (record?.id) await api.update(WORKS_TABLE, record.id, fields);
+      else await api.create(WORKS_TABLE, fields);
+      await onSaved();
+    } catch (err) {
+      setError(`לא ניתן היה להשלים את הפעולה. הנתונים לא עודכנו. (${err.message || err})`);
+      setSaving(false);
+    }
+  };
+
+  const priceLabel = (p) => [p['סוג עבודה'], p['זן'], p['מחיר'] != null ? `₪${p['מחיר']}` : null, p['יחידת תמחור'] ? `ל${p['יחידת תמחור']}` : null]
+    .filter(Boolean).join(' · ');
+
+  return (
+    <div className="modal-overlay" onClick={() => !saving && onClose()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3 style={{ textAlign: 'center' }}>{record ? 'עריכת עבודה' : 'עבודה חדשה'}</h3>
+        {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12 }}>⚠️ {error}</div>}
+        <form onSubmit={submit}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 12px' }}>
+            <div className="form-group"><label className="required">תאריך</label>
+              <input type="date" className="input" style={{ width: '100%' }} value={date} onChange={(e) => setDate(e.target.value)} /></div>
+            <div className="form-group"><label className="required">עובד</label>
+              <select className="select" style={{ width: '100%' }} value={worker} onChange={(e) => setWorker(e.target.value)}>
+                <option value="">בחר עובד...</option>
+                {workers.map((w) => <option key={w.id} value={w.id}>{`${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || w.id}</option>)}
+              </select></div>
+            <div className="form-group"><label className="required">מבנה</label>
+              <select className="select" style={{ width: '100%' }} value={structure} onChange={(e) => setStructure(e.target.value)}>
+                <option value="">בחר מבנה...</option>
+                {structures.map((s) => <option key={s.id} value={s.id}>{s['מספר מבנה'] || s['סוג מבנה'] || s.id}</option>)}
+              </select></div>
+            <div className="form-group"><label>סוג עבודה (תמחור)</label>
+              <select className="select" style={{ width: '100%' }} value={priceId} onChange={(e) => setPriceId(e.target.value)}>
+                <option value="">בחר תמחור...</option>
+                {pricing.map((p) => <option key={p.id} value={p.id}>{priceLabel(p)}</option>)}
+              </select></div>
+            <div className="form-group"><label>{amtLabel}</label>
+              <input type="number" step="any" min="0" className="input" style={{ width: '100%' }} value={amount} onChange={(e) => setAmount(e.target.value)} /></div>
+            <div className="form-group"><label>שעת התחלה</label>
+              <input type="time" className="input" style={{ width: '100%' }} value={startTime} onChange={(e) => setStartTime(e.target.value)} /></div>
+            <div className="form-group"><label>שעת סיום</label>
+              <input type="time" className="input" style={{ width: '100%' }} value={endTime} onChange={(e) => setEndTime(e.target.value)} /></div>
+          </div>
+          <div className="form-group"><label>הערות</label>
+            <textarea className="input" style={{ width: '100%' }} value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
+          <div className="hint">"סכום לתשלום" מחושב ב-Airtable לפי התמחור — ויוצג לאחר השמירה.</div>
+          <div className="form-actions">
+            <button type="button" className="btn btn-ghost" disabled={saving} onClick={onClose}>ביטול</button>
+            <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'שומר...' : record ? 'שמור שינויים' : 'שמור עבודה'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // כרטיס עובד מפורט — KPI + פילטר + 6 גרפים (סעיף 12)
 // ============================================================
 function WorkerDetails({ worker, records, onClose }) {
@@ -168,17 +511,6 @@ function WorkerDetails({ worker, records, onClose }) {
 
   const sumField = (arr, f) => arr.reduce((s, r) => s + (Number(r[f]) || 0), 0);
 
-  // גרפים
-  const lineBy = (field, grouper) => {
-    const b = {};
-    filtered.forEach((r) => {
-      const d = new Date(r['תאריך']);
-      if (Number.isNaN(d.getTime())) return;
-      const k = grouper(d);
-      b[k] = (b[k] || 0) + (Number(r[field]) || 0);
-    });
-    return Object.entries(b).sort((a, b) => (a[0] > b[0] ? 1 : -1)).map(([k, v]) => ({ label: k, value: Math.round(v) }));
-  };
   const byDays = () => {
     const b = {};
     filtered.forEach((r) => {
@@ -204,7 +536,6 @@ function WorkerDetails({ worker, records, onClose }) {
     filtered.forEach((r) => {
       const d = new Date(r['תאריך']);
       if (Number.isNaN(d.getTime())) return;
-      const k = (field === 'hours' ? d.getMonth() : d.getMonth());
       const label = SHORT_MONTHS[d.getMonth()];
       b[label] = (b[label] || 0) + (Number(r[field === 'hours' ? 'סכום שעות' : 'סכום לתשלום']) || 0);
     });
@@ -231,7 +562,6 @@ function WorkerDetails({ worker, records, onClose }) {
   const incomeChart = byDays();
   const hoursChart = hourDays();
   const monthIncome = byMonth('income');
-  const monthHours = byMonth('hours');
   const typeIncome = byWorkType('income');
   const typeHours = byWorkType('hours');
   const structChart = byStructure();
@@ -283,7 +613,7 @@ function WorkerDetails({ worker, records, onClose }) {
           {/* גרפים לפי חודש */}
           <div className="card" style={{ marginTop: 16 }}>
             <div className="section-title" style={{ marginTop: 0 }}>הכנסה לפי חודש</div>
-            <PieChartWrap data={monthIncome.map((x) => ({ name: x.label, value: x.value }))} />
+            <PieChartWrap data={monthIncome.map((x) => ({ name: x.label, value: x.value }))} money />
           </div>
           <div className="card" style={{ marginTop: 16 }}>
             <div className="section-title" style={{ marginTop: 0 }}>שעות לפי סוג עבודה</div>

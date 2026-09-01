@@ -1202,3 +1202,156 @@ th.sortable.active .sort-ind { color: var(--weight); }
   color: #fff;
   font-size: 28px;
 }
+
+/* ============================ Toast + חלון אישור ============================ */
+.toast-stack {
+  position: fixed;
+  bottom: 22px;
+  right: 50%;
+  transform: translateX(50%);
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  background: var(--text-main);
+  color: #fff;
+  border-radius: 12px;
+  padding: 11px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 8px 22px rgba(20,35,50,0.25);
+  animation: toastIn 200ms ease;
+  transition: opacity 400ms ease, transform 400ms ease;
+}
+.toast-ok { background: #0E7A55; }
+.toast-error { background: var(--error); }
+.toast-warn { background: #B54708; }
+.toast.fade { opacity: 0; transform: translateY(8px); }
+@keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.confirm-modal { text-align: center; }
+.confirm-modal h3 { text-align: center; }
+.confirm-message { color: var(--text-secondary); font-size: 15px; line-height: 1.7; }
+.confirm-modal .form-actions { justify-content: center; }
+
+/* ============================ תגי מונה בסרגל הצד ============================ */
+.nav-badge {
+  margin-inline-start: auto;
+  min-width: 21px;
+  height: 21px;
+  border-radius: 999px;
+  background: var(--error);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  line-height: 1;
+}
+/* עיגול ירוק "זורח" — בקשות עובדים ממתינות (לפי האיפיון) */
+.nav-badge.glow {
+  background: #12B76A;
+  animation: pulseGlow 1.7s ease-out infinite;
+}
+@keyframes pulseGlow {
+  0% { box-shadow: 0 0 0 0 rgba(18,183,106,0.55); }
+  70% { box-shadow: 0 0 0 9px rgba(18,183,106,0); }
+  100% { box-shadow: 0 0 0 0 rgba(18,183,106,0); }
+}
+
+/* ============================ כותרת עמוד — שם במרכז ============================ */
+.page-header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px 16px;
+}
+.page-header h2 {
+  grid-column: 2;
+  text-align: center;
+  margin: 0;
+}
+.page-header-actions {
+  grid-column: 3;
+  justify-self: stretch;
+  justify-content: flex-end; /* ב-RTL — לצד שמאל */
+}
+@media (max-width: 900px) {
+  .page-header { display: flex; flex-direction: column; align-items: center; }
+  .page-header-actions { justify-content: center; }
+}
+
+/* ============================ Progress bar (מלאי) ============================ */
+.progress {
+  width: 100%;
+  height: 8px;
+  background: var(--bg-main);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progress > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 300ms ease;
+}
+
+/* ============================ Lightbox עם זום ============================ */
+.lightbox-tools {
+  position: fixed;
+  top: 14px;
+  right: 20px;
+  display: flex;
+  gap: 8px;
+  z-index: 90;
+}
+.lightbox-tools .btn { background: rgba(255,255,255,0.92); }
+.lightbox img.zoomed {
+  max-width: none;
+  max-height: none;
+  cursor: zoom-out;
+}
+.lightbox .lightbox-scroll {
+  max-width: 96vw;
+  max-height: 90vh;
+  overflow: auto;
+}
+
+/* ============================ פעולות מהירות + פעילות אחרונה (דשבורד) ============================ */
+.quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.quick-actions .btn { min-height: 46px; }
+.feed-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.feed-item:last-child { border-bottom: none; }
+.feed-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  flex-shrink: 0;
+}
+.feed-time { margin-inline-start: auto; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.feed-link { background: none; border: none; padding: 0; font: inherit; font-weight: 700; color: var(--text-main); cursor: pointer; text-align: right; }
+.feed-link:hover { color: var(--accent-top); text-decoration: underline; }
+
+/* תרשים מבנה — מבט מלמעלה */
+.structure-topview { direction: ltr; }
+.structure-topview .gable:hover { fill-opacity: 0.55; }

@@ -45,3 +45,6 @@ temp/
 
 # Vite
 client/node_modules/.vite/
+
+# SSH keys of the zite system user - never commit
+.ssh/

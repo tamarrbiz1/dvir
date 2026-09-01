@@ -1,40 +1,96 @@
-import { useEffect, useState } from 'react';
+// ============================================================
+// לוח בקרה — Dashboard ראשי של בעל העסק
+// ------------------------------------------------------------
+// לפי האיפיון: פילטר תקופה מרכזי (היום/השבוע/החודש/חודש קודם/
+// השנה/טווח מותאם), שורות KPI (כספים · תפוקה · עובדים · בקרה),
+// גרפים עם Drill-down, פעולות מהירות ו"פעילות אחרונה".
+// כל הנתונים מ-Airtable; ה-JSONים של "סיכום שבועי" הם המקור לתפוקה.
+// ============================================================
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
-import { formatMoney, formatNumber } from '../utils/format.js';
+import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
+import { displayName } from '../utils/resolve.js';
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, Legend, CartesianGrid
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, Legend, CartesianGrid,
 } from 'recharts';
 import {
-  CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps,
+  CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps, yCategoryProps,
 } from '../utils/chart.js';
+
+const PRESETS = [
+  { key: 'today', label: 'היום' },
+  { key: 'week', label: 'השבוע' },
+  { key: 'month', label: 'החודש' },
+  { key: 'prevMonth', label: 'חודש קודם' },
+  { key: 'year', label: 'השנה' },
+  { key: 'all', label: 'הכל' },
+  { key: 'custom', label: 'טווח מותאם' },
+];
+
+// תחום תאריכים [start, end] לפי הבחירה; null = ללא סינון
+function periodRange(preset, from, to) {
+  const now = new Date();
+  const day0 = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const end0 = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59);
+  if (preset === 'today') return [day0(now), end0(now)];
+  if (preset === 'week') {
+    // שבוע עסקי: שבת עד חמישי (לפי האיפיון)
+    const s = day0(now);
+    const back = (s.getDay() + 1) % 7; // שבת=6 → 0 ימים אחורה
+    s.setDate(s.getDate() - back);
+    const e = new Date(s); e.setDate(s.getDate() + 5); e.setHours(23, 59, 59);
+    return [s, e];
+  }
+  if (preset === 'month') return [new Date(now.getFullYear(), now.getMonth(), 1), end0(new Date(now.getFullYear(), now.getMonth() + 1, 0))];
+  if (preset === 'prevMonth') return [new Date(now.getFullYear(), now.getMonth() - 1, 1), end0(new Date(now.getFullYear(), now.getMonth(), 0))];
+  if (preset === 'year') return [new Date(now.getFullYear(), 0, 1), end0(new Date(now.getFullYear(), 11, 31))];
+  if (preset === 'custom') {
+    const s = from ? new Date(`${from}T00:00:00`) : null;
+    const e = to ? new Date(`${to}T23:59:59`) : null;
+    return (s || e) ? [s || new Date(2000, 0, 1), e || new Date(2100, 0, 1)] : null;
+  }
+  return null;
+}
+
+const parseAny = (v) => {
+  if (v === null || v === undefined || v === '') return null;
+  if (typeof v === 'object') return v;
+  try { return JSON.parse(String(v)); } catch { return null; }
+};
+const num = (v) => (Number(v) || 0);
 
 export default function DashboardPage() {
   const app = useApp();
   const navigate = useNavigate();
-  const [invoices, setInvoices] = useState([]);
-  const [expenses, setExpenses] = useState([]);
-  const [structures, setStructures] = useState([]);
-  const [weeks, setWeeks] = useState([]);
+  const [data, setData] = useState({ invoices: [], expenses: [], structures: [], weeks: [], works: [], notes: [], sprays: [], requests: [] });
   const [loading, setLoading] = useState(true);
-  const [year, setYear] = useState(null);
+  const [preset, setPreset] = useState('year');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [metric, setMetric] = useState('ק"ג');
 
   useEffect(() => {
+    const enc = encodeURIComponent;
+    const weekFields = [
+      'קוד שבוע', 'תאריך התחלה', 'תאריך סיום', 'סטטוס התאמה', 'סטטוס התאמת קטיף',
+      'שגיאת חישוב קג לפי מבנים', 'JSON לפי ימים מאוחד', 'JSON הכנסה לפי מבנים',
+    ].map(enc).join(',');
     const load = async () => {
       try {
-        // "סיכום שבועי" — רק שדות הבקרה הקלים (בלי ה-JSON הכבדים)
-        const weekFields = ['קוד שבוע', 'סטטוס התאמה', 'סטטוס התאמת קטיף', 'שגיאת חישוב קג לפי מבנים'].map(encodeURIComponent).join(',');
-        const [i, e, s, w] = await Promise.all([
-          app.api.get('חשבוניות', '?maxRecords=200&raw=1'),
-          app.api.get('הוצאות', '?maxRecords=200'),
+        const [i, e, s, w, wk, dn, sp, rq] = await Promise.all([
+          app.api.get('חשבוניות', '?maxRecords=1000&raw=1'),
+          app.api.get('הוצאות', '?maxRecords=1000'),
           app.api.get('מבנים', '?maxRecords=200'),
-          app.api.get('סיכום שבועי', `?maxRecords=200&raw=1&fields=${weekFields}`).catch(() => []),
+          app.api.get('עבודות עובדים', '?maxRecords=3000'),
+          app.api.get('סיכום שבועי', `?maxRecords=300&raw=1&fields=${weekFields}`).catch(() => []),
+          app.api.get('תעודות משלוח', '?maxRecords=300').catch(() => []),
+          app.api.get('ריסוסים', '?maxRecords=300').catch(() => []),
+          app.api.get('בקשות עובדים', '?maxRecords=200').catch(() => []),
         ]);
-        setInvoices(Array.isArray(i) ? i : []);
-        setExpenses(Array.isArray(e) ? e : []);
-        setStructures(Array.isArray(s) ? s : []);
-        setWeeks(Array.isArray(w) ? w : []);
+        const arr = (v) => (Array.isArray(v) ? v : []);
+        setData({ invoices: arr(i), expenses: arr(e), structures: arr(s), works: arr(w), weeks: arr(wk), notes: arr(dn), sprays: arr(sp), requests: arr(rq) });
       } catch (err) {
         console.error(err);
       } finally {
@@ -44,55 +100,163 @@ export default function DashboardPage() {
     load();
   }, [app.api]);
 
-  // ============================================================
-  // פדיון / משקל אמיתיים מתוך טבלת החשבוניות
-  // (הנתונים האמיתיים נמצאים בחשבוניות עצמן, לא ברול־אפ של
-  //  סיכום שבועי — שגם כך לרוב אינו מאוכלס)
-  // ============================================================
-  // חילוץ תאריך מחשבונית: שדה "תאריך-AI" ואם חסר — מה"סיכום יומי"
-  const invoiceDate = (inv) => {
-    if (inv['תאריך-AI']) return inv['תאריך-AI'];
-    const sj = inv['סיכום יומי'];
-    if (typeof sj === 'string') {
-      try {
-        const parsed = JSON.parse(sj);
-        const firstDay = parsed?.days?.[0]?.date;
-        if (firstDay) return firstDay;
-      } catch {}
-    }
-    return null;
+  const range = useMemo(() => periodRange(preset, from, to), [preset, from, to]);
+  const inRange = (dateStr) => {
+    if (!range) return true;
+    if (!dateStr) return false;
+    const d = new Date(dateStr);
+    if (Number.isNaN(d.getTime())) return false;
+    return d >= range[0] && d <= range[1];
   };
 
-  // סכום ברוטו/נטו/משקל של חשבונית — מנרמל מספרים שיורדים כמחרוזות
-  const invNum = (inv, field) => Number(inv[field]) || 0;
+  // תאריך חשבונית: "תאריך-AI", ואם חסר — היום הראשון ב"סיכום יומי"
+  const invoiceDate = (inv) => {
+    if (inv['תאריך-AI']) return inv['תאריך-AI'];
+    const parsed = parseAny(inv['סיכום יומי']);
+    return parsed?.days?.[0]?.date || null;
+  };
+  const expenseDate = (e) => e['תאריך חשבונית-AI'] || e['תאריך העלאת החשבונית'] || null;
 
-  // פדיון נטו לפי חודש (YYYY-MM)
-  const netByMonth = {};
-  invoices.forEach((inv) => {
-    const date = invoiceDate(inv);
-    if (!date) return;
-    const mon = String(date).slice(0, 7);
-    netByMonth[mon] = (netByMonth[mon] || 0) + invNum(inv, 'סכום נטו');
-  });
-  const revenueData = Object.entries(netByMonth)
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([k, v]) => ({ month: k, 'פדיון נטו': Math.round(v) }));
+  // ============ סינון לפי התקופה ============
+  const fInvoices = useMemo(() => data.invoices.filter((i) => inRange(invoiceDate(i))), [data.invoices, range]);
+  const fExpenses = useMemo(() => data.expenses.filter((e) => inRange(expenseDate(e))), [data.expenses, range]);
+  const fWorks = useMemo(() => data.works.filter((r) => inRange(r['תאריך'])), [data.works, range]);
 
-  // ============================================================
-  // שנים זמינות מתוך תאריכי החשבוניות
-  // ============================================================
-  const yearsAvailable = [...new Set(
-    invoices.map(invoiceDate).filter(Boolean).map((d) => String(d).slice(0, 4)),
-  )].sort();
-  const selectedYear = year || (yearsAvailable.length ? yearsAvailable[yearsAvailable.length - 1] : String(new Date().getFullYear()));
+  // ימי תפוקה מתוך "JSON לפי ימים מאוחד" של כל השבועות
+  const productionDays = useMemo(() => {
+    const out = [];
+    data.weeks.forEach((w) => {
+      const daily = parseAny(w['JSON לפי ימים מאוחד']);
+      (Array.isArray(daily?.days) ? daily.days : []).forEach((d) => {
+        if (d?.date) out.push({ date: d.date, weight: num(d.weight), cartons: num(d.cartons), pallets: num(d.pallets) });
+      });
+    });
+    return out.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  }, [data.weeks]);
+  const fDays = useMemo(() => productionDays.filter((d) => inRange(d.date)), [productionDays, range]);
 
-  // סינון חשבוניות לפי שנה נבחר (לפדיון)
-  const filteredInvoices = !selectedYear || selectedYear === 'הכל'
-    ? invoices
-    : invoices.filter((inv) => String(invoiceDate(inv) || '').slice(0, 4) === selectedYear);
-  const fNet = filteredInvoices.reduce((s, inv) => s + invNum(inv, 'סכום נטו'), 0);
-  const fBruto = filteredInvoices.reduce((s, inv) => s + invNum(inv, 'סכום ברוטו'), 0);
-  const fWeight = filteredInvoices.reduce((s, inv) => s + invNum(inv, 'משקל'), 0);
+  // הכנסה לפי מבנה מתוך "JSON הכנסה לפי מבנים" (שבועות בטווח)
+  const incomeByStructure = useMemo(() => {
+    const map = new Map();
+    data.weeks.forEach((w) => {
+      if (!inRange(w['תאריך התחלה'])) return;
+      const inc = parseAny(w['JSON הכנסה לפי מבנים']);
+      const structures = Array.isArray(inc?.structures) ? inc.structures
+        : (Array.isArray(inc?.varieties) ? inc.varieties.flatMap((v) => (Array.isArray(v.structures) ? v.structures : [])) : []);
+      structures.forEach((st) => {
+        const name = st.structure || 'לא ידוע';
+        map.set(name, (map.get(name) || 0) + num(st.net_income));
+      });
+    });
+    return [...map.entries()].map(([name, value]) => ({ name, value: Math.round(value) })).sort((a, b) => b.value - a.value);
+  }, [data.weeks, range]);
+
+  // ============ KPI ============
+  const invNum = (inv, field) => num(inv[field]);
+  const kGross = fInvoices.reduce((s, i) => s + invNum(i, 'סכום ברוטו'), 0);
+  const kNet = fInvoices.reduce((s, i) => s + invNum(i, 'סכום נטו'), 0);
+  const kExpenses = fExpenses.reduce((s, e) => s + num(e['סכום כולל-AI']), 0);
+  const kProfit = kNet - kExpenses;
+  const kWeight = fDays.reduce((s, d) => s + d.weight, 0);
+  const kCartons = fDays.reduce((s, d) => s + d.cartons, 0);
+  const kPallets = fDays.reduce((s, d) => s + d.pallets, 0);
+  const activeStructures = data.structures.filter((s) => String(s['סטטוס המבנה'] || '').startsWith('חלקה שתולה')).length;
+  const kLabor = fWorks.reduce((s, r) => s + num(r['סכום לתשלום']), 0);
+  const kHours = fWorks.reduce((s, r) => s + num(r['סכום שעות'] ?? r['שעות']), 0);
+  const kActiveWorkers = new Set(fWorks.map((r) => {
+    const ref = r['עובד'];
+    return Array.isArray(ref) ? (ref[0]?.id ?? ref[0]) : ref;
+  }).filter(Boolean)).size;
+
+  // ============ נתוני גרפים ============
+  // הכנסות/הוצאות לפי חודש
+  const monthly = useMemo(() => {
+    const m = {};
+    fInvoices.forEach((inv) => {
+      const d = invoiceDate(inv);
+      if (!d) return;
+      const k = String(d).slice(0, 7);
+      m[k] = m[k] || { month: k, הכנסות: 0, הוצאות: 0 };
+      m[k].הכנסות += invNum(inv, 'סכום נטו');
+    });
+    fExpenses.forEach((e) => {
+      const d = expenseDate(e);
+      if (!d) return;
+      const k = String(d).slice(0, 7);
+      m[k] = m[k] || { month: k, הכנסות: 0, הוצאות: 0 };
+      m[k].הוצאות += num(e['סכום כולל-AI']);
+    });
+    return Object.values(m).sort((a, b) => a.month.localeCompare(b.month))
+      .map((r) => ({ ...r, הכנסות: Math.round(r.הכנסות), הוצאות: Math.round(r.הוצאות) }));
+  }, [fInvoices, fExpenses]);
+
+  // תפוקה לאורך זמן לפי מדד נבחר
+  const productionChart = useMemo(() => fDays.map((d) => ({
+    date: formatDate(d.date),
+    value: Math.round(metric === 'ק"ג' ? d.weight : metric === 'קרטונים' ? d.cartons : d.pallets),
+  })), [fDays, metric]);
+
+  // עלות עובדים לפי עובד
+  const laborByWorker = useMemo(() => {
+    const m = new Map();
+    fWorks.forEach((r) => {
+      const name = displayName(r['עובד'], 'אחר');
+      const id = Array.isArray(r['עובד']) ? (r['עובד'][0]?.id ?? r['עובד'][0]) : null;
+      const cur = m.get(name) || { name, id, value: 0 };
+      cur.value += num(r['סכום לתשלום']);
+      m.set(name, cur);
+    });
+    return [...m.values()].map((x) => ({ ...x, value: Math.round(x.value) })).sort((a, b) => b.value - a.value).slice(0, 12);
+  }, [fWorks]);
+
+  // הוצאות לפי קטגוריה
+  const donutData = useMemo(() => {
+    const m = {};
+    fExpenses.forEach((e) => {
+      const cat = e['קטגוריית חשבונית-AI'] || 'אחר';
+      m[cat] = (m[cat] || 0) + num(e['סכום כולל-AI']);
+    });
+    return Object.entries(m).map(([name, value]) => ({ name, value: Math.round(value) })).filter((x) => x.value > 0);
+  }, [fExpenses]);
+
+  // ============ פעילות אחרונה ============
+  const feed = useMemo(() => {
+    const items = [];
+    data.invoices.forEach((i) => items.push({
+      date: i['תאריך העלאת קובץ'] || i['תאריך-AI'],
+      icon: '🧾', bg: 'var(--revenue-soft)',
+      label: `חשבונית ${i['מספר חשבונית'] ?? ''} ${i['שם משווק'] ? `· ${i['שם משווק']}` : ''}`.trim(),
+      to: `/invoices?open=${i.id}`,
+    }));
+    data.notes.forEach((n) => items.push({
+      date: n['תאריך העלאת קובץ'] || n['תאריך תעודה'],
+      icon: '📄', bg: 'var(--docs-soft)',
+      label: `תעודת משלוח ${n['מספר תעודה'] ?? ''} ${displayName(n['משווק'], '') ? `· ${displayName(n['משווק'], '')}` : ''}`.trim(),
+      to: `/delivery-notes?open=${n.id}`,
+    }));
+    data.works.forEach((r) => items.push({
+      date: r['תאריך'],
+      icon: '👷', bg: 'var(--workers-soft)',
+      label: `עבודה: ${displayName(r['עובד'], 'עובד')} · ${displayName(r['מבנה'], '')}`.trim(),
+      to: '/workers?tab=jobs',
+    }));
+    data.sprays.forEach((r) => items.push({
+      date: r['תאריך'],
+      icon: '🧴', bg: 'var(--spray-soft)',
+      label: `ריסוס ${displayName(r['מבנה'], '')} · ${displayName(r['חומר ריסוס'], '')}`.trim(),
+      to: '/spraying',
+    }));
+    data.requests.forEach((r) => items.push({
+      date: r['נוצר בתאריך'] || r['תאריך'],
+      icon: '🗣️', bg: 'var(--warning-soft)',
+      label: `בקשת עובד: ${displayName(r['עובד'], 'עובד')} · ${r['סוג בקשה'] || ''}`.trim(),
+      to: '/requests',
+    }));
+    return items
+      .filter((x) => x.date && !Number.isNaN(new Date(x.date).getTime()))
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+      .slice(0, 12);
+  }, [data]);
 
   if (loading) {
     return (
@@ -106,101 +270,90 @@ export default function DashboardPage() {
     );
   }
 
-  // KPI חישובים — מתוך החשבוניות המסוננות לפי שנה
-  const sumBruto = fBruto;
-  const sumNeto = fNet;
-  const sumWeight = fWeight;
-  const sumExpenses = expenses.reduce((s, e) => s + (Number(e['סכום כולל-AI']) || 0), 0);
-  const profit = sumNeto - sumExpenses;
-  const activeStructures = structures.filter((s) => String(s['סטטוס המבנה'] || '').startsWith('חלקה שתולה')).length;
+  const periodLabel = PRESETS.find((p) => p.key === preset)?.label || '';
+  const openStructureByName = (name) => {
+    const s = data.structures.find((x) => String(x['מספר מבנה']) === String(name));
+    navigate('/structures', s ? { state: { openStructure: s } } : undefined);
+  };
 
-  // נתוני עוגה: הוצאות לפי קטגוריה
-  const expenseByCat = {};
-  expenses.forEach((e) => {
-    const cat = e['קטגוריית חשבונית-AI'] || 'אחר';
-    expenseByCat[cat] = (expenseByCat[cat] || 0) + (Number(e['סכום כולל-AI']) || 0);
-  });
-  const donutData = Object.entries(expenseByCat).map(([k, v]) => ({ name: k, value: Math.round(v) }));
+  const Kpi = ({ icon, label, value, sub, color, soft, footer, footerBg, onClick }) => (
+    <div className={`kpi-card ${onClick ? 'clickable' : ''}`}
+      {...(onClick ? { role: 'button', tabIndex: 0, onClick, onKeyDown: (e) => { if (e.key === 'Enter') onClick(); } } : {})}>
+      <div className="kpi-top"><div className="kpi-icon" style={{ background: soft }}>{icon}</div><span className="kpi-label">{label}</span></div>
+      <div className="kpi-value" style={{ color }}>{value}</div>
+      {sub && <div className="kpi-sub">{sub}</div>}
+      {footer
+        ? <div className="kpi-footer" style={{ background: footerBg || color }}>{footer}</div>
+        : <div style={{ height: 12 }} />}
+    </div>
+  );
 
   return (
     <div>
+      {/* ===== סרגל עליון: כותרת + פילטר תקופה + פעולה מהירה ===== */}
       <div className="topbar">
-        <h1>לוח בקרה</h1>
-        <div className="filter-bar" style={{ marginBottom: 0 }}>
-          <select className="select" value={selectedYear} onChange={(e) => setYear(e.target.value)}>
-            {['הכל', ...yearsAvailable].map((y) => (
-              <option key={y} value={y}>{y === 'הכל' ? 'כל השנים' : y}</option>
-            ))}
+        <div>
+          <h1>לוח בקרה</h1>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>תקופה: {periodLabel}</div>
+        </div>
+        <div className="filter-bar no-print" style={{ marginBottom: 0 }}>
+          <select className="select" aria-label="בחירת תקופה" value={preset} onChange={(e) => setPreset(e.target.value)}>
+            {PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
           </select>
-          <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-            {filteredInvoices.length} חשבוניות
-          </span>
-          {/* פעולה מהירה (סעיף 36): העלאת מסמך ישירות מלוח הבקרה */}
+          {preset === 'custom' && (
+            <>
+              <label className="date-field">מתאריך<input type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
+              <label className="date-field">עד תאריך<input type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} /></label>
+            </>
+          )}
           <button type="button" className="btn btn-primary" onClick={() => navigate('/upload')} title="העלאת חשבונית / תעודת משלוח / דוח ריסוסים">
             ⬆️ העלאת מסמך
           </button>
         </div>
       </div>
 
-      {/* ===== שורה 1 — KPI ===== */}
+      {/* ===== שורה 1 — KPI כספיים ===== */}
       <div className="kpi-grid">
-        <div className="kpi-card">
-          <div className="kpi-top">
-            <div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div>
-            <span className="kpi-label">פדיון ברוטו</span>
-          </div>
-          <div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(sumBruto)}</div>
-          <div className="kpi-sub">{selectedYear === 'הכל' ? 'כל הזמנים' : selectedYear}</div>
-          <div className="kpi-footer" style={{ background: 'linear-gradient(135deg,#08A878,#16BE8B)' }}>דוח הכנסות</div>
-        </div>
-
-        <div className="kpi-card">
-          <div className="kpi-top">
-            <div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💸</div>
-            <span className="kpi-label">פדיון נטו</span>
-          </div>
-          <div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(sumNeto)}</div>
-          <div className="kpi-sub">לכל התקופה</div>
-          <div className="kpi-footer" style={{ background: 'linear-gradient(135deg,#27C99A,#08A878)' }}>דוח הכנסות נטו</div>
-        </div>
-
-        <div className="kpi-card">
-          <div className="kpi-top">
-            <div className="kpi-icon" style={{ background: 'var(--expense-soft)' }}>🧾</div>
-            <span className="kpi-label">הוצאות</span>
-          </div>
-          <div className="kpi-value" style={{ color: 'var(--expense)' }}>{formatMoney(sumExpenses)}</div>
-          <div className="kpi-sub">{expenses.length} חשבוניות</div>
-          <div className="kpi-footer" style={{ background: 'linear-gradient(135deg,#EF4444,#FF625F)' }}>דוח הוצאות</div>
-        </div>
-
-        <div className="kpi-card">
-          <div className="kpi-top">
-            <div className="kpi-icon" style={{ background: 'var(--profit-soft)' }}>📈</div>
-            <span className="kpi-label">רווח</span>
-          </div>
-          <div className="kpi-value" style={{ color: 'var(--profit)' }}>{formatMoney(profit)}</div>
-          <div className="kpi-sub">פדיון נטו − הוצאות</div>
-          <div className="kpi-footer" style={{ background: 'linear-gradient(135deg,#10A66A,#39C889)' }}>רווח כולל</div>
-        </div>
-
-        <div className="kpi-card highlight">
-          <div className="kpi-top">
-            <div className="kpi-icon" style={{ background: 'var(--weight-soft)' }}>⚖️</div>
-            <span className="kpi-label">ק"ג בפועל</span>
-          </div>
-          <div className="kpi-value" style={{ color: 'var(--weight)' }}>{formatNumber(sumWeight)}</div>
-          <div className="kpi-sub">ק"ג סה"כ</div>
-          <div className="kpi-footer" style={{ background: 'linear-gradient(135deg,#2878D0,#3D91E8)' }}>ק"ג לאורך זמן</div>
-        </div>
+        <Kpi icon="💰" label="פדיון ברוטו" value={fInvoices.length ? formatMoney(kGross) : 'אין נתונים'} sub={`${fInvoices.length} חשבוניות`}
+          color="var(--revenue)" soft="var(--revenue-soft)" footer="דוח הכנסות" footerBg="linear-gradient(135deg,#08A878,#16BE8B)" onClick={() => navigate('/invoices')} />
+        <Kpi icon="💸" label="פדיון נטו" value={fInvoices.length ? formatMoney(kNet) : 'אין נתונים'} sub={periodLabel}
+          color="var(--revenue)" soft="var(--revenue-soft)" footer="דוח הכנסות נטו" footerBg="linear-gradient(135deg,#27C99A,#08A878)" onClick={() => navigate('/finance')} />
+        <Kpi icon="🧾" label="הוצאות" value={fExpenses.length ? formatMoney(kExpenses) : 'אין נתונים'} sub={`${fExpenses.length} חשבוניות הוצאה`}
+          color="var(--expense)" soft="var(--expense-soft)" footer="דוח הוצאות" footerBg="linear-gradient(135deg,#EF4444,#FF625F)" onClick={() => navigate('/finance?tab=expenses')} />
+        <Kpi icon="📈" label="רווח" value={(fInvoices.length || fExpenses.length) ? formatMoney(kProfit) : 'אין נתונים'} sub="פדיון נטו − הוצאות"
+          color="var(--profit)" soft="var(--profit-soft)" footer="סקירה כספית" footerBg="linear-gradient(135deg,#10A66A,#39C889)" onClick={() => navigate('/finance')} />
       </div>
 
-      {/* ===== בקרת מסמכים — מתוך "סיכום שבועי" (חסרים מסמכים / אי התאמות / שגיאות חישוב) ===== */}
-      {weeks.length > 0 && (() => {
+      {/* ===== שורה 2 — תפוקה ===== */}
+      <div className="kpi-grid" style={{ marginTop: 14 }}>
+        <Kpi icon="⚖️" label={'ק"ג בפועל'} value={fDays.length ? formatNumber(Math.round(kWeight)) : 'אין נתונים'} sub={periodLabel}
+          color="var(--weight)" soft="var(--weight-soft)" onClick={() => navigate('/weekly')} />
+        <Kpi icon="📦" label="קרטונים" value={fDays.length ? formatNumber(kCartons) : 'אין נתונים'}
+          color="var(--cartons)" soft="var(--cartons-soft)" onClick={() => navigate('/weekly')} />
+        <Kpi icon="🛒" label="משטחים" value={fDays.length ? formatNumber(kPallets) : 'אין נתונים'}
+          color="var(--pallets)" soft="var(--pallets-soft)" onClick={() => navigate('/weekly')} />
+        <Kpi icon="🏗️" label="מבנים פעילים" value={formatNumber(activeStructures)} sub={`מתוך ${data.structures.length}`}
+          color="var(--harvest)" soft="var(--harvest-soft)" onClick={() => navigate('/structures')} />
+      </div>
+
+      {/* ===== שורה 3 — עובדים ===== */}
+      <div className="kpi-grid" style={{ marginTop: 14 }}>
+        <Kpi icon="👷" label="עלות עובדים" value={fWorks.length ? formatMoney(kLabor) : 'אין נתונים'} sub={`${fWorks.length} עבודות`}
+          color="var(--workers)" soft="var(--workers-soft)" footer="דוח עובדים" footerBg="linear-gradient(135deg,#7548ED,#9259F4)" onClick={() => navigate('/crew')} />
+        <Kpi icon="⏱️" label="שעות עבודה" value={fWorks.length ? formatNumber(Math.round(kHours * 10) / 10) : 'אין נתונים'}
+          color="var(--hours)" soft="var(--hours-soft)" onClick={() => navigate('/workers?tab=jobs')} />
+        <Kpi icon="👥" label="עובדים פעילים" value={formatNumber(kActiveWorkers)} sub={periodLabel}
+          color="var(--workers)" soft="var(--workers-soft)" onClick={() => navigate('/workers')} />
+        <Kpi icon="📋" label="עבודות שבוצעו" value={formatNumber(fWorks.length)}
+          color="var(--pallets)" soft="var(--pallets-soft)" onClick={() => navigate('/workers?tab=jobs')} />
+      </div>
+
+      {/* ===== בקרת מסמכים — מתוך "סיכום שבועי" ===== */}
+      {data.weeks.length > 0 && (() => {
         const has = (v, k) => String(v || '').includes(k);
-        const missingDocs = weeks.filter((w) => has(w['סטטוס התאמה'], 'חסר')).length;
-        const mismatches = weeks.filter((w) => has(w['סטטוס התאמה'], 'אי התאמה') || has(w['סטטוס התאמת קטיף'], 'אי התאמה')).length;
-        const calcErrors = weeks.filter((w) => w['שגיאת חישוב קג לפי מבנים']).length;
+        const missingDocs = data.weeks.filter((w) => has(w['סטטוס התאמה'], 'חסר')).length;
+        const mismatches = data.weeks.filter((w) => has(w['סטטוס התאמה'], 'אי התאמה') || has(w['סטטוס התאמת קטיף'], 'אי התאמה')).length;
+        const calcErrors = data.weeks.filter((w) => w['שגיאת חישוב קג לפי מבנים']).length;
         const active = missingDocs + mismatches + calcErrors;
         const cards = [
           { label: 'התראות פעילות', value: active, icon: '🔔', to: '/alerts', color: active ? 'var(--error)' : 'var(--ok)', bg: 'var(--error-soft)' },
@@ -211,47 +364,44 @@ export default function DashboardPage() {
         return (
           <div className="kpi-grid" style={{ marginTop: 14 }}>
             {cards.map((c) => (
-              <div key={c.label} className="kpi-card" role="button" tabIndex={0} style={{ cursor: 'pointer', padding: '14px 16px' }}
+              <div key={c.label} className="kpi-card clickable" role="button" tabIndex={0} style={{ padding: '14px 16px' }}
                 onClick={() => navigate(c.to)} onKeyDown={(e) => { if (e.key === 'Enter') navigate(c.to); }} title="פתיחת המסך המתאים">
                 <div className="kpi-top"><div className="kpi-icon" style={{ background: c.bg }}>{c.icon}</div><span className="kpi-label">{c.label}</span></div>
                 <div className="kpi-value" style={{ color: c.color, fontSize: 24 }}>{formatNumber(c.value)}</div>
-                <div className="kpi-sub">שבועות · מתוך {weeks.length}</div>
+                <div className="kpi-sub">שבועות · מתוך {data.weeks.length}</div>
               </div>
             ))}
           </div>
         );
       })()}
 
-      {/* ===== שורה 2 — גרפים ===== */}
+      {/* ===== גרף Hero: הכנסות מול הוצאות + עוגת הוצאות ===== */}
       <div className="grid-2" style={{ marginTop: 22 }}>
         <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>הכנסות לאורך זמן</div>
-          <div style={{ direction: 'ltr' }}>
-            <ResponsiveContainer width="100%" height={260}>
-              <AreaChart data={revenueData} margin={CHART_MARGIN}>
-                <defs>
-                  <linearGradient id="gRev" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#08A878" stopOpacity={0.18} />
-                    <stop offset="95%" stopColor="#08A878" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid {...GRID_PROPS} />
-                <XAxis dataKey="month" {...xAxisProps(revenueData.length)} />
-                <YAxis {...yAxisProps({ money: true })} />
-                <Tooltip {...TOOLTIP_STYLE} formatter={(v, n) => [formatMoney(v), n]} />
-                <Area type="monotone" dataKey="פדיון נטו" stroke="#08A878" strokeWidth={3} fill="url(#gRev)" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
+          <div className="section-title" style={{ marginTop: 0 }}>הכנסות מול הוצאות</div>
+          {monthly.length ? (
+            <div style={{ direction: 'ltr' }}>
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={monthly} margin={CHART_MARGIN}>
+                  <CartesianGrid {...GRID_PROPS} />
+                  <XAxis dataKey="month" {...xAxisProps(monthly.length)} />
+                  <YAxis {...yAxisProps({ money: true })} />
+                  <Tooltip {...TOOLTIP_STYLE} formatter={(v, n) => [formatMoney(v), n]} />
+                  <Legend wrapperStyle={LEGEND_STYLE} />
+                  <Bar dataKey="הכנסות" fill="#08A878" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="הוצאות" fill="#F04444" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : <div className="empty-state"><div className="icon">📊</div>אין נתונים לתקופה זו</div>}
         </div>
 
         <div className="card">
           <div className="section-title" style={{ marginTop: 0 }}>הוצאות לפי קטגוריה</div>
           {donutData.length ? (
-            <ResponsiveContainer width="100%" height={260}>
+            <ResponsiveContainer width="100%" height={280}>
               <PieChart>
-                {/* השמות מוצגים במקרא ולא כתוויות על הפלחים — תוויות נדרסו זו על ידי זו */}
-                <Pie data={donutData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={2}>
+                <Pie data={donutData} dataKey="value" nameKey="name" innerRadius={58} outerRadius={90} paddingAngle={2}>
                   {donutData.map((_, i) => (
                     <Cell key={i} fill={['#F04444', '#F79009', '#09A7B2', '#8B5CF6', '#2878D0', '#7C4DFF'][i % 6]} />
                   ))}
@@ -260,35 +410,132 @@ export default function DashboardPage() {
                 <Legend wrapperStyle={LEGEND_STYLE} />
               </PieChart>
             </ResponsiveContainer>
-          ) : (
-            <div className="empty-state">
-              <div className="icon">📊</div>
-              אין נתוני הוצאות לתקופה זו
-            </div>
-          )}
+          ) : <div className="empty-state"><div className="icon">📊</div>אין נתוני הוצאות לתקופה זו</div>}
         </div>
       </div>
 
-      {/* ===== מבנים פעילים ===== */}
-      <div className="card" style={{ marginTop: 22 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>מבנים</div>
-        <div style={{ color: 'var(--text-secondary)' }}>
-          {activeStructures} מבנים פעילים מתוך {structures.length} סה"כ
+      {/* ===== תפוקה לאורך זמן (בחירת מדד) + הכנסות לאורך זמן ===== */}
+      <div className="grid-2" style={{ marginTop: 18 }}>
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div className="section-title" style={{ margin: 0 }}>תפוקה לאורך זמן</div>
+            <div className="tabs" style={{ padding: 3 }}>
+              {['ק"ג', 'קרטונים', 'משטחים'].map((m) => (
+                <button key={m} type="button" className={`tab ${metric === m ? 'active' : ''}`} style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => setMetric(m)}>{m}</button>
+              ))}
+            </div>
+          </div>
+          {productionChart.length ? (
+            <div style={{ direction: 'ltr', marginTop: 8 }}>
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={productionChart} margin={CHART_MARGIN}>
+                  <CartesianGrid {...GRID_PROPS} />
+                  <XAxis dataKey="date" {...xAxisProps(productionChart.length, { rotate: productionChart.length > 8 })} />
+                  <YAxis {...yAxisProps()} />
+                  <Tooltip {...TOOLTIP_STYLE} formatter={(v) => [`${formatNumber(v)} ${metric}`, metric]} />
+                  <Bar dataKey="value" fill={metric === 'ק"ג' ? '#2878D0' : metric === 'קרטונים' ? '#09A7B2' : '#8B5CF6'} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : <div className="empty-state"><div className="icon">⚖️</div>אין נתונים לתקופה זו</div>}
         </div>
-        <div style={{ marginTop: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          {structures.slice(0, 12).map((s) => (
-            <span
-              key={s.id}
-              className="badge"
-              role="button"
-              tabIndex={0}
-              title="פתיחת פרטי המבנה"
-              onClick={() => navigate('/structures', { state: { openStructure: s } })}
-              onKeyDown={(e) => { if (e.key === 'Enter') navigate('/structures', { state: { openStructure: s } }); }}
-              style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)', padding: '8px 14px', cursor: 'pointer' }}
-            >
-              🏗️ {s['מספר מבנה'] || 'מבנה'}
-            </span>
+
+        <div className="card">
+          <div className="section-title" style={{ marginTop: 0 }}>הכנסות לאורך זמן</div>
+          {monthly.length ? (
+            <div style={{ direction: 'ltr' }}>
+              <ResponsiveContainer width="100%" height={264}>
+                <AreaChart data={monthly} margin={CHART_MARGIN}>
+                  <defs>
+                    <linearGradient id="gRev" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#08A878" stopOpacity={0.18} />
+                      <stop offset="95%" stopColor="#08A878" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid {...GRID_PROPS} />
+                  <XAxis dataKey="month" {...xAxisProps(monthly.length)} />
+                  <YAxis {...yAxisProps({ money: true })} />
+                  <Tooltip {...TOOLTIP_STYLE} formatter={(v, n) => [formatMoney(v), n]} />
+                  <Area type="monotone" dataKey="הכנסות" stroke="#08A878" strokeWidth={3} fill="url(#gRev)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          ) : <div className="empty-state"><div className="icon">📈</div>אין נתונים לתקופה זו</div>}
+        </div>
+      </div>
+
+      {/* ===== הכנסה לפי מבנה + עלות עובדים לפי עובד ===== */}
+      <div className="grid-2" style={{ marginTop: 18 }}>
+        <div className="card">
+          <div className="section-title" style={{ marginTop: 0 }}>הכנסה לפי מבנה</div>
+          {incomeByStructure.length ? (
+            <div style={{ direction: 'ltr' }}>
+              <ResponsiveContainer width="100%" height={Math.max(200, incomeByStructure.length * 38)}>
+                <BarChart data={incomeByStructure} layout="vertical" margin={CHART_MARGIN}>
+                  <CartesianGrid {...GRID_PROPS} vertical horizontal={false} />
+                  <XAxis type="number" {...xAxisProps(0)} />
+                  <YAxis dataKey="name" {...yCategoryProps({ width: 110 })} />
+                  <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
+                  <Bar dataKey="value" fill="#08A878" radius={[0, 6, 6, 0]} style={{ cursor: 'pointer' }}
+                    onClick={(bar) => bar?.name && openStructureByName(bar.name)} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : <div className="empty-state"><div className="icon">🏗️</div>אין נתונים לתקופה זו</div>}
+        </div>
+
+        <div className="card">
+          <div className="section-title" style={{ marginTop: 0 }}>עלות עובדים</div>
+          {laborByWorker.length ? (
+            <div style={{ direction: 'ltr' }}>
+              <ResponsiveContainer width="100%" height={Math.max(200, laborByWorker.length * 38)}>
+                <BarChart data={laborByWorker} layout="vertical" margin={CHART_MARGIN}>
+                  <CartesianGrid {...GRID_PROPS} vertical horizontal={false} />
+                  <XAxis type="number" {...xAxisProps(0)} />
+                  <YAxis dataKey="name" {...yCategoryProps({ width: 120 })} />
+                  <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
+                  <Bar dataKey="value" fill="#7C4DFF" radius={[0, 6, 6, 0]} style={{ cursor: 'pointer' }}
+                    onClick={() => navigate('/crew')} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : <div className="empty-state"><div className="icon">👷</div>אין נתונים לתקופה זו</div>}
+        </div>
+      </div>
+
+      {/* ===== פעולות מהירות + פעילות אחרונה ===== */}
+      <div className="grid-2" style={{ marginTop: 18 }}>
+        <div className="card">
+          <div className="section-title" style={{ marginTop: 0 }}>פעולות מהירות</div>
+          <div className="quick-actions">
+            <button type="button" className="btn btn-primary" onClick={() => navigate('/upload')}>⬆️ העלאת מסמך</button>
+            <button type="button" className="btn btn-ghost" onClick={() => navigate('/workers?tab=jobs&new=1')}>👷 עבודה חדשה</button>
+            <button type="button" className="btn btn-ghost" onClick={() => navigate('/spraying?new=1')}>🧴 ריסוס חדש</button>
+            <button type="button" className="btn btn-ghost" onClick={() => navigate('/planting')}>🌱 תוכנית שתילה חדשה</button>
+          </div>
+
+          <div className="section-title">מבנים</div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {data.structures.slice(0, 14).map((s) => (
+              <span key={s.id} className="obj-chip" role="button" tabIndex={0} title="פתיחת פרטי המבנה"
+                onClick={() => navigate('/structures', { state: { openStructure: s } })}
+                onKeyDown={(e) => { if (e.key === 'Enter') navigate('/structures', { state: { openStructure: s } }); }}>
+                🏗️ {s['מספר מבנה'] || 'מבנה'}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="section-title" style={{ marginTop: 0 }}>פעילות אחרונה</div>
+          {feed.length === 0 ? (
+            <div className="empty-state">אין פעילות אחרונה</div>
+          ) : feed.map((f, i) => (
+            <div key={i} className="feed-item">
+              <div className="feed-icon" style={{ background: f.bg }}>{f.icon}</div>
+              <button type="button" className="feed-link" onClick={() => navigate(f.to)}>{f.label}</button>
+              <span className="feed-time">{formatDate(f.date)}</span>
+            </div>
           ))}
         </div>
       </div>

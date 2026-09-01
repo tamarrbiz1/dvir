@@ -20,6 +20,7 @@ export const translations = {
   harvests: { he: 'קטיפים', th: 'การเก็บ' },
   spraying: { he: 'ריסוסים', th: 'การพ่นยา' },
   sprayReports: { he: 'דוחות ריסוסים', th: 'รายงานการพ่นยา' },
+  sprayMaterials: { he: 'חומרי ריסוס', th: 'สารพ่นยา' },
   treatments: { he: 'תכנון טיפולים', th: 'การวางแผนดูแล' },
   workers: { he: 'עובדים ועבודות', th: 'พนักงานและงาน' },
   crew: { he: 'צוות עובדים', th: 'ทีมพนักงาน' },

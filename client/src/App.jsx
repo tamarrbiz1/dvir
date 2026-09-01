@@ -43,13 +43,23 @@ export const AppContext = createContext(null);
 export const useApp = () => useContext(AppContext);
 
 function Sidebar() {
-  const { user, lang, setAppLang, logout } = useApp();
+  const { user, lang, setAppLang, logout, badges } = useApp();
   const role = user?.role || 'owner';
   return (
     <aside className="sidebar" role="navigation" aria-label={t('nav_mainNav')}>
       <div className="brand">
         <img src="/assets/logo.png" alt="לוגו" style={{ width: 34, height: 34, borderRadius: 8, objectFit: 'cover' }} />
         <span>משק חקלאי</span>
+        {canSee(role, '/alerts') && (
+          <NavLink
+            to="/alerts"
+            aria-label={badges.alerts ? `התראות — ${badges.alerts} פעילות` : 'התראות'}
+            title="התראות"
+            style={{ marginInlineStart: 'auto', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 18 }}
+          >
+            🔔{badges.alerts > 0 && <span className="nav-badge">{badges.alerts}</span>}
+          </NavLink>
+        )}
       </div>
       {role !== 'owner' && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
@@ -76,6 +86,12 @@ function Sidebar() {
               >
                 <span className="nav-icon">{item.icon}</span>
                 <span>{t(item.labelKey)}</span>
+                {item.to === '/requests' && badges.requests > 0 && (
+                  <span className="nav-badge glow" title={`${badges.requests} בקשות ממתינות לאישור`}>{badges.requests}</span>
+                )}
+                {item.to === '/alerts' && badges.alerts > 0 && (
+                  <span className="nav-badge" title={`${badges.alerts} התראות פעילות`}>{badges.alerts}</span>
+                )}
               </NavLink>
             ))}
           </div>
@@ -96,6 +112,8 @@ export default function App() {
   const [tables, setTables] = useState([]);
   const [lang, setUI] = useState('he');
   const [loadingTables, setLoadingTables] = useState(true);
+  // מוני התראות/בקשות לסרגל הצד — מתרעננים ברקע (Near-Realtime לפי האיפיון)
+  const [badges, setBadges] = useState({ requests: 0, alerts: 0 });
 
   // מעדכן שפה: state, מודול i18n, ומאפיין data-lang לסקיילינג CSS בתאילנדית
   const setAppLang = (l) => {
@@ -114,6 +132,38 @@ export default function App() {
       .catch(() => {})
       .finally(() => setLoadingTables(false));
   }, []);
+
+  // רענון מוני ההתראות והבקשות — כל 90 שניות וגם בחזרה לחלון
+  useEffect(() => {
+    if (!user || user.role === 'worker') return undefined;
+    let stop = false;
+    const enc = encodeURIComponent;
+    const getLight = (table, fields) =>
+      fetch(`/api/${enc(table)}?raw=1&fields=${fields.map(enc).join(',')}`)
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => []);
+    const refresh = async () => {
+      const [reqs, stock, weeks] = await Promise.all([
+        getLight('בקשות עובדים', ['סטטוס']),
+        getLight('מלאי בסיסי', ['מלאי נוכחי', 'מלאי מינימום']),
+        getLight('סיכום שבועי', ['סטטוס התאמה', 'סטטוס התאמת קטיף', 'שגיאת חישוב קג לפי מבנים']),
+      ]);
+      if (stop) return;
+      const list = (v) => (Array.isArray(v) ? v : []);
+      const pending = list(reqs).filter((r) => (r['סטטוס'] || 'ממתין לאישור') === 'ממתין לאישור').length;
+      const low = list(stock).filter((i) => i['מלאי נוכחי'] != null && Number(i['מלאי נוכחי']) <= Number(i['מלאי מינימום'] || 0)).length;
+      const badWeeks = list(weeks).filter((w) =>
+        (w['סטטוס התאמה'] && w['סטטוס התאמה'] !== 'תקין')
+        || (w['סטטוס התאמת קטיף'] && !String(w['סטטוס התאמת קטיף']).includes('תקין'))
+        || w['שגיאת חישוב קג לפי מבנים']).length;
+      setBadges({ requests: pending, alerts: pending + low + badWeeks });
+    };
+    refresh();
+    const id = setInterval(refresh, 90 * 1000);
+    const onVis = () => { if (!document.hidden) refresh(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { stop = true; clearInterval(id); document.removeEventListener('visibilitychange', onVis); };
+  }, [user]);
 
   // טעינת משתמש שמור ב-sessionStorage (התחברות קודמת)
   useEffect(() => {
@@ -140,6 +190,7 @@ export default function App() {
     setAppLang,
     tables,
     loadingTables,
+    badges,
     api: {
       async get(table, qs = '') {
         const r = await fetch(`/api/${encodeURIComponent(table)}${qs}`);
@@ -207,6 +258,7 @@ export default function App() {
               <Route path="/requests" element={<WorkerRequestsPage />} />
               <Route path="/harvests" element={<HarvestsPage />} />
               <Route path="/spraying" element={<SprayingPage />} />
+              <Route path="/materials" element={<SprayingPage initialTab="materials" />} />
               <Route path="/treatments" element={<TreatmentsPage />} />
               <Route path="/inventory" element={<InventoryPage />} />
               <Route path="/suppliers" element={<SuppliersPage />} />

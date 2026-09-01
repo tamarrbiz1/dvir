@@ -22,6 +22,7 @@ export const NAV_GROUPS = [
       { to: '/crops', icon: '🌾', labelKey: 'crops' },
       { to: '/harvests', icon: '🧺', labelKey: 'harvests' },
       { to: '/spraying', icon: '🧴', labelKey: 'spraying' },
+      { to: '/materials', icon: '🧪', labelKey: 'sprayMaterials' },
       { to: '/spray-reports', icon: '📋', labelKey: 'sprayReports' },
       { to: '/treatments', icon: '📅', labelKey: 'treatments' },
     ],
@@ -68,7 +69,7 @@ export const NAV_GROUPS = [
 
 // כתובות שמותרות למנהל עבודה (owner רואה הכל)
 export const OPERATIONS = [
-  '/structures', '/planting', '/harvests', '/spraying', '/treatments',
+  '/structures', '/planting', '/harvests', '/spraying', '/materials', '/treatments',
   '/workers', '/crew', '/requests', '/spray-reports',
 ];
 
@@ -111,6 +112,7 @@ export function routeIcon(path) {
 // (למשל כשמשתמש הדביק URL של עמוד פנימי ישירות בדפדפן)
 // ============================================================
 const PARENT_ROUTE = {
+  '/materials': '/spraying',
   '/planting': '/structures',
   '/nonworkdays': '/planting',
   '/treatments': '/planting',

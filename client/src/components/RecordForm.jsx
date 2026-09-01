@@ -7,6 +7,7 @@
 // שדות ריקים אינם נשלחים; null לעולם אינו הופך ל-0.
 // ============================================================
 import { useEffect, useState } from 'react';
+import { confirmDialog, toast } from '../utils/ui.js';
 
 export default function RecordForm({ api, table, title, fields, record, onClose, onSaved }) {
   const [values, setValues] = useState(() => {
@@ -99,9 +100,22 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
   );
 }
 
-/** מחיקה עם אישור (סעיף "ניהול מחיקה") — מחזירה true אם נמחק בפועל */
+/** מחיקה עם אישור (סעיף "ניהול מחיקה") — מחזירה true אם נמחק בפועל.
+ *  הכפתור אדום, אין מחיקה בלחיצה ראשונה, ובכישלון הפריט אינו נעלם מהמסך. */
 export async function removeRecord(api, table, id, label) {
-  if (!window.confirm(`למחוק את ${label}?\nהפעולה נכתבת ל-Airtable ואינה הפיכה.`)) return false;
-  await api.remove(table, id);
+  const ok = await confirmDialog({
+    title: `מחיקת ${label}`,
+    message: 'הפריט ימחק ולא יינתן לשחזור.\nהאם אתה בטוח שברצונך לבצע פעולה זו?',
+    confirmLabel: 'מחק',
+    danger: true,
+  });
+  if (!ok) return false;
+  try {
+    await api.remove(table, id);
+  } catch (e) {
+    toast('לא ניתן היה למחוק את הפריט.', 'error');
+    return false;
+  }
+  toast('הפריט נמחק בהצלחה');
   return true;
 }

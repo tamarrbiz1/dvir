@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import { activatable } from '../utils/a11y.js';
 import { formatMoney, formatNumber } from '../utils/format.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps, yCategoryProps } from '../utils/chart.js';
@@ -9,6 +11,7 @@ const MONTHS = ['ינו', 'פבר', 'מרץ', 'אפר', 'מאי', 'יונ', 'י�
 
 export default function TeamCrewPage() {
   const app = useApp();
+  const navigate = useNavigate();
   const [workers, setWorkers] = useState([]);
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -166,7 +169,7 @@ export default function TeamCrewPage() {
           {/* כרטיסי עובדים */}
           <div style={{ marginTop: 20 }} className="grid">
             {perWorker.map((w) => (
-              <div key={w.id} className="card">
+              <div key={w.id} className="card clickable" {...activatable(() => navigate('/workers', { state: { openWorkerId: w.id } }), `פתיחת כרטיס העובד ${w.name}`)}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>👤 {w.name}</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, fontSize: 13 }}>
                   <div><span style={{ color: 'var(--text-muted)' }}>שעות: </span><b>{formatNumber(w.hours)}</b></div>
