@@ -2146,7 +2146,7 @@ function PlanSheet({
               ))}
             </tr>
             <tr className="ps-total">
-              {labelCell(`קרטונים צפי (${formatNumber(Math.round(avgCarton * 10) / 10)} ק"ג לקרטון)`)}
+              {labelCell('קרטונים צפי')}
               {summary.perWeek.map((p) => (
                 <td key={p.week.key} className="ps-num">{p.expected ? formatNumber(Math.round(p.expected / avgCarton)) : '0'}</td>
               ))}

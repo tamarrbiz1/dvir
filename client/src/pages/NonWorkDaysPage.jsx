@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { formatDate } from '../utils/format.js';
 import { holidayInfo, jewishHolidaysOfYear, thaiHolidaysOfYear, kindOf, KIND_STYLE, toISO } from '../utils/holidays.js';
+import { confirmDialog, toast } from '../utils/ui.js';
 import PageHeader from '../components/PageHeader.jsx';
 
 // ============================================================
@@ -104,7 +105,12 @@ export default function NonWorkDaysPage() {
   const remove = async (it) => {
     if (saving) return;
     const info = holidayInfo(parseISO(it['תאריך']) || new Date(), it);
-    if (!window.confirm(`למחוק את ${formatDate(it['תאריך'])} (${info?.name.he || 'יום אי עבודה'}) מימי אי העבודה?`)) return;
+    const yes = await confirmDialog({
+      title: `מחיקת ${formatDate(it['תאריך'])} (${info?.name.he || 'יום אי עבודה'})`,
+      message: 'הפריט ימחק ולא יינתן לשחזור.\nהאם אתה בטוח שברצונך לבצע פעולה זו?',
+      confirmLabel: 'מחק', danger: true,
+    });
+    if (!yes) return;
     setSaving(true); setNotice('');
     try { await app.api.remove('ימי אי עבודה', it.id); await load(); }
     catch (e) { setNotice(`המחיקה נכשלה: ${e.message || e}`); }
@@ -267,7 +273,6 @@ function YearCalendar({ year, byDate, onDay }) {
             <span style={{ width: 12, height: 12, background: KIND_STYLE[k].bg, border: `2px solid ${KIND_STYLE[k].border}`, borderRadius: 3 }} />{KIND_STYLE[k].label}
           </span>
         ))}
-        <span style={{ color: 'var(--text-muted)' }}>לחיצה על יום — הוספה / עריכה</span>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 14 }}>
         {MONTHS.map((name, m) => {

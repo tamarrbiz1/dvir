@@ -9,6 +9,7 @@
 // סטטוס (נפרע / לא נפרע / מבוטל). אין מחיקה — לפי האיפיון.
 // ============================================================
 import { useEffect, useMemo, useState } from 'react';
+import { confirmDialog } from '../utils/ui.js';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatMoney, formatDate } from '../utils/format.js';
@@ -349,7 +350,7 @@ function CheckDrawer({ check, statusChoices, escapeEnabled, onClose, onZoom, onO
   const cancelAllowed = statusChoices === null || statusChoices.length === 0 || statusChoices.includes(STATUS.CANCELLED);
 
   const setStatus = async (next, confirmText) => {
-    if (confirmText && !window.confirm(confirmText)) return;
+    if (confirmText && !(await confirmDialog({ title: 'אישור פעולה', message: confirmText, confirmLabel: 'אישור', danger: true }))) return;
     setSaving(true);
     setError('');
     try {

@@ -135,22 +135,6 @@ export default function DashboardPage() {
   }, [data.weeks]);
   const fDays = useMemo(() => productionDays.filter((d) => inRange(d.date)), [productionDays, range]);
 
-  // הכנסה לפי מבנה מתוך "JSON הכנסה לפי מבנים" (שבועות בטווח)
-  const incomeByStructure = useMemo(() => {
-    const map = new Map();
-    data.weeks.forEach((w) => {
-      if (!inRange(w['תאריך התחלה'])) return;
-      const inc = parseAny(w['JSON הכנסה לפי מבנים']);
-      const structures = Array.isArray(inc?.structures) ? inc.structures
-        : (Array.isArray(inc?.varieties) ? inc.varieties.flatMap((v) => (Array.isArray(v.structures) ? v.structures : [])) : []);
-      structures.forEach((st) => {
-        const name = st.structure || 'לא ידוע';
-        map.set(name, (map.get(name) || 0) + num(st.net_income));
-      });
-    });
-    return [...map.entries()].map(([name, value]) => ({ name, value: Math.round(value) })).sort((a, b) => b.value - a.value);
-  }, [data.weeks, range]);
-
   // ============ KPI ============
   const invNum = (inv, field) => num(inv[field]);
   const kGross = fInvoices.reduce((s, i) => s + invNum(i, 'סכום ברוטו'), 0);
@@ -271,11 +255,6 @@ export default function DashboardPage() {
   }
 
   const periodLabel = PRESETS.find((p) => p.key === preset)?.label || '';
-  const openStructureByName = (name) => {
-    const s = data.structures.find((x) => String(x['מספר מבנה']) === String(name));
-    navigate('/structures', s ? { state: { openStructure: s } } : undefined);
-  };
-
   const Kpi = ({ icon, label, value, sub, color, soft, footer, footerBg, onClick }) => (
     <div className={`kpi-card ${onClick ? 'clickable' : ''}`}
       {...(onClick ? { role: 'button', tabIndex: 0, onClick, onKeyDown: (e) => { if (e.key === 'Enter') onClick(); } } : {})}>
@@ -464,26 +443,8 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* ===== הכנסה לפי מבנה + עלות עובדים לפי עובד ===== */}
+      {/* ===== עלות עובדים לפי עובד ===== */}
       <div className="grid-2" style={{ marginTop: 18 }}>
-        <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>הכנסה לפי מבנה</div>
-          {incomeByStructure.length ? (
-            <div style={{ direction: 'ltr' }}>
-              <ResponsiveContainer width="100%" height={Math.max(200, incomeByStructure.length * 38)}>
-                <BarChart data={incomeByStructure} layout="vertical" margin={CHART_MARGIN}>
-                  <CartesianGrid {...GRID_PROPS} vertical horizontal={false} />
-                  <XAxis type="number" {...xAxisProps(0)} />
-                  <YAxis dataKey="name" {...yCategoryProps({ width: 110 })} />
-                  <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
-                  <Bar dataKey="value" fill="#08A878" radius={[0, 6, 6, 0]} style={{ cursor: 'pointer' }}
-                    onClick={(bar) => bar?.name && openStructureByName(bar.name)} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ) : <div className="empty-state"><div className="icon">🏗️</div>אין נתונים לתקופה זו</div>}
-        </div>
-
         <div className="card">
           <div className="section-title" style={{ marginTop: 0 }}>עלות עובדים</div>
           {laborByWorker.length ? (

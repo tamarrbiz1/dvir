@@ -299,6 +299,10 @@ body {
 }
 .data-table tbody tr:hover {
   background: #F9FAFB;
+}
+/* סמן לחיצה — רק בשורות שבאמת לחיצות */
+.data-table tbody tr[role='button'],
+.data-table tbody tr[style*='cursor: pointer'] {
   cursor: pointer;
 }
 
@@ -711,6 +715,7 @@ button.nav-item {
 .modal h3 {
   font-size: var(--fs-section);
   margin-bottom: 18px;
+  text-align: center;
 }
 
 /* ============================ Forms ============================ */

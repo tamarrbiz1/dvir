@@ -54,7 +54,14 @@ function treatmentRange(raw) {
     return start && end ? { start, end: end < start ? start : end } : null;
   }
   const single = s.includes('/') ? parseDMY(s) : parseISO(s);
-  return single ? { start: single, end: single } : null;
+  if (!single) return null;
+  // טווח רב-יומי: השדה ב-Airtable הוא תאריך בודד, וסוף הטווח נשמר בהערות
+  const endMatch = /תאריך סיום:\s*(\d{1,2}\/\d{1,2}\/\d{4})/.exec(String(raw['הערות'] || ''));
+  if (endMatch) {
+    const end = parseDMY(endMatch[1]);
+    if (end && end > single) return { start: single, end };
+  }
+  return { start: single, end: single };
 }
 const dateKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const toISO = dateKey;
@@ -218,7 +225,7 @@ export default function TreatmentsPage() {
       basis: r?.['בסיס מינון'] || '',
       dosage: r ? (pick(r, DOSAGE_FIELDS) ?? '') : '',
       status: r?.['סטטוס'] || '',
-      notes: r?.['הערות'] || '',
+      notes: String(r?.['הערות'] || '').replace(/\n?תאריך סיום:.*$/m, '').trim(),
       done: !!r?.['בוצע'],
     });
   };
@@ -227,11 +234,12 @@ export default function TreatmentsPage() {
     const f = form;
     if (!f.structures.length) { setActionError('חסר שדה חובה: מבנה'); return; }
     if (!f.material) { setActionError('חסר שדה חובה: חומר ריסוס'); return; }
-    // יום בודד נשמר כ-ISO (שדה תאריך); טווח נשמר בפורמט הטקסטואלי של האפיון
+    // השדה "תאריך" ב-Airtable הוא תאריך בודד — טווח נשמר כתאריך התחלה + שורת סיום בהערות
     const fmt = (iso) => { const [y, m, d] = iso.split('-'); return `${d}/${m}/${y}`; };
-    const dateValue = f.from === f.to ? f.from : `${fmt(f.from)}-${fmt(f.to)}`;
+    let notesValue = String(f.notes || '').replace(/\n?תאריך סיום:.*$/m, '').trim();
+    if (f.to && f.to !== f.from) notesValue = `${notesValue}${notesValue ? '\n' : ''}תאריך סיום: ${fmt(f.to)}`;
     const fields = {
-      'תאריך': dateValue,
+      'תאריך': f.from,
       'מבנה': f.structures,
       'חומר ריסוס': [f.material],
       'תוכנית שתילה': f.plan || null,
@@ -240,7 +248,7 @@ export default function TreatmentsPage() {
       'בסיס מינון': f.basis || null,
       'מינון ': f.dosage === '' ? null : Number(f.dosage),
       'סטטוס': f.status || null,
-      'הערות': f.notes || null,
+      'הערות': notesValue || null,
       'בוצע': !!f.done,
     };
     Object.keys(fields).forEach((k) => { if (fields[k] === null) delete fields[k]; });

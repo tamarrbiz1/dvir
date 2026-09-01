@@ -24,7 +24,7 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone 
   useEffect(() => {
     Promise.all([
       api.get('מבנים', '?maxRecords=200'),
-      api.get('תמחור עבודות', '?maxRecords=500'),
+      api.get('תמחור עבודות', '?maxRecords=800&raw=1'),
     ])
       .then(([s, p]) => {
         setStructures(Array.isArray(s) ? s : []);
@@ -33,14 +33,16 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone 
       .catch(() => {});
   }, []);
 
-  // סינון סוגי עבודה — מקור להצגה בלבד; לא נכתב ישירות ל-Airtable (Formula/Lookup)
-  const workTypes = [...new Set(pricing.map((p) => p['סוג עבודה (from תמחור עבודות)'] ?? p['סוג עבודה']).filter(Boolean))];
+  // סוג העבודה נבחר מרשומות "תמחור עבודות" — הקישור נכתב ל-Airtable
+  // כדי ש"סכום לתשלום" יחושב לפי המחיר (בלי להציג את המחיר לעובד)
+  const pricingOptions = pricing.map((p) => ({
+    id: p.id,
+    label: [p['סוג עבודה'], p['זן']].filter(Boolean).join(' · ') || p.id,
+    unit: p['יחידת תמחור'],
+  })).filter((p) => p.label !== p.id);
 
-  // יחידת תמחור של סוג העבודה שנבחר — לתווית דינמית של כמות
-  const selectedPricing = pricing.find((p) =>
-    (p['סוג עבודה (from תמחור עבודות)'] ?? p['סוג עבודה']) === workType
-  );
-  const amountLabel = dynamicUnitLabel(selectedPricing?.['יחידת תמחור (from תמחור עבודות)'] ?? selectedPricing?.['יחידת תמחור']);
+  const selectedPricing = pricingOptions.find((p) => p.id === workType);
+  const amountLabel = dynamicUnitLabel(selectedPricing?.unit);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -57,13 +59,22 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone 
       const fields = {
         'תאריך': date,
         'מבנה': [structure],
+        'תמחור עבודות': workType ? [workType] : null,
         'כמות': amount ? Number(amount) : null,
         'שעת התחלה': startTime ? `${date}T${startTime}:00.000Z` : null,
         'שעת סיום': endTime ? `${date}T${endTime}:00.000Z` : null,
         'הערות': notes || null,
       };
       if (workerId) fields['עובד'] = [workerId];
-      await api.create('עבודות עובדים', fields);
+      Object.keys(fields).forEach((k) => { if (fields[k] == null) delete fields[k]; });
+      const created = await api.create('עבודות עובדים', fields);
+      // הפעלת אוטומציית חישוב "סכום לתשלום" ב-Airtable
+      if (created?.id) {
+        try {
+          await api.update('עבודות עובדים', created.id, { 'עדכון מחיר': false });
+          await api.update('עבודות עובדים', created.id, { 'עדכון מחיר': true });
+        } catch {}
+      }
       setSuccess(true);
       setAmount(''); setNotes(''); setStartTime(''); setEndTime(''); setWorkType('');
       setTimeout(() => setSuccess(false), 4000);
@@ -105,8 +116,8 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone 
           <label>{t('w_workType')}</label>
           <select className="select" style={{ width: '100%' }} value={workType} onChange={(e) => setWorkType(e.target.value)}>
             <option value="">{t('w_chooseWorkType')}</option>
-            {workTypes.map((wt) => (
-              <option key={wt} value={wt}>{wt}</option>
+            {pricingOptions.map((p) => (
+              <option key={p.id} value={p.id}>{p.label}</option>
             ))}
           </select>
         </div>

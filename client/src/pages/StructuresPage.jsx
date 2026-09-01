@@ -81,8 +81,7 @@ export default function StructuresPage() {
                   <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
                     onClick={async (e) => {
                       e.stopPropagation();
-                      try { if (await removeRecord(app.api, 'מבנים', s.id, s['מספר מבנה'] || 'המבנה')) await load(); }
-                      catch (err) { window.alert(`המחיקה נכשלה: ${err.message || err}`); }
+                      if (await removeRecord(app.api, 'מבנים', s.id, s['מספר מבנה'] || 'המבנה')) await load();
                     }}>🗑</button>
                 </div>
               )}

@@ -259,9 +259,10 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
     try {
       await app.api.update(WORKS_TABLE, r.id, { 'עדכון מחיר': false });
       await app.api.update(WORKS_TABLE, r.id, { 'עדכון מחיר': true });
-      await new Promise((res) => setTimeout(res, 4000)); // המתנה לאוטומציה של Airtable
-      await onChanged();
-      toast('המחיר רוענן — "סכום לתשלום" נקרא מחדש מ-Airtable');
+      toast('האוטומציה של Airtable מחשבת — הסכום יתעדכן בעוד רגע');
+      // האוטומציה נמדדה כ~13 שניות; רענון ראשון מהיר ושני אחרי סיום
+      setTimeout(() => { onChanged(); }, 5000);
+      setTimeout(() => { onChanged(); }, 14000);
     } catch {
       toast('לא ניתן היה להשלים את הפעולה. הנתונים לא עודכנו.', 'error');
     }
@@ -367,7 +368,11 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
           workers={workers}
           record={form.id ? form : null}
           onClose={() => setForm(null)}
-          onSaved={async () => { setForm(null); await onChanged(); toast('העבודה נשמרה בהצלחה'); }}
+          onSaved={async () => {
+            setForm(null); await onChanged();
+            toast('העבודה נשמרה — הסכום לתשלום מחושב ב-Airtable ויופיע בעוד רגע');
+            setTimeout(() => { onChanged(); }, 13000);
+          }}
         />
       )}
     </div>
@@ -429,8 +434,16 @@ function WorkForm({ api, workers, record, onClose, onSaved }) {
     };
     if (!record) Object.keys(fields).forEach((k) => { if (fields[k] == null) delete fields[k]; });
     try {
-      if (record?.id) await api.update(WORKS_TABLE, record.id, fields);
-      else await api.create(WORKS_TABLE, fields);
+      let rid = record?.id;
+      if (rid) await api.update(WORKS_TABLE, rid, fields);
+      else rid = (await api.create(WORKS_TABLE, fields))?.id;
+      // "סכום לתשלום" מתמלא רק על ידי אוטומציית "עדכון מחיר" — מפעילים אותה (false → true)
+      if (rid) {
+        try {
+          await api.update(WORKS_TABLE, rid, { 'עדכון מחיר': false });
+          await api.update(WORKS_TABLE, rid, { 'עדכון מחיר': true });
+        } catch {}
+      }
       await onSaved();
     } catch (err) {
       setError(`לא ניתן היה להשלים את הפעולה. הנתונים לא עודכנו. (${err.message || err})`);
