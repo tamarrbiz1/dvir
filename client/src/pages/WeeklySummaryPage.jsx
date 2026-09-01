@@ -34,7 +34,7 @@ const F = {
   jDailyCheck: 'JSON בדיקת התאמה יומית', jHarvestCheck: 'JSON התאמת קטיף לתעודות משלוח',
   jIncome: 'JSON הכנסה לפי מבנים', jHarvestStruct: 'JSON סיכום קטיף לפי מבנים', jKg: 'JSON קג בפועל לפי ימים ומבנים',
 };
-const LIST_FIELDS = [F.code, F.start, F.end, F.gross, F.net, F.weight, F.docStatus, F.harvestStatus, F.calcError, F.invoices, F.deliveries];
+const LIST_FIELDS = [F.code, F.start, F.end, F.gross, F.net, F.weight, F.docStatus, F.harvestStatus, F.calcError, F.invoices, F.deliveries, F.jDays];
 const LIST_QS = `?maxRecords=200&raw=1&fields=${LIST_FIELDS.map(encodeURIComponent).join(',')}`;
 
 export default function WeeklySummaryPage() {
@@ -68,8 +68,19 @@ export default function WeeklySummaryPage() {
   }, []);
 
   // ------ חישובים ------
-  const totalNeto = weeks.reduce((s, w) => s + num(w[F.net]), 0);
-  const totalWeight = weeks.reduce((s, w) => s + num(w[F.weight]), 0);
+  // ערכי שבוע: ה-Rollup, ואם הוא ריק — סכימה מ"JSON לפי ימים מאוחד"
+  const statsOf = useCallback((w) => {
+    const days = parseDays(w[F.jDays]);
+    const dWeight = days.reduce((s, d) => s + (d.weight || 0), 0);
+    const dGross = days.reduce((s, d) => s + (d.gross || 0), 0);
+    return {
+      weight: num(w[F.weight]) || dWeight,
+      gross: num(w[F.gross]) || dGross,
+      net: num(w[F.net]) || dGross,
+    };
+  }, []);
+  const totalNeto = weeks.reduce((s, w) => s + statsOf(w).net, 0);
+  const totalWeight = weeks.reduce((s, w) => s + statsOf(w).weight, 0);
   const totalExpenses = expenses.reduce((s, e) => s + num(e['סכום כולל-AI']), 0);
   const missingDocs = weeks.filter((w) => String(w[F.docStatus] || '').includes('חסר')).length;
 
@@ -98,17 +109,19 @@ export default function WeeklySummaryPage() {
   }, [expenses, weeks]);
 
   const chartData = useMemo(() => {
-    const sorted = [...weeks].sort((a, b) => String(a[F.code] || '').localeCompare(String(b[F.code] || '')));
+    // רק שבועות עם קוד תקין — רשומות עם תאריך שגוי לא מציירות "?"
+    const valid = weeks.filter((w) => /^\d{8}-\d{8}$/.test(String(w[F.code] || '')));
+    const sorted = [...valid].sort((a, b) => String(a[F.code]).localeCompare(String(b[F.code])));
     return sorted.map((w) => {
-      const code = w[F.code];
+      const st = statsOf(w);
       return {
-        name: shortWeek(code),
-        'פדיון': Math.round(num(w[F.net])),
-        'הוצאות': Math.round(weeklyExpenses[code] || 0),
-        'משקל': Math.round(num(w[F.weight])),
+        name: shortWeek(w[F.code]),
+        'פדיון': Math.round(st.net),
+        'הוצאות': Math.round(weeklyExpenses[w[F.code]] || 0),
+        'משקל': Math.round(st.weight),
       };
     });
-  }, [weeks, weeklyExpenses]);
+  }, [weeks, weeklyExpenses, statsOf]);
 
   return (
     <div>
@@ -143,18 +156,19 @@ export default function WeeklySummaryPage() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>שבוע</th><th>מתאריך</th><th>עד תאריך</th><th>פדיון ברוטו</th><th>פדיון נטו</th><th>משקל</th><th>מסמכים</th><th>סטטוס מסמכים</th><th>סטטוס קטיף</th>
+                      <th>שבוע</th><th>פדיון ברוטו</th><th>פדיון נטו</th><th>משקל</th><th>מסמכים</th><th>סטטוס מסמכים</th><th>סטטוס קטיף</th>
                     </tr>
                   </thead>
                   <tbody>
                     {weeks.map((w) => (
                       <tr key={w.id} onClick={() => setDrawer(w)} style={{ cursor: 'pointer' }}>
-                        <td><b style={{ direction: 'ltr', unicodeBidi: 'embed' }}>{displayName(w[F.code])}</b></td>
-                        <td>{formatDate(w[F.start])}</td>
-                        <td>{formatDate(w[F.end])}</td>
-                        <td>{formatMoney(w[F.gross])}</td>
-                        <td>{formatMoney(w[F.net])}</td>
-                        <td>{formatNumber(w[F.weight])}</td>
+                        <td>
+                          <div style={{ fontWeight: 800, fontSize: 15, whiteSpace: 'nowrap' }}>{formatDate(w[F.start])} – {formatDate(w[F.end])}</div>
+                          <div className="muted" style={{ fontSize: 11, direction: 'ltr', unicodeBidi: 'embed', textAlign: 'right' }}>{displayName(w[F.code])}</div>
+                        </td>
+                        <td>{formatMoney(statsOf(w).gross)}</td>
+                        <td>{formatMoney(statsOf(w).net)}</td>
+                        <td>{formatNumber(Math.round(statsOf(w).weight))}</td>
                         <td style={{ whiteSpace: 'nowrap', fontSize: 13 }}>🧾 {countOf(w[F.invoices])} · 📄 {countOf(w[F.deliveries])}</td>
                         <td><StatusBadge v={w[F.docStatus]} /></td>
                         <td><StatusBadge v={w[F.harvestStatus]} /></td>
@@ -227,8 +241,8 @@ function WeekDrawer({ summary, onClose }) {
       <div className="drawer stru-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
           <span>
-            שבוע <span style={{ direction: 'ltr', unicodeBidi: 'embed' }}>{code}</span>
-            <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--text-secondary)', marginInlineStart: 10 }}>{formatDate(w[F.start])} – {formatDate(w[F.end])}</span>
+            {formatDate(w[F.start])} – {formatDate(w[F.end])}
+            <span style={{ fontSize: 11.5, fontWeight: 400, color: 'var(--text-secondary)', marginInlineStart: 10, direction: 'ltr', unicodeBidi: 'embed' }}>{code}</span>
           </span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => load(false)} disabled={refreshing} title="טעינה מחדש מ-Airtable">

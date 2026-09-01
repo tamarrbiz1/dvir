@@ -23,6 +23,14 @@ import { activatable } from '../utils/a11y.js';
 const SHORT_MONTHS = ['ינו', 'פבר', 'מרץ', 'אפר', 'מאי', 'יונ', 'יול', 'אוג', 'ספט', 'אוק', 'נוב', 'דצמ'];
 const WORKS_TABLE = 'עבודות עובדים';
 
+// dateTime של Airtable (אזור זמן UTC) → "HH:mm" לשדה time בטופס
+function timeOf(v) {
+  if (!v) return '';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+}
+
 // תווית כמות דינמית (סעיף 15): דונם → שורות · קרטון → קרטונים · גמלון → גמלונים
 function unitLabel(unit) {
   const u = String(unit || '').trim();
@@ -382,8 +390,8 @@ function WorkForm({ api, workers, record, onClose, onSaved }) {
   const [structure, setStructure] = useState(firstId(record?.['מבנה']) || '');
   const [priceId, setPriceId] = useState(firstId(record?.['תמחור עבודות']) || '');
   const [amount, setAmount] = useState(record?.['כמות'] ?? '');
-  const [startTime, setStartTime] = useState(record?.['שעת התחלה'] || '');
-  const [endTime, setEndTime] = useState(record?.['שעת סיום'] || '');
+  const [startTime, setStartTime] = useState(timeOf(record?.['שעת התחלה']));
+  const [endTime, setEndTime] = useState(timeOf(record?.['שעת סיום']));
   const [notes, setNotes] = useState(record?.['הערות'] || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -414,8 +422,9 @@ function WorkForm({ api, workers, record, onClose, onSaved }) {
       'מבנה': [structure],
       'תמחור עבודות': priceId ? [priceId] : null,
       'כמות': amount !== '' ? Number(amount) : null,
-      'שעת התחלה': startTime || null,
-      'שעת סיום': endTime || null,
+      // השדות ב-Airtable הם dateTime (UTC) — נשלח תאריך+שעה מלאים
+      'שעת התחלה': startTime ? `${date}T${startTime}:00.000Z` : null,
+      'שעת סיום': endTime ? `${date}T${endTime}:00.000Z` : null,
       'הערות': notes || null,
     };
     if (!record) Object.keys(fields).forEach((k) => { if (fields[k] == null) delete fields[k]; });
@@ -465,7 +474,6 @@ function WorkForm({ api, workers, record, onClose, onSaved }) {
           </div>
           <div className="form-group"><label>הערות</label>
             <textarea className="input" style={{ width: '100%' }} value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
-          <div className="hint">"סכום לתשלום" מחושב ב-Airtable לפי התמחור — ויוצג לאחר השמירה.</div>
           <div className="form-actions">
             <button type="button" className="btn btn-ghost" disabled={saving} onClick={onClose}>ביטול</button>
             <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'שומר...' : record ? 'שמור שינויים' : 'שמור עבודה'}</button>

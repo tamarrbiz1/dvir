@@ -5,6 +5,7 @@ import { pick } from '../utils/field.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
+import { confirmDialog, toast } from '../utils/ui.js';
 
 // ============================================================
 // תכנון טיפולים — סעיפים 22 ו-25 באיפיון
@@ -84,7 +85,7 @@ export default function TreatmentsPage() {
   const [structures, setStructures] = useState([]);
   const [workers, setWorkers] = useState([]);
   const [plans, setPlans] = useState([]);
-  const [options, setOptions] = useState({ status: [], sprayer: [], basis: [] });
+  const [options, setOptions] = useState({ status: [], sizes: [], basis: [] });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
@@ -133,8 +134,8 @@ export default function TreatmentsPage() {
         .then((r) => (r.ok ? r.json() : { choices: [] }))
         .then((d) => (Array.isArray(d.choices) ? d.choices : []))
         .catch(() => []);
-    Promise.all([fetchChoices('סטטוס'), fetchChoices('סוג מרסס'), fetchChoices('בסיס מינון')])
-      .then(([status, sprayer, basis]) => setOptions({ status, sprayer, basis }));
+    Promise.all([fetchChoices('סטטוס'), fetchChoices('גודל מרסס בליטר'), fetchChoices('בסיס מינון')])
+      .then(([status, sizes, basis]) => setOptions({ status, sizes, basis }));
   }, []);
 
   // ---------- אירועים מועשרים ----------
@@ -211,8 +212,7 @@ export default function TreatmentsPage() {
       to: ev ? toISO(ev.end) : toISO(startOfToday()),
       structures: ev ? ev.structIds : [],
       material: r ? firstId(r['חומר ריסוס']) || '' : '',
-      executor: r ? firstId(r['מבצע']) || '' : '',
-      plan: r ? firstId(r['תוכנית שתילה']) || '' : '',
+      plan: typeof r?.['תוכנית שתילה'] === 'string' ? r['תוכנית שתילה'] : '',
       sprayer: r?.['סוג מרסס'] || '',
       sprayerSize: r?.['גודל מרסס בליטר'] || '',
       basis: r?.['בסיס מינון'] || '',
@@ -234,8 +234,7 @@ export default function TreatmentsPage() {
       'תאריך': dateValue,
       'מבנה': f.structures,
       'חומר ריסוס': [f.material],
-      'מבצע': f.executor ? [f.executor] : [],
-      'תוכנית שתילה': f.plan ? [f.plan] : [],
+      'תוכנית שתילה': f.plan || null,
       'סוג מרסס': f.sprayer || null,
       'גודל מרסס בליטר': f.sprayerSize || null,
       'בסיס מינון': f.basis || null,
@@ -254,9 +253,14 @@ export default function TreatmentsPage() {
 
   const toggleDone = (ev) => runAction(() => app.api.update('ריסוסים', ev.id, { 'בוצע': !ev.done }));
   const removeTreatment = async (ev) => {
-    if (!window.confirm(`למחוק את הטיפול ${ev.material} (${formatDate(ev.start)})?`)) return;
+    const yes = await confirmDialog({
+      title: `מחיקת הטיפול ${ev.material}`,
+      message: 'הפריט ימחק ולא יינתן לשחזור.\nהאם אתה בטוח שברצונך לבצע פעולה זו?',
+      confirmLabel: 'מחק', danger: true,
+    });
+    if (!yes) return;
     const ok = await runAction(() => app.api.remove('ריסוסים', ev.id));
-    if (ok) setDayDrawer(null);
+    if (ok) { setDayDrawer(null); toast('הפריט נמחק בהצלחה'); }
   };
 
   // ---------- ניווט ----------
@@ -427,11 +431,12 @@ function MonthGrid({ year, month, onDate, onOpen }) {
       {Array.from({ length: count }, (_, i) => new Date(year, month, i + 1)).map((day) => {
         const evs = onDate(day);
         const isToday = day.getTime() === today.getTime();
+        const isShabbat = day.getDay() === 6;
         return (
           <div key={dateKey(day)} onClick={() => evs.length && onOpen(day, evs)}
             style={{
               minHeight: 92, padding: 4, borderLeft: '1px solid var(--border)', borderBottom: '1px solid var(--border)',
-              background: isToday ? '#FFFBEB' : '#fff', cursor: evs.length ? 'pointer' : 'default',
+              background: isToday ? '#FFFBEB' : isShabbat ? '#F1ECFE' : '#fff', cursor: evs.length ? 'pointer' : 'default',
               outline: isToday ? `2px solid ${TODAY_BORDER}` : 'none', outlineOffset: -2,
             }}>
             <div style={{ fontWeight: isToday ? 800 : 500, color: isToday ? TODAY_BORDER : 'inherit' }}>{day.getDate()}</div>
@@ -452,8 +457,9 @@ function WeekGrid({ weekStart, onDate, onOpen }) {
       {days.map((day) => {
         const evs = onDate(day);
         const isToday = day.getTime() === today.getTime();
+        const isShabbat = day.getDay() === 6;
         return (
-          <div key={dateKey(day)} style={{ minHeight: 220, padding: 6, borderLeft: '1px solid var(--border)', background: isToday ? '#FFFBEB' : '#fff', outline: isToday ? `2px solid ${TODAY_BORDER}` : 'none', outlineOffset: -2 }}>
+          <div key={dateKey(day)} style={{ minHeight: 220, padding: 6, borderLeft: '1px solid var(--border)', background: isToday ? '#FFFBEB' : isShabbat ? '#F1ECFE' : '#fff', outline: isToday ? `2px solid ${TODAY_BORDER}` : 'none', outlineOffset: -2 }}>
             <div style={{ textAlign: 'center', fontWeight: 700, marginBottom: 4, color: isToday ? TODAY_BORDER : 'inherit' }}>
               {DAYS[day.getDay()]} {day.getDate()}/{day.getMonth() + 1}
             </div>
@@ -596,11 +602,17 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
           </div>
 
           <div className="form-group"><label>חומר ריסוס <span className="required" /></label>
-            <select className="select" style={{ width: '100%' }} required value={form.material} onChange={(e) => set('material', e.target.value)}>
+            <select className="select" style={{ width: '100%' }} required value={form.material}
+              onChange={(e) => {
+                const id = e.target.value;
+                const m = materials.find((x) => x.id === id);
+                // ברירת המחדל מהאיפיון: המינון של החומר מוצע אוטומטית וניתן לעריכה
+                const def = m?.['מינון בסמ"ק'];
+                setForm({ ...form, material: id, dosage: def != null && def !== '' ? String(def) : form.dosage });
+              }}>
               <option value="">בחר חומר...</option>
               {materials.map((m) => <option key={m.id} value={m.id}>{m['שם חומר'] || 'חומר'}</option>)}
             </select>
-            {mat && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>מינון מומלץ: {mat['מינון בסמ"ק'] ?? 'לא זמין'} סמ"ק · אריזה: {mat['גודל האריזה'] ?? 'לא זמין'}</div>}
           </div>
 
           <div className="form-group"><label>תוכנית שתילה (גידול / זן)</label>
@@ -611,23 +623,18 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
           </div>
 
           <div className="grid-2" style={{ gap: 12 }}>
-            <div className="form-group"><label>מבצע</label>
-              <select className="select" style={{ width: '100%' }} value={form.executor} onChange={(e) => set('executor', e.target.value)}>
-                <option value="">לא צוין</option>
-                {workers.map((w) => <option key={w.id} value={w.id}>{`${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || 'עובד'}</option>)}
-              </select></div>
             <div className="form-group"><label>סטטוס</label>
               <select className="select" style={{ width: '100%' }} value={form.status} onChange={(e) => set('status', e.target.value)}>
                 <option value="">ללא</option>
                 {withCurrent(options.status, form.status).map((s) => <option key={s} value={s}>{s}</option>)}
               </select></div>
             <div className="form-group"><label>סוג מרסס</label>
-              <select className="select" style={{ width: '100%' }} value={form.sprayer} onChange={(e) => set('sprayer', e.target.value)}>
-                <option value="">ללא</option>
-                {withCurrent(options.sprayer, form.sprayer).map((s) => <option key={s} value={s}>{s}</option>)}
-              </select></div>
+              <input className="input" style={{ width: '100%' }} value={form.sprayer} onChange={(e) => set('sprayer', e.target.value)} /></div>
             <div className="form-group"><label>גודל מרסס (ליטר)</label>
-              <input className="input" style={{ width: '100%' }} value={form.sprayerSize} onChange={(e) => set('sprayerSize', e.target.value)} /></div>
+              <select className="select" style={{ width: '100%' }} value={form.sprayerSize} onChange={(e) => set('sprayerSize', e.target.value)}>
+                <option value="">ללא</option>
+                {withCurrent(options.sizes || [], String(form.sprayerSize || '')).filter(Boolean).map((s) => <option key={s} value={s}>{s}</option>)}
+              </select></div>
             <div className="form-group"><label>בסיס מינון</label>
               <select className="select" style={{ width: '100%' }} value={form.basis} onChange={(e) => set('basis', e.target.value)}>
                 <option value="">ללא</option>
@@ -642,7 +649,6 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
             <input type="checkbox" checked={form.done} onChange={(e) => set('done', e.target.checked)} /> בוצע
           </label>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>כמות ומחיר מחושבים ב-Airtable לאחר השמירה.</div>
           <div className="form-actions">
             <button type="button" className="btn btn-ghost" disabled={busy} onClick={onCancel}>ביטול</button>
             <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'שומר...' : form.id ? 'שמור שינויים' : 'צור טיפול'}</button>

@@ -108,9 +108,9 @@ function Overview({ weekly, expenses, bruto, neto, expSum, profit }) {
     const exp = {};
     expenses.forEach((e) => {
       const d = pick(e, ['תאריך חשבונית-AI', 'תאריך העלאת החשבונית', 'תאריך']);
-      let key = '?';
       const dt = new Date(d);
-      if (!Number.isNaN(dt.getTime())) key = `${dt.getFullYear()}${String(dt.getMonth() + 1).padStart(2, '0')}`;
+      if (Number.isNaN(dt.getTime())) return; // הוצאה בלי תאריך תקין — לא מציירים "?"
+      const key = `${dt.getFullYear()}${String(dt.getMonth() + 1).padStart(2, '0')}`;
       exp[key] = (exp[key] || 0) + num(e, ['סכום כולל-AI', 'סכום', 'סכום כולל']);
     });
     const months = [...new Set([...Object.keys(rev), ...Object.keys(exp)])].sort();

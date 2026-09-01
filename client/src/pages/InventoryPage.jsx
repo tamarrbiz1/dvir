@@ -169,7 +169,6 @@ export default function InventoryPage() {
                   </button>
                 ))}
               </div>
-              <div className="hint">הערכים הם ברירת מחדל בלבד — ניתן לשנות את הכמות לפני האישור.</div>
             </div>
           )}
 

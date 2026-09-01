@@ -18,14 +18,13 @@ export function PageNav() {
   // מחוץ ל-Router shell (אפליקציית העובד) אין ניווט בין מסלולים
   if (!nav) return null;
 
-  const { back, goHome, backPath, isHome, home, currentPath } = nav;
+  const { back, backPath, isHome, currentPath } = nav;
 
   // בעמוד הבית אין לאן לחזור ואין לאן "לעלות"
   if (isHome) return null;
 
   const targetTitle = routeTitle(backPath);
   const backLabel = t('nav_backTo') + targetTitle;
-  const showHome = backPath !== home;
 
   return (
     <nav className="page-nav" aria-label={t('nav_pageNav')}>
@@ -41,18 +40,6 @@ export function PageNav() {
         <span className="nav-target">{t('nav_toPrefix')}{targetTitle}</span>
       </button>
 
-      {showHome && (
-        <button
-          type="button"
-          className="btn btn-ghost btn-nav"
-          onClick={goHome}
-          aria-label={t('nav_goHome')}
-          title={t('nav_goHome')}
-        >
-          <span aria-hidden="true">🏠</span>
-          <span>{t('nav_home')}</span>
-        </button>
-      )}
 
       {/* מציין למשתמש היכן הוא נמצא — נקרא על ידי קורא מסך בלבד */}
       <span className="sr-only">{t('nav_youAreOn')} {routeTitle(currentPath)}</span>

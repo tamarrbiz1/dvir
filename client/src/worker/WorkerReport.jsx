@@ -58,8 +58,8 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone 
         'תאריך': date,
         'מבנה': [structure],
         'כמות': amount ? Number(amount) : null,
-        'שעת התחלה': startTime || null,
-        'שעת סיום': endTime || null,
+        'שעת התחלה': startTime ? `${date}T${startTime}:00.000Z` : null,
+        'שעת סיום': endTime ? `${date}T${endTime}:00.000Z` : null,
         'הערות': notes || null,
       };
       if (workerId) fields['עובד'] = [workerId];

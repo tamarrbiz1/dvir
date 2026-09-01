@@ -42,7 +42,8 @@ export default function LoginPage() {
         return;
       }
       const type = String(found['סוג'] || 'owner').trim().toLowerCase();
-      const isManager = type.includes('מנהל') || type === 'manager';
+      // "מנהל ראשי" = בעל העסק (גישה מלאה); רק "מנהל עבודה" מקבל תפקיד מצומצם
+      const isManager = type.includes('עבודה') || type === 'manager';
       login({
         role: isManager ? 'manager' : 'owner',
         name: found['Name'] || 'משתמש',
@@ -139,10 +140,6 @@ export default function LoginPage() {
             {loading ? 'מתחבר...' : 'התחבר'}
           </button>
         </form>
-
-        <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
-          האימות מתבצע מול טבלת "הרשאת מנהל" / "עובדים" ב-Airtable לפי שלייל וקוד אישי.
-        </div>
       </div>
     </div>
   );

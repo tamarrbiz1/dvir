@@ -315,9 +315,9 @@ function SprayForm({ record, materials, structures, workers, onClose, onSaved, a
   const [date, setDate] = useState(record?.['תאריך'] ? String(record['תאריך']).slice(0, 10) : todayStr());
   const [structure, setStructure] = useState(firstId(record?.['מבנה']) || '');
   const [material, setMaterial] = useState(firstId(record?.['חומר ריסוס']) || '');
-  const [executor, setExecutor] = useState(firstId(record?.['מבצע']) || '');
   const [sprayerType, setSprayerType] = useState(record?.['סוג מרסס'] || '');
   const [sprayerSize, setSprayerSize] = useState(record?.['גודל מרסס בליטר'] ?? '');
+  const [sizeOptions, setSizeOptions] = useState([]);
   const [basis, setBasis] = useState(record?.['בסיס מינון'] || '');
   const [basisOptions, setBasisOptions] = useState([]);
   const [dosage, setDosage] = useState(record?.['מינון '] ?? record?.['מינון'] ?? '');
@@ -326,12 +326,16 @@ function SprayForm({ record, materials, structures, workers, onClose, onSaved, a
   const [error, setError] = useState('');
   useEscapeClose(onClose, !saving);
 
-  // אפשרויות "בסיס מינון" מהמטא של Airtable
+  // אפשרויות "בסיס מינון" ו"גודל מרסס בליטר" מהמטא של Airtable
   useEffect(() => {
     fetch(`/api/select-options/${encodeURIComponent(TABLE)}/${encodeURIComponent('בסיס מינון')}`)
       .then((r) => (r.ok ? r.json() : { choices: [] }))
       .then((d) => setBasisOptions(Array.isArray(d.choices) && d.choices.length ? d.choices : ['לדונם', 'ל-100 ליטר', 'לליטר', 'אחוז']))
       .catch(() => setBasisOptions(['לדונם', 'ל-100 ליטר', 'לליטר', 'אחוז']));
+    fetch(`/api/select-options/${encodeURIComponent(TABLE)}/${encodeURIComponent('גודל מרסס בליטר')}`)
+      .then((r) => (r.ok ? r.json() : { choices: [] }))
+      .then((d) => setSizeOptions(Array.isArray(d.choices) ? d.choices : []))
+      .catch(() => {});
   }, []);
 
   // בחירת חומר → הצעת מינון ברירת מחדל בלבד (לא בסיס!)
@@ -353,9 +357,8 @@ function SprayForm({ record, materials, structures, workers, onClose, onSaved, a
         'תאריך': date,
         'מבנה': [structure],
         'חומר ריסוס': [material],
-        'מבצע': executor ? [executor] : null,
         'סוג מרסס': sprayerType || null,
-        'גודל מרסס בליטר': sprayerSize !== '' ? Number(sprayerSize) : null,
+        'גודל מרסס בליטר': sprayerSize !== '' ? String(sprayerSize) : null,
         'בסיס מינון': basis || null,
         'מינון ': dosage !== '' ? dosage : null,
         'הערות': notes || null,
@@ -373,8 +376,6 @@ function SprayForm({ record, materials, structures, workers, onClose, onSaved, a
       setSaving(false);
     }
   };
-
-  const workerLabel = (w) => `${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || w.id;
 
   return (
     <div className="modal-overlay" onClick={() => !saving && onClose()}>
@@ -396,15 +397,13 @@ function SprayForm({ record, materials, structures, workers, onClose, onSaved, a
                 <option value="">בחר חומר...</option>
                 {materials.map((m) => <option key={m.id} value={m.id}>{m['שם חומר'] || m.id}</option>)}
               </select></div>
-            <div className="form-group"><label>מבצע</label>
-              <select className="select" style={{ width: '100%' }} value={executor} onChange={(e) => setExecutor(e.target.value)}>
-                <option value="">לא צוין</option>
-                {workers.map((w) => <option key={w.id} value={w.id}>{workerLabel(w)}</option>)}
-              </select></div>
             <div className="form-group"><label>סוג מרסס</label>
               <input className="input" style={{ width: '100%' }} value={sprayerType} onChange={(e) => setSprayerType(e.target.value)} /></div>
             <div className="form-group"><label>גודל מרסס (ליטר)</label>
-              <input className="input" style={{ width: '100%' }} type="number" min="0" value={sprayerSize} onChange={(e) => setSprayerSize(e.target.value)} /></div>
+              <select className="select" style={{ width: '100%' }} value={sprayerSize} onChange={(e) => setSprayerSize(e.target.value)}>
+                <option value="">בחר...</option>
+                {(sizeOptions.includes(String(sprayerSize)) || sprayerSize === '' ? sizeOptions : [String(sprayerSize), ...sizeOptions]).map((o) => <option key={o} value={o}>{o}</option>)}
+              </select></div>
             <div className="form-group"><label>בסיס מינון (בחירה ידנית)</label>
               <select className="select" style={{ width: '100%' }} value={basis} onChange={(e) => setBasis(e.target.value)}>
                 <option value="">בחר...</option>

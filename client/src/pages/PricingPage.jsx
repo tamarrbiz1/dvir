@@ -177,7 +177,6 @@ function StructurePricingTable({ items, structName, pricingName }) {
                 <Row label="מספר גמלונים" val={formatNumber(drawer['מספר גמלונים (from מבנים)'] ?? geom?.fields?.['מספר גמלונים'])} />
                 <Row label="שלוחות טפטוף" val={formatNumber(drawer['מספר שלוחות טפטוף בגמלון (from מבנים)'] ?? geom?.fields?.['מספר שלוחות טפטוף בגמלון'])} />
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 12 }}>מסך זה הוא מסך הגדרות — לא דשבורד ראשי.</div>
             </div>
           </div>
         </div>

@@ -6,7 +6,7 @@ import {
 import { useApp } from '../App.jsx';
 import { formatDate, formatMoney, formatNumber } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
-import { holidayInfo, jewishHoliday, KIND_STYLE } from '../utils/holidays.js';
+import { holidayInfo, jewishHoliday, jewishHolidaysOfYear, thaiHolidaysOfYear, KIND_STYLE } from '../utils/holidays.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
@@ -416,6 +416,8 @@ export default function PlantingPlanPage() {
     try {
       await fn();
       await load({ silent: true }); // בהצלחה — קרא מחדש מ-Airtable בלי לקפוץ מהמסך
+      // רענון שקט נוסף — האוטומציה של Airtable (חשב תוכנית / הזזה) מסיימת באיחור קטן
+      setTimeout(() => { load({ silent: true }).catch(() => {}); }, 6000);
       setBusy(false);
       return true;
     } catch (e) {
@@ -911,7 +913,7 @@ export default function PlantingPlanPage() {
             {actionError && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {actionError}</div>}
             <form onSubmit={(e) => { e.preventDefault(); savePlan(); }}>
               <div className="form-group">
-                <label>מבנה <span className="required">*</span></label>
+                <label>מבנה <span className="required" /></label>
                 <select className="select" style={{ width: '100%' }} required
                   value={planForm.structureId} onChange={(e) => setPlanForm({ ...planForm, structureId: e.target.value })}>
                   <option value="">בחר מבנה...</option>
@@ -921,7 +923,7 @@ export default function PlantingPlanPage() {
                 </select>
               </div>
               <div className="form-group">
-                <label>גידול <span className="required">*</span></label>
+                <label>גידול <span className="required" /></label>
                 <select className="select" style={{ width: '100%' }} required
                   value={planForm.cropId} onChange={(e) => setPlanForm({ ...planForm, cropId: e.target.value })}>
                   <option value="">בחר גידול...</option>
@@ -932,33 +934,30 @@ export default function PlantingPlanPage() {
               </div>
               <div className="grid-2" style={{ gap: 12 }}>
                 <div className="form-group">
-                  <label>תחילת שתילה מקורית <span className="required">*</span></label>
+                  <label>תחילת שתילה מקורית <span className="required" /></label>
                   <input className="input" style={{ width: '100%' }} type="date" required
                     value={planForm.plantStart} onChange={(e) => setPlanForm({ ...planForm, plantStart: e.target.value })} />
                 </div>
                 <div className="form-group">
-                  <label>מספר ימי שתילה <span className="required">*</span></label>
+                  <label>מספר ימי שתילה <span className="required" /></label>
                   <input className="input" style={{ width: '100%' }} type="number" min="1" required
                     value={planForm.plantDays} onChange={(e) => setPlanForm({ ...planForm, plantDays: e.target.value })} />
                 </div>
                 <div className="form-group">
-                  <label>תחילת קטיף מקורית <span className="required">*</span></label>
+                  <label>תחילת קטיף מקורית <span className="required" /></label>
                   <input className="input" style={{ width: '100%' }} type="date" required
                     value={planForm.harvestStart} onChange={(e) => setPlanForm({ ...planForm, harvestStart: e.target.value })} />
                 </div>
                 <div className="form-group">
-                  <label>מספר ימי קטיף <span className="required">*</span></label>
+                  <label>מספר ימי קטיף <span className="required" /></label>
                   <input className="input" style={{ width: '100%' }} type="number" min="1" required
                     value={planForm.harvestDays} onChange={(e) => setPlanForm({ ...planForm, harvestDays: e.target.value })} />
                 </div>
               </div>
               <div className="form-group">
-                <label>שנת תוכנית <span className="required">*</span></label>
+                <label>שנת תוכנית <span className="required" /></label>
                 <input className="input" style={{ width: '100%' }} type="number" required
                   value={planForm.year} onChange={(e) => setPlanForm({ ...planForm, year: e.target.value })} />
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
-                תאריכי הסיום, התקופות והתחזית השבועית מחושבים ב-Airtable לאחר השמירה.
               </div>
               <div className="form-actions">
                 <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setPlanForm(null)}>ביטול</button>
@@ -979,12 +978,9 @@ export default function PlantingPlanPage() {
             {actionError && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {actionError}</div>}
             <form onSubmit={(e) => { e.preventDefault(); submitShift(); }}>
               <div className="form-group">
-                <label>מספר ימי הזזה <span className="required">*</span></label>
+                <label>מספר ימי הזזה <span className="required" /></label>
                 <input className="input" style={{ width: '100%' }} type="number" required autoFocus
                   value={shiftForm.days} onChange={(e) => setShiftForm({ ...shiftForm, days: e.target.value })} />
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
-                Airtable מטפל בימי אי עבודה, בחפיפות ובהזזת התוכניות הבאות באותו מבנה.
               </div>
               <div className="form-actions">
                 <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setShiftForm(null)}>ביטול</button>
@@ -1005,17 +1001,17 @@ export default function PlantingPlanPage() {
             {actionError && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {actionError}</div>}
             <form onSubmit={(e) => { e.preventDefault(); submitPeriod(); }}>
               <div className="form-group">
-                <label>מתאריך <span className="required">*</span></label>
+                <label>מתאריך <span className="required" /></label>
                 <input className="input" style={{ width: '100%' }} type="date" required
                   value={periodForm.from} onChange={(e) => setPeriodForm({ ...periodForm, from: e.target.value })} />
               </div>
               <div className="form-group">
-                <label>עד תאריך <span className="required">*</span></label>
+                <label>עד תאריך <span className="required" /></label>
                 <input className="input" style={{ width: '100%' }} type="date" required
                   value={periodForm.to} onChange={(e) => setPeriodForm({ ...periodForm, to: e.target.value })} />
               </div>
               <div className="form-group">
-                <label>סטטוס <span className="required">*</span></label>
+                <label>סטטוס <span className="required" /></label>
                 <select className="select" style={{ width: '100%' }} required
                   value={periodForm.status} onChange={(e) => setPeriodForm({ ...periodForm, status: e.target.value })}>
                   <option value="שתילה">שתילה</option>
@@ -1042,6 +1038,7 @@ export default function PlantingPlanPage() {
               <button type="button" className="drawer-close" onClick={() => setShowNonWork(false)} aria-label="סגירה" title="סגירה">✕</button>
             </div>
             <div className="drawer-body">
+              <NonWorkQuickAdd app={app} year={year} existing={nonWorkDays} onChanged={() => load({ silent: true })} />
               <div className="table-wrap">
                 <table className="data-table">
                   <thead><tr><th>תאריך</th><th>חג</th><th>סוג החג</th></tr></thead>
@@ -1997,6 +1994,21 @@ function PlanSheet({
     });
   };
 
+  // משקל ממוצע לקרטון — מחושב מתעודות המשלוח האמיתיות (ברירת מחדל 12.3)
+  const [avgCarton, setAvgCarton] = useState(12.3);
+  useEffect(() => {
+    const enc = encodeURIComponent;
+    fetch(`/api/${enc('תעודות משלוח')}?raw=1&fields=${[enc('משקל כולל'), enc('כמות קרטונים')].join(',')}`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows2) => {
+        const list = Array.isArray(rows2) ? rows2 : [];
+        const w = list.reduce((s2, n) => s2 + (Number(n['משקל כולל']) || 0), 0);
+        const c = list.reduce((s2, n) => s2 + (Number(n['כמות קרטונים']) || 0), 0);
+        if (w > 0 && c > 0) setAvgCarton(w / c);
+      })
+      .catch(() => {});
+  }, []);
+
   const isCurrentWeek = (w) => today >= w.start && today <= w.end;
   const labelCell = (text) => <th className="ps-rowhead" colSpan={2}>{text}</th>;
 
@@ -2004,9 +2016,6 @@ function PlanSheet({
     <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
       <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <b style={{ fontSize: 16 }}>גיליון שנתי — {year}</b>
-        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-          {rows.length} מבנים · {planRows.length} תוכניות · {weeks.length} שבועות
-        </span>
         <div style={{ flex: 1 }} />
         <ViewSwitch view={view} onView={onView} />
       </div>
@@ -2106,7 +2115,13 @@ function PlanSheet({
                       ) : (
                         <div className="ps-plant-label">{main.label}</div>
                       )}
-                      {items.length > 1 && <div className="ps-more">+{items.length - 1}</div>}
+                      {items.length > 1 && (
+                        <div className="ps-more" role="button" tabIndex={0} title="פתיחת התוכנית הנוספת בתא"
+                          onClick={(e) => { e.stopPropagation(); onPlan(items[1].r.plan.id); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onPlan(items[1].r.plan.id); } }}>
+                          +{items.length - 1}
+                        </div>
+                      )}
                     </td>
                   );
                 })}
@@ -2128,6 +2143,12 @@ function PlanSheet({
                 <td key={p.week.key} className="ps-num" style={{ color: p.actual !== null ? ACTUAL_COLOR : 'var(--text-muted)' }}>
                   {p.actual !== null ? fmt(p.actual) : (p.expected ? 'טרם' : '')}
                 </td>
+              ))}
+            </tr>
+            <tr className="ps-total">
+              {labelCell(`קרטונים צפי (${formatNumber(Math.round(avgCarton * 10) / 10)} ק"ג לקרטון)`)}
+              {summary.perWeek.map((p) => (
+                <td key={p.week.key} className="ps-num">{p.expected ? formatNumber(Math.round(p.expected / avgCarton)) : '0'}</td>
               ))}
             </tr>
             <tr className="ps-total">
@@ -2182,10 +2203,93 @@ function PlanSheet({
           <b style={{ color: ACTUAL_COLOR }}>1,234</b> ק"ג בפועל (מתחת לצפוי)
         </span>
         <LegendSwatch bg={SHEET_HOLIDAY_BG} border="#F04444" label="חג / יום אי עבודה" />
-        <span style={{ color: 'var(--text-muted)' }}>
-          משטח = {KG_PER_PALLET} ק"ג · הכנסות בפועל = ק"ג בפועל × מחיר לק"ג · לחיצה על תא פותחת את כרטיס התוכנית
-        </span>
       </div>
+    </div>
+  );
+}
+
+// ============================================================
+// הוספה מהירה של ימי אי עבודה + ייבוא חגים לשנה — מתוך התוכנית
+// ============================================================
+function NonWorkQuickAdd({ app, year, existing, onChanged }) {
+  const [date, setDate] = useState('');
+  const [type, setType] = useState('');
+  const [typeOptions, setTypeOptions] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    fetch(`/api/select-options/${encodeURIComponent('ימי אי עבודה')}/${encodeURIComponent('סוג החג')}`)
+      .then((r) => (r.ok ? r.json() : { choices: [] }))
+      .then((d) => {
+        const c = Array.isArray(d.choices) ? d.choices : [];
+        setTypeOptions(c);
+        if (c.length && !type) setType(c.find((x) => x.includes('יהודי')) || c[0]);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const existingDates = new Set((existing || []).map((d) => String(d['תאריך'] || '').slice(0, 10)));
+
+  const add = async () => {
+    if (busy || !date) return;
+    setBusy(true); setMsg('');
+    try {
+      await app.api.create('ימי אי עבודה', { 'תאריך': date, ...(type ? { 'סוג החג': type } : {}) });
+      setDate('');
+      await onChanged();
+      setMsg('✓ היום נוסף — הגיליון מתעדכן');
+    } catch (e) {
+      setMsg(`✕ לא ניתן היה להוסיף (${e.message || e})`);
+    }
+    setBusy(false);
+  };
+
+  const importSet = async (list, typeName) => {
+    if (busy) return;
+    setBusy(true); setMsg('');
+    let created = 0;
+    let failed = 0;
+    for (const h of list) {
+      if (existingDates.has(h.iso)) continue;
+      try {
+        await app.api.create('ימי אי עבודה', { 'תאריך': h.iso, ...(typeName ? { 'סוג החג': typeName } : {}) });
+        created += 1;
+      } catch { failed += 1; }
+    }
+    await onChanged();
+    setMsg(`✓ יובאו ${created} ימים${failed ? ` · ${failed} נכשלו` : ''} — התוכנית מתעדכנת`);
+    setBusy(false);
+  };
+
+  const heType = typeOptions.find((x) => x.includes('יהודי')) || typeOptions[0] || '';
+  const thType = typeOptions.find((x) => x.includes('תילאנדי') || x.includes('תאילנדי')) || typeOptions[1] || '';
+
+  return (
+    <div className="card" style={{ marginBottom: 14, background: 'var(--bg-secondary)' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
+        <div className="form-group" style={{ margin: 0 }}>
+          <label>תאריך</label>
+          <input type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} />
+        </div>
+        <div className="form-group" style={{ margin: 0 }}>
+          <label>סוג החג</label>
+          <select className="select" value={type} onChange={(e) => setType(e.target.value)}>
+            {typeOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <button type="button" className="btn btn-primary" disabled={busy || !date} onClick={add}>{busy ? 'שומר...' : '+ הוסף יום'}</button>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+        <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => importSet(jewishHolidaysOfYear(Number(year)), heType)}>
+          📥 ייבוא חגי ישראל {year}
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => importSet(thaiHolidaysOfYear(Number(year)), thType)}>
+          📥 ייבוא חגי תאילנד {year}
+        </button>
+      </div>
+      {msg && <div style={{ marginTop: 8, fontSize: 13, fontWeight: 600 }}>{msg}</div>}
     </div>
   );
 }

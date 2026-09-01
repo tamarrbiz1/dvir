@@ -62,6 +62,23 @@ function fmtAnalysis(v, kind) {
 const ACCEPT = '.pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png';
 const MAX_MB = 15;
 
+// תמונות גדולות מוקטנות בצד הלקוח לפני השליחה — מקצר משמעותית את זמן ההעלאה
+// (המסמך נשאר קריא לניתוח; PDF אינו משתנה)
+async function shrinkImage(f, maxDim = 2000, quality = 0.85) {
+  if (!f.type.startsWith('image/') || f.size < 1.2 * 1024 * 1024) return f;
+  try {
+    const bmp = await createImageBitmap(f);
+    const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bmp.width * scale));
+    canvas.height = Math.max(1, Math.round(bmp.height * scale));
+    canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
+    if (!blob || blob.size >= f.size) return f;
+    return new File([blob], f.name.replace(/\.(png|jpe?g)$/i, '.jpg'), { type: 'image/jpeg' });
+  } catch { return f; }
+}
+
 // ---------- שבוע עסקי: שבת → חמישי ----------
 const pad = (n) => String(n).padStart(2, '0');
 const dmy = (d) => `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
@@ -101,7 +118,6 @@ export default function UploadDocumentPage() {
   const [createdRec, setCreatedRec] = useState(null);
   const [tracking, setTracking] = useState('idle'); // idle | polling | analyzed | timeout
   const fileRef = useRef(null);
-  const cameraRef = useRef(null);
 
   const week = useMemo(() => weekOf(weekStart), [weekStart]);
   const needsWeek = topic === 'income' || topic === 'delivery';
@@ -164,12 +180,13 @@ export default function UploadDocumentPage() {
     setCreated(null); setCreatedRec(null); setTracking('idle');
   };
 
-  const acceptFile = (f) => {
+  const acceptFile = async (f) => {
     if (!f) return;
     const okType = /\.(pdf|jpe?g|png)$/i.test(f.name) || ['application/pdf', 'image/jpeg', 'image/png'].includes(f.type);
     if (!okType) { setStatus('error'); setMessage('סוג קובץ לא נתמך. יש להעלות PDF, JPG או PNG.'); return; }
     if (f.size > MAX_MB * 1024 * 1024) { setStatus('error'); setMessage(`הקובץ גדול מדי (מקסימום ${MAX_MB}MB).`); return; }
-    setFile(f); setStatus('idle'); setMessage('');
+    const small = await shrinkImage(f);
+    setFile(small); setStatus('idle'); setMessage('');
   };
 
   const shiftWeek = (weeks) => { const d = new Date(weekStart); d.setDate(d.getDate() + weeks * 7); setWeekStart(d); };
@@ -278,11 +295,6 @@ export default function UploadDocumentPage() {
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>PDF · JPG · PNG · עד {MAX_MB}MB</div>
             </div>
             <input ref={fileRef} type="file" accept={ACCEPT} style={{ display: 'none' }} onChange={(e) => { acceptFile(e.target.files?.[0]); e.target.value = ''; }} />
-            <input ref={cameraRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={(e) => { acceptFile(e.target.files?.[0]); e.target.value = ''; }} />
-            <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => fileRef.current?.click()}>📁 מהמכשיר</button>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => cameraRef.current?.click()}>📷 צלם מהטלפון</button>
-            </div>
 
             {file && (
               <div className="card" style={{ marginTop: 14, background: 'var(--bg-main)', display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>

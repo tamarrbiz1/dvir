@@ -1,132 +1,215 @@
-import { useEffect, useMemo, useState } from 'react';
+// ============================================================
+// דוחות ריסוסים (סעיף 21)
+// ------------------------------------------------------------
+// הטיפולים שפוענחו מהדוח הם רשומות אמיתיות בטבלת "ריסוסים"
+// (עם קובץ הדוח מצורף) — לכן כל כרטיס ניתן לסימון "בוצע",
+// לעריכה ולמחיקה ישירות מול Airtable. תצוגת לוח שנה מלאה
+// נמצאת במסך "תכנון טיפולים".
+// ============================================================
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import PageHeader from '../components/PageHeader.jsx';
-import { formatDate, safeValue } from '../utils/format.js';
-import { pick, num } from '../utils/field.js';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell } from 'recharts';
+import { formatDate, formatNumber } from '../utils/format.js';
+import { displayName } from '../utils/resolve.js';
+import { confirmDialog, toast } from '../utils/ui.js';
+import { useEscapeClose } from '../utils/navigation.jsx';
 
-// ============================================================
-// דוחות ריסוסים (סעיף 21)
-// ============================================================
+const TYPE_COLORS = [
+  { match: 'הגמעה', color: '#3B82F6' },
+  { match: 'מועיל', color: '#168A55' },
+  { match: 'ריסוס', color: '#E5A900' },
+];
+const colorOf = (t) => {
+  const tag = [t['סטטוס'], t['סוג מרסס'], displayName(t['חומר ריסוס'], '')].join(' ');
+  return (TYPE_COLORS.find((c) => tag.includes(c.match)) || TYPE_COLORS[2]).color;
+};
 
-const PIE_COLORS = ['#E5A900', '#3B82F6', '#168A55', '#8B5CF6', '#F04444', '#09A7B2', '#10A66A'];
+// "תאריך" עשוי להיות ISO או טווח טקסטואלי "DD/MM/YYYY-DD/MM/YYYY"
+function dateLabel(v) {
+  const s = String(v || '').trim();
+  if (!s) return 'לא זמין';
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}\s*-\s*\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) return s;
+  return formatDate(s);
+}
 
 export default function SprayReportsPage() {
   const app = useApp();
   const navigate = useNavigate();
-  const [reports, setReports] = useState([]);
+  const canEdit = ['owner', 'manager'].includes(app.user?.role || 'owner');
+  const [sprays, setSprays] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);
+  const [form, setForm] = useState(null);
+  const [search, setSearch] = useState('');
 
-  const load = () => {
-    setLoading(true);
-    app.api.get('דוחות ריסוסים', '?maxRecords=100')
-      .then((d) => setReports(Array.isArray(d) ? d : []))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+  const load = useCallback(() => app.api.get('ריסוסים', '?maxRecords=1000')
+    .then((d) => setSprays(Array.isArray(d) ? d : []))
+    .catch(() => {}), [app.api]);
+
+  useEffect(() => { load().finally(() => setLoading(false)); }, [load]);
+
+  // טיפולים שמקורם בדוח — יש להם קובץ דוח מצורף או פירוק AI
+  const items = useMemo(() => sprays
+    .filter((r) => (Array.isArray(r['דוח ריסוסים']) && r['דוח ריסוסים'].length) || r['פירוק טבלת דוח (AI ניתוח טבלה)'])
+    .filter((r) => {
+      if (!search) return true;
+      const hay = [displayName(r['מבנה'], ''), displayName(r['חומר ריסוס'], ''), r['תוכנית שתילה'], r['סטטוס'], String(r['תאריך'] || '')]
+        .filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(search.toLowerCase());
+    })
+    .sort((a, b) => String(b['תאריך'] || '').localeCompare(String(a['תאריך'] || ''))), [sprays, search]);
+
+  const toggleDone = async (r) => {
+    if (busyId) return;
+    setBusyId(r.id);
+    try {
+      await app.api.update('ריסוסים', r.id, { 'בוצע': !r['בוצע'] });
+      await load();
+      toast(r['בוצע'] ? 'הטיפול סומן כלא בוצע' : 'הטיפול סומן כבוצע');
+    } catch {
+      toast('לא ניתן היה להשלים את הפעולה. הנתונים לא עודכנו.', 'error');
+    }
+    setBusyId(null);
   };
-  useEffect(load, []);
 
-  // פירוק JSON מתוך Attachment Summary (התוצאה המפוענחת)
-  const parsed = useMemo(() => {
-    const list = [];
-    reports.forEach((r) => {
-      const raw = r['Attachment Summary'] || r['פירוק טבלת דוח (AI ניתוח טבלה)'];
-      let items = [];
-      try {
-        const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (Array.isArray(p)) items = p;
-        else if (p && Array.isArray(p.data)) items = p.data;
-        else if (p && Array.isArray(p.records)) items = p.records;
-      } catch {}
-      items.forEach((it) => list.push({
-        reportId: r.id,
-        type: it['סוג טיפול'] || it.type || 'ריסוס',
-        date: it['תאריך'] || it.date,
-        structure: Array.isArray(it['מבנה']) ? it['מבנה'].join(', ') : (it['מבנה'] || it.structure || ''),
-        location: it['מיקום'] || it.location || '',
-        crop: it['גידול'] || it.crop || '',
-        variety: it['זן'] || it.variety || '',
-        sprayNum: it['מספר ריסוס'] || it.sprayNum || '',
-        material: it['חומר'] || it.material || '',
-        dosage: it['מינון'] || it.dosage || '',
-      }));
+  const remove = async (r) => {
+    const yes = await confirmDialog({
+      title: 'מחיקת טיפול',
+      message: 'הפריט ימחק ולא יינתן לשחזור.\nהאם אתה בטוח שברצונך לבצע פעולה זו?',
+      confirmLabel: 'מחק', danger: true,
     });
-    return list;
-  }, [reports]);
+    if (!yes) return;
+    try {
+      await app.api.remove('ריסוסים', r.id);
+      await load();
+      toast('הפריט נמחק בהצלחה');
+    } catch {
+      toast('לא ניתן היה למחוק את הפריט.', 'error');
+    }
+  };
 
   return (
     <div>
       <PageHeader icon="📋" title="דוחות ריסוסים">
-        {/* ניווט פנימי (ולא רענון עמוד מלא), כדי לשמר את היסטוריית החזרה */}
-        <button className="btn btn-ghost" onClick={() => navigate('/spraying')}>🧴 מעבר לריסוסים</button>
+        <input className="input no-print" aria-label="חיפוש" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <button className="btn btn-ghost no-print" onClick={() => navigate('/treatments')}>📅 לוח שנה</button>
+        <button className="btn btn-primary no-print" onClick={() => navigate('/upload', { state: { docType: 'דוח ריסוסים' } })}>⬆️ העלאת דוח</button>
       </PageHeader>
-      <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
-        תוצאות מפוענחות מה-AI
-      </div>
 
-      {/* טבלת הדוחות המקוריים — עם מחיקה */}
-      <div className="card" style={{ marginBottom: 20 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>רשימת דוחות</div>
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead><tr><th>תאריך</th><th>מסמך</th><th>סטטוס</th><th>פעולות</th></tr></thead>
-            <tbody>
-              {!loading && reports.map((r) => (
-                <tr key={r.id}>
-                  <td>{formatDate(r['תאריך'] || r['createdTime'])}</td>
-                  <td>{r['Attachment Summary'] ? '✓ פוענח' : '—'}</td>
-                  <td>{r['Attachment Summary'] ? <span className="badge badge-ok">מוכן</span> : <span className="badge badge-warn">ממתין</span>}</td>
-                  <td>
-                    <button className="btn btn-sm btn-ghost" style={{ color: 'var(--error)' }}
-                      onClick={async () => {
-                        if (window.confirm('למחוק דוח זה?')) {
-                          try { await app.api.remove('דוחות ריסוסים', r.id); load(); } catch {}
-                        }
-                      }}
-                    >🗑</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* נתונים מפורקים מהדוחות */}
       {loading ? (
         <div className="skeleton skeleton-card" />
-      ) : parsed.length === 0 ? (
+      ) : items.length === 0 ? (
         <div className="empty-state">
           <div className="icon">📋</div>
-          <div>אין דוחות ריסוסים מפוענחים</div>
-          <div style={{ fontSize: 13, marginTop: 6 }}>העלה דוח ריסוסים במסך "העלאת מסמך" כדי לראות תוצאות כאן</div>
+          <div>אין טיפולים מדוחות ריסוסים</div>
+          <div style={{ fontSize: 13, marginTop: 6 }}>העלה דוח ריסוסים במסך "העלאת מסמך" והטיפולים יופיעו כאן</div>
         </div>
       ) : (
-        <div className="grid">
-          {parsed.map((p, i) => {
-            const tag = String(p.type).toLowerCase();
-            const color = tag.includes('ריסוס') ? '#E5A900' : tag.includes('הגמעה') ? '#3B82F6' : tag.includes('מועיל') ? '#168A55' : '#8B5CF6';
-            return (
-              <div key={`${p.reportId}-${i}`} className="card" style={{ borderRight: `4px solid ${color}` }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                  <span className="badge" style={{ background: color + '22', color }}>🧴 {p.type}</span>
+        <>
+          <div className="kpi-grid" style={{ marginBottom: 18 }}>
+            <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--spray-soft)' }}>🧴</div><span className="kpi-label">טיפולים מהדוחות</span></div><div className="kpi-value" style={{ color: 'var(--spray)' }}>{formatNumber(items.length)}</div><div style={{ height: 12 }} /></div>
+            <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--ok-soft)' }}>✅</div><span className="kpi-label">בוצעו</span></div><div className="kpi-value" style={{ color: 'var(--ok)' }}>{formatNumber(items.filter((r) => r['בוצע']).length)}</div><div style={{ height: 12 }} /></div>
+            <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--warning-soft)' }}>●</div><span className="kpi-label">ממתינים לביצוע</span></div><div className="kpi-value" style={{ color: 'var(--warning)' }}>{formatNumber(items.filter((r) => !r['בוצע']).length)}</div><div style={{ height: 12 }} /></div>
+          </div>
+
+          <div className="grid">
+            {items.map((r) => {
+              const color = colorOf(r);
+              const doc = Array.isArray(r['דוח ריסוסים']) && r['דוח ריסוסים'][0];
+              const structs = Array.isArray(r['מבנה']) ? r['מבנה'] : [];
+              return (
+                <div key={r.id} className="card" style={{ borderRight: `4px solid ${color}` }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <b>🧴 {displayName(r['חומר ריסוס'], 'טיפול')}</b>
+                    <span className={`badge ${r['בוצע'] ? 'badge-ok' : 'badge-warn'}`}>{r['בוצע'] ? '✓ בוצע' : '● לא בוצע'}</span>
+                  </div>
+                  <div style={{ fontSize: 13.5, color: 'var(--text-secondary)', display: 'grid', gap: 3 }}>
+                    <div>תאריך: <b style={{ color: 'var(--text-main)' }}>{dateLabel(r['תאריך'])}</b></div>
+                    {structs.length > 0 && (
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                        מבנה: {structs.map((s, i) => <span key={i} className="obj-chip static">🏗️ {typeof s === 'object' ? s.name : s}</span>)}
+                      </div>
+                    )}
+                    {r['תוכנית שתילה'] && <div>גידול / זן: {r['תוכנית שתילה']}</div>}
+                    {(r['מינון '] ?? r['מינון']) != null && <div>מינון: {r['מינון '] ?? r['מינון']}</div>}
+                    {r['בסיס מינון'] && <div>בסיס מינון: {r['בסיס מינון']}</div>}
+                    {r['סטטוס'] && <div>סטטוס: {r['סטטוס']}</div>}
+                    {doc && <div>📎 <a href={doc.url} target="_blank" rel="noopener noreferrer">{doc.filename || 'קובץ הדוח'}</a></div>}
+                  </div>
+                  {canEdit && (
+                    <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+                      <button className="btn btn-sm btn-ghost" disabled={busyId === r.id}
+                        aria-label={r['בוצע'] ? 'סמן כלא בוצע' : 'סמן כבוצע'} title={r['בוצע'] ? 'סמן כלא בוצע' : 'סמן כבוצע'}
+                        onClick={() => toggleDone(r)}>{busyId === r.id ? '…' : r['בוצע'] ? '↩' : '✓ בוצע'}</button>
+                      <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={() => setForm(r)}>✎</button>
+                      <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }} onClick={() => remove(r)}>🗑</button>
+                    </div>
+                  )}
                 </div>
-                <div style={{ fontWeight: 700, marginBottom: 4 }}>{p.material}</div>
-                <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-                  {p.date && <div>תאריך: {p.date}</div>}
-                  {p.structure && <div>מבנה: {p.structure}</div>}
-                  {p.location && <div>מיקום: {p.location}</div>}
-                  {p.crop && <div>גידול: {p.crop}</div>}
-                  {p.variety && <div>זן: {p.variety}</div>}
-                  {p.sprayNum && <div>מספר ריסוס: {p.sprayNum}</div>}
-                  {p.dosage && <div>מינון: {p.dosage}</div>}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        </>
       )}
+
+      {form && (
+        <QuickEdit
+          api={app.api}
+          record={form}
+          onClose={() => setForm(null)}
+          onSaved={async () => { setForm(null); await load(); toast('הטיפול עודכן בהצלחה'); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// עריכה מהירה — שדות ההזנה הידנית בלבד (הכמות והמחיר מחושבים ב-Airtable)
+function QuickEdit({ api, record, onClose, onSaved }) {
+  const [dosage, setDosage] = useState(record['מינון '] ?? record['מינון'] ?? '');
+  const [notes, setNotes] = useState(record['הערות'] || '');
+  const [done, setDone] = useState(!!record['בוצע']);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  useEscapeClose(onClose, !saving);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (saving) return;
+    setSaving(true); setError('');
+    try {
+      await api.update('ריסוסים', record.id, {
+        'מינון ': dosage === '' ? null : Number(dosage),
+        'הערות': notes || null,
+        'בוצע': done,
+      });
+      await onSaved();
+    } catch (err) {
+      setError(`לא ניתן היה להשלים את הפעולה. הנתונים לא עודכנו. (${err.message || err})`);
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={() => !saving && onClose()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3 style={{ textAlign: 'center' }}>עריכת טיפול — {displayName(record['חומר ריסוס'], '')}</h3>
+        {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12 }}>⚠️ {error}</div>}
+        <form onSubmit={submit}>
+          <div className="form-group"><label>מינון</label>
+            <input className="input" type="number" step="any" min="0" style={{ width: '100%' }} value={dosage} onChange={(e) => setDosage(e.target.value)} /></div>
+          <div className="form-group"><label>הערות</label>
+            <textarea className="input" style={{ width: '100%' }} value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14 }}>
+            <input type="checkbox" checked={done} onChange={(e) => setDone(e.target.checked)} /> בוצע
+          </label>
+          <div className="form-actions">
+            <button type="button" className="btn btn-ghost" disabled={saving} onClick={onClose}>ביטול</button>
+            <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'שומר...' : 'שמור שינויים'}</button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
