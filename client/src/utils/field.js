@@ -32,3 +32,14 @@ export function name(record, names, fallback = 'לא זמין') {
   if (Array.isArray(v)) return v.map((x) => (x && typeof x === 'object' ? x.name : x)).join(', ') || fallback;
   return v ?? fallback;
 }
+
+// קטגוריית הוצאה לתצוגה: הוצאה ששולמה בצ'ק בלי קטגוריה מזוהה
+// נחשבת "תשלום לספק" (ולא "שונות"/"אחר")
+export function expenseCategory(e) {
+  const raw = pick(e, ['קטגוריית חשבונית-AI', 'קטגוריה', 'סוג הוצאה']);
+  const viaCheck = (Array.isArray(e?.['צ׳קים']) && e['צ׳קים'].length > 0)
+    || String(e?.['אמצעי תשלום'] || '').includes("צ'ק")
+    || String(e?.['אמצעי תשלום'] || '').includes('צ׳ק');
+  if (viaCheck && (!raw || raw === 'שונות' || raw === 'אחר')) return 'תשלום לספק';
+  return raw || (viaCheck ? 'תשלום לספק' : 'אחר');
+}

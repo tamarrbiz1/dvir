@@ -9,7 +9,7 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatMoney, formatDate } from '../utils/format.js';
-import { pick, num } from '../utils/field.js';
+import { pick, num, expenseCategory } from '../utils/field.js';
 import { firstId } from '../utils/resolve.js';
 import RecordForm from '../components/RecordForm.jsx';
 import { removeRecord } from '../components/RecordForm.jsx';
@@ -24,7 +24,7 @@ const TABLE = 'הוצאות';
 
 const expDate = (e) => pick(e, ['תאריך חשבונית-AI', 'תאריך העלאת החשבונית', 'תאריך']);
 const expAmount = (e) => num(e, ['סכום כולל-AI', 'סכום', 'סכום כולל']);
-const expCategory = (e) => pick(e, ['קטגוריית חשבונית-AI', 'קטגוריה', 'סוג הוצאה']);
+const expCategory = (e) => expenseCategory(e);
 const expSupplierLink = (e) => (Array.isArray(e['ספקים']) && e['ספקים'][0]) || null;
 const expSupplierAI = (e) => pick(e, ['שם ספק', 'ספק-AI']);
 const expDoc = (e) => (Array.isArray(e['חשבונית']) && e['חשבונית'][0]) || null;

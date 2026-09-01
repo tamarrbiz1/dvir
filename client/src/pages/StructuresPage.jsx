@@ -62,6 +62,10 @@ export default function StructuresPage() {
         <div className="grid">
           {filtered.map((s) => (
             <div key={s.id} className="card clickable" {...activatable(() => setDrawer(s), `פתיחת כרטיס מבנה ${s['מספר מבנה'] || s['סוג מבנה'] || ''}`)}>
+              {sketchUrl(s) && (
+                <img src={sketchUrl(s)} alt={`סקיצת מבנה ${s['מספר מבנה'] || ''}`} loading="lazy"
+                  style={{ width: 'calc(100% + 48px)', margin: '-20px -24px 12px', height: 120, objectFit: 'cover', borderRadius: '14px 14px 0 0', display: 'block' }} />
+              )}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                 <b style={{ fontSize: 18 }}>🏗️ {s['מספר מבנה'] || s['סוג מבנה'] || 'מבנה'}</b>
                 <span className={`badge ${s['סטטוס המבנה'] === 'פעיל' ? 'badge-ok' : 'badge-warn'}`}>
@@ -206,7 +210,17 @@ function StructureDetails({ structure, api, onClose }) {
   );
 }
 
+// כתובת תמונת הסקיצה (תמונה ממוזערת לרשת, מלאה לזום)
+function sketchUrl(s, full = false) {
+  const v = s?.['סקיצה'];
+  const a = Array.isArray(v) ? v[0] : null;
+  if (!a) return null;
+  return full ? (a.url || a.thumbnails?.full?.url || null)
+    : (a.thumbnails?.large?.url || a.url || null);
+}
+
 function Overview({ s }) {
+  const [zoom, setZoom] = useState(false);
   const row = (label, val) => (
     <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 14 }}>
       <span style={{ color: 'var(--text-secondary)' }}>{label}</span><b>{val}</b>
@@ -224,9 +238,19 @@ function Overview({ s }) {
       {row('אורך שורה', `${formatNumber(s['אורך שורה במטרים'])} מטר`)}
       {row('מספר שורות', formatNumber(s['מספר שורות במבנה']))}
       <div className="section-title">סקיצה</div>
-      <div className="card" style={{ background: 'var(--bg-secondary)', minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-        {s['סקיצה'] ? <img src={Array.isArray(s['סקיצה']) ? (s['סקיצה'][0]?.url || s['סקיצה'][0]?.thumbnails?.large?.url || '') : (typeof s['סקיצה'] === 'string' ? s['סקיצה'] : '')} alt="סקיצה" style={{ maxWidth: '100%', borderRadius: 10 }} /> : 'אין סקיצה זמינה'}
+      <div className="card" style={{ background: 'var(--bg-secondary)', minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', padding: 10 }}>
+        {sketchUrl(s) ? (
+          <img src={sketchUrl(s)} alt="סקיצת המבנה" title="לחיצה לתצוגה מוגדלת"
+            style={{ maxWidth: '100%', borderRadius: 10, cursor: 'zoom-in' }}
+            onClick={() => setZoom(true)} />
+        ) : 'אין סקיצה זמינה'}
       </div>
+      {zoom && (
+        <div className="modal-overlay lightbox" onClick={() => setZoom(false)}>
+          <img src={sketchUrl(s, true)} alt="סקיצת המבנה — תצוגה מלאה" onClick={(e) => e.stopPropagation()} />
+          <button type="button" className="drawer-close lightbox-close" onClick={() => setZoom(false)} aria-label="סגירה">✕</button>
+        </div>
+      )}
       {s['הערות'] && <div className="section-title">הערות</div>}
       {s['הערות'] && <div>{s['הערות']}</div>}
     </div>

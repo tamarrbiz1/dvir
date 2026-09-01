@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
+import { expenseCategory } from '../utils/field.js';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, CartesianGrid,
@@ -171,7 +172,13 @@ export default function DashboardPage() {
       m[k].הוצאות += num(e['סכום כולל-AI']);
     });
     return Object.values(m).sort((a, b) => a.month.localeCompare(b.month))
-      .map((r) => ({ ...r, הכנסות: Math.round(r.הכנסות), הוצאות: Math.round(r.הוצאות) }));
+      .map((r) => ({
+        ...r,
+        // תווית קריאה: "8/2026" במקום מחרוזת המפתח הטכנית
+        month: `${Number(r.month.slice(5, 7))}/${r.month.slice(0, 4)}`,
+        הכנסות: Math.round(r.הכנסות),
+        הוצאות: Math.round(r.הוצאות),
+      }));
   }, [fInvoices, fExpenses]);
 
   // תפוקה לאורך זמן לפי מדד נבחר
@@ -197,7 +204,7 @@ export default function DashboardPage() {
   const donutData = useMemo(() => {
     const m = {};
     fExpenses.forEach((e) => {
-      const cat = e['קטגוריית חשבונית-AI'] || 'אחר';
+      const cat = expenseCategory(e);
       m[cat] = (m[cat] || 0) + num(e['סכום כולל-AI']);
     });
     return Object.entries(m).map(([name, value]) => ({ name, value: Math.round(value) })).filter((x) => x.value > 0);
