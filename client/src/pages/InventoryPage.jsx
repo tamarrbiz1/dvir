@@ -23,7 +23,7 @@ import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisPro
 const TABLE = 'מלאי בסיסי';
 
 const ITEM_FORM_FIELDS = [
-  { name: 'קטגוריה', label: 'קטגוריה', type: 'text', required: true },
+  { name: 'קטגוריה', label: 'קטגוריה', type: 'select', required: true },
   { name: 'מלאי נוכחי', label: 'מלאי נוכחי', type: 'number' },
   { name: 'מלאי מינימום', label: 'מלאי מינימום', type: 'number' },
   { name: 'תאריך עדכון', label: 'תאריך עדכון', type: 'date' },

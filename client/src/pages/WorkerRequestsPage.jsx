@@ -13,7 +13,7 @@ import { activatable } from '../utils/a11y.js';
 // ורק אחרי תשובת Airtable המסך נקרא מחדש.
 // ============================================================
 
-const TYPE_OPTIONS = ['חופש / מחלה', 'חופש לחלק מהיום'];
+const TYPE_OPTIONS = ['חופש', 'מחלה', 'חופש לחלק מהיום'];
 
 export default function WorkerRequestsPage() {
   const app = useApp();

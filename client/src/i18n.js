@@ -119,6 +119,8 @@ export const translations = {
   w_noRequests: { he: 'אין בקשות עדיין', th: 'ยังไม่มีคำขอ' },
   w_requestsUnavailable: { he: 'מודול הבקשות עדיין לא הופעל ב-Airtable — פנה למנהל', th: 'ระบบคำขอยังไม่เปิดใช้งาน — โปรดติดต่อผู้จัดการ' },
   w_reqFull: { he: 'חופש / מחלה', th: 'ลาพักร้อน / ลาป่วย' },
+  w_reqVacation: { he: 'חופש', th: 'ลาพักร้อน' },
+  w_reqSick: { he: 'מחלה', th: 'ลาป่วย' },
   w_reqPartial: { he: 'חופש לחלק מהיום', th: 'ลาบางส่วนของวัน' },
   w_fromHour: { he: 'משעה', th: 'ตั้งแต่เวลา' },
   w_toHour: { he: 'עד שעה', th: 'ถึงเวลา' },

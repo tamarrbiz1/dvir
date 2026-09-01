@@ -134,7 +134,8 @@ function RequestForm({ api, workerId, onClose, onSaved }) {
         {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12 }}>⚠️ {error}</div>}
         {!type ? (
           <div style={{ display: 'grid', gap: 10 }}>
-            <button className="btn btn-ghost" style={{ minHeight: 56, fontSize: 16 }} onClick={() => setType(REQUEST_TYPES.full)}>🏖️ {t('w_reqFull')}</button>
+            <button className="btn btn-ghost" style={{ minHeight: 56, fontSize: 16 }} onClick={() => setType(REQUEST_TYPES.vacation)}>🏖️ {t('w_reqVacation')}</button>
+            <button className="btn btn-ghost" style={{ minHeight: 56, fontSize: 16 }} onClick={() => setType(REQUEST_TYPES.sick)}>🤒 {t('w_reqSick')}</button>
             <button className="btn btn-ghost" style={{ minHeight: 56, fontSize: 16 }} onClick={() => setType(REQUEST_TYPES.partial)}>⏰ {t('w_reqPartial')}</button>
             <button className="btn btn-ghost" onClick={onClose}>{t('w_cancel')}</button>
           </div>
@@ -164,7 +165,8 @@ function RequestForm({ api, workerId, onClose, onSaved }) {
 }
 
 function typeLabel(v) {
-  if (v === REQUEST_TYPES.full) return t('w_reqFull');
+  if (v === REQUEST_TYPES.vacation) return t('w_reqVacation');
+  if (v === REQUEST_TYPES.sick) return t('w_reqSick');
   if (v === REQUEST_TYPES.partial) return t('w_reqPartial');
   return v || t('w_na_value');
 }

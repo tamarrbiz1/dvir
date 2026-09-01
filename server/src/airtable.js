@@ -113,6 +113,24 @@ export async function updateRecord(tableName, recordId, fields) {
   return { id: updated.id, ...updated.fields };
 }
 
+// העלאת קובץ לרשומה קיימת — נקודת הקצה הרשמית של Airtable לקבצים.
+// (יצירת רשומה עם content מוטבע אינה נתמכת ונדחית ב-"Invalid attachment object".)
+export async function uploadAttachmentToRecord(recordId, fieldName, { filename, contentType, base64 }) {
+  const res = await fetch(
+    `https://content.airtable.com/v0/${BASE_ID}/${recordId}/${encodeURIComponent(fieldName)}/uploadAttachment`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${PAT}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contentType, file: base64, filename }),
+    },
+  );
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Airtable upload error (${res.status}): ${body.slice(0, 300)}`);
+  }
+  return res.json();
+}
+
 export async function deleteRecord(tableName, recordId) {
   const base = getBase();
   await base(tableName).destroy(recordId);

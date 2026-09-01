@@ -186,6 +186,7 @@ export default function UploadDocumentPage() {
     if (!okType) { setStatus('error'); setMessage('סוג קובץ לא נתמך. יש להעלות PDF, JPG או PNG.'); return; }
     if (f.size > MAX_MB * 1024 * 1024) { setStatus('error'); setMessage(`הקובץ גדול מדי (מקסימום ${MAX_MB}MB).`); return; }
     const small = await shrinkImage(f);
+    if (small.size > 5 * 1024 * 1024) { setStatus('error'); setMessage('הקובץ גדול מ-5MB גם לאחר כיווץ — יש להעלות קובץ קטן יותר.'); return; }
     setFile(small); setStatus('idle'); setMessage('');
   };
 

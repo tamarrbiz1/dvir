@@ -4,7 +4,7 @@
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
-import { getMeta, fetchRecords, createRecord, updateRecord, deleteRecord } from './airtable.js';
+import { getMeta, fetchRecords, createRecord, updateRecord, deleteRecord, uploadAttachmentToRecord } from './airtable.js';
 import { attachLinkedNames, invalidateIndex } from './resolve-links.js';
 
 const app = express();
@@ -84,20 +84,28 @@ app.post('/api/upload-document', upload.single('file'), async (req, res) => {
     const { table, field, weekCode } = req.body;
     if (!req.file) return res.status(400).json({ error: 'לא נבחר קובץ' });
     if (!table || !field) return res.status(400).json({ error: 'פרמטרים חסרים' });
+    // מגבלת נקודת הקצה של Airtable להעלאת קובץ בבקשה אחת
+    if (req.file.size > 5 * 1024 * 1024) {
+      return res.status(400).json({ error: 'הקובץ גדול מ-5MB. יש להעלות קובץ קטן יותר (תמונות מוקטנות אוטומטית).' });
+    }
 
-    const attachment = {
-      filename: req.file.originalname,
-      content: req.file.buffer.toString('base64'),
-      type: req.file.mimetype,
-    };
-
-    const fields = { [field]: [attachment] };
-    // נוסיף קוד שבוע רק לחשבוניות/תעודות משלוח אם נשלח
+    // 1) יצירת הרשומה (עם קוד שבוע כשנדרש) 2) העלאת הקובץ אליה.
+    // אם ההעלאה נכשלת — הרשומה נמחקת, כדי שלא תישאר רשומה ריקה.
+    const fields = {};
     if (weekCode && (table === 'חשבוניות' || table === 'תעודות משלוח')) {
       fields['קוד שבוע'] = weekCode;
     }
-
     const created = await createRecord(table, fields);
+    try {
+      await uploadAttachmentToRecord(created.id, field, {
+        filename: req.file.originalname,
+        contentType: req.file.mimetype,
+        base64: req.file.buffer.toString('base64'),
+      });
+    } catch (uploadErr) {
+      await deleteRecord(table, created.id).catch(() => {});
+      throw uploadErr;
+    }
     invalidateReads(table);
     res.status(201).json({ ok: true, record: created });
   } catch (e) {

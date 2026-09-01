@@ -169,7 +169,17 @@ export default function App() {
   useEffect(() => {
     try {
       const saved = sessionStorage.getItem('zite_user');
-      if (saved) setUser(JSON.parse(saved));
+      if (saved) {
+        const u = JSON.parse(saved);
+        // תיקון לסשנים ששמרו תפקיד ישן: "מנהל ראשי" הוא בעל העסק —
+        // רק מי שסוגו כולל "עבודה" הוא מנהל עבודה מצומצם
+        const t = String(u?.record?.['סוג'] || '').trim();
+        if (u?.role === 'manager' && t && !t.includes('עבודה')) {
+          u.role = 'owner';
+          try { sessionStorage.setItem('zite_user', JSON.stringify(u)); } catch {}
+        }
+        setUser(u);
+      }
     } catch {}
   }, []);
 

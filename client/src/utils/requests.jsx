@@ -26,8 +26,10 @@ export const REQUEST_STATUS = {
   rejected: 'לא אושר',
 };
 
+// האפשרויות האמיתיות של השדה "סוג בקשה" ב-Airtable
 export const REQUEST_TYPES = {
-  full: 'חופש / מחלה',
+  vacation: 'חופש',
+  sick: 'מחלה',
   partial: 'חופש לחלק מהיום',
 };
 
@@ -52,7 +54,7 @@ export function MissingRequestsTable() {
   const fields = [
     ['מספר בקשה', 'Autonumber'],
     ['עובד', 'Link to → עובדים'],
-    ['סוג בקשה', 'Single select: חופש / מחלה · חופש לחלק מהיום'],
+    ['סוג בקשה', 'Single select: חופש · מחלה · חופש לחלק מהיום'],
     ['תאריך', 'Date'],
     ['משעה', 'Single line text'],
     ['עד שעה', 'Single line text'],
