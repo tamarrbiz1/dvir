@@ -1422,6 +1422,7 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
 // ============================================================
 function WeekDetails({ week, totals, planById, planInfo, onClose, onPlan }) {
   useEscapeClose(onClose); // סגירה במקש Escape
+  const [openRow, setOpenRow] = useState(null); // מזהה שורת תחזית שפתוחה לפירוט יומי
   return (
     <div className="drawer-overlay" onClick={onClose}>
       <div className="drawer struct-drawer" onClick={(e) => e.stopPropagation()}>
@@ -1453,6 +1454,7 @@ function WeekDetails({ week, totals, planById, planInfo, onClose, onPlan }) {
               <table className="data-table">
                 <thead>
                   <tr>
+                    <th />
                     <th>מבנה</th><th>גידול</th><th>רבעון</th><th>קג לדונם</th><th>שטח בדונם</th>
                     <th>ימי קטיף</th><th>קג צפוי</th><th>קג בפועל</th><th>מחיר לקג</th><th>הכנסה צפויה</th>
                   </tr>
@@ -1462,22 +1464,61 @@ function WeekDetails({ week, totals, planById, planInfo, onClose, onPlan }) {
                     const info = planInfo(planById.get(firstId(row['תוכנית שתילה'])));
                     const a = actualKg(row);
                     const cropName = displayName(row['גידול'], info?.crop || 'לא זמין');
+                    const isOpen = openRow === row.id;
+                    const days = isOpen ? splitWeekToDays(row['תחילת שבוע'], row['סוף שבוע'], num(row[KG_EXPECTED])) : [];
                     return (
-                      <tr key={row.id} className="clickable" style={{ cursor: info ? 'pointer' : 'default' }}
-                        {...(info ? activatable(() => onPlan(info.id), `פתיחת תוכנית השתילה ${cropName}`) : {})}>
-                        <td>{cropIcon(cropName)} {displayName(row['מבנה'], info?.structure || 'לא זמין')}</td>
-                        <td>{cropName}</td>
-                        <td><QuarterBadge q={row['רבעון']} /></td>
-                        <td>{formatNumber(num(row['קג לדונם לשבוע (from תפוקה רבעונית)']))}</td>
-                        <td>{formatNumber(num(row['שטח בדונם (from מבנה) (from תוכנית שתילה)']))}</td>
-                        <td>{formatNumber(num(row['ימי קטיף פעילים']), 0)}</td>
-                        <td style={{ color: PLANNED_COLOR, fontWeight: 600 }}>{formatNumber(num(row[KG_EXPECTED]), 0)}</td>
-                        <td style={{ color: a.received ? ACTUAL_COLOR : 'var(--text-muted)', fontWeight: 600 }}>
-                          {a.received ? formatNumber(a.value, 0) : 'טרם'}
-                        </td>
-                        <td>{formatMoney(num(row['מחיר לקג מעודכן']))}</td>
-                        <td>{formatMoney(num(row['הכנסה צפויה']))}</td>
-                      </tr>
+                      <Fragment key={row.id}>
+                        <tr className="clickable" style={{ cursor: 'pointer' }}
+                          onClick={() => setOpenRow(isOpen ? null : row.id)}>
+                          <td style={{ width: 20, color: 'var(--text-muted)' }}>{isOpen ? '▾' : '▸'}</td>
+                          <td {...(info ? activatable(() => onPlan(info.id), `פתיחת תוכנית השתילה ${cropName}`) : {})}
+                            onClickCapture={(e) => e.stopPropagation()}>
+                            {cropIcon(cropName)} {displayName(row['מבנה'], info?.structure || 'לא זמין')}
+                          </td>
+                          <td>{cropName}</td>
+                          <td><QuarterBadge q={row['רבעון']} /></td>
+                          <td>{formatNumber(num(row['קג לדונם לשבוע (from תפוקה רבעונית)']))}</td>
+                          <td>{formatNumber(num(row['שטח בדונם (from מבנה) (from תוכנית שתילה)']))}</td>
+                          <td>{formatNumber(num(row['ימי קטיף פעילים']), 0)}</td>
+                          <td style={{ color: PLANNED_COLOR, fontWeight: 600 }}>{formatNumber(num(row[KG_EXPECTED]), 0)}</td>
+                          <td style={{ color: a.received ? ACTUAL_COLOR : 'var(--text-muted)', fontWeight: 600 }}>
+                            {a.received ? formatNumber(a.value, 0) : 'טרם'}
+                          </td>
+                          <td>{formatMoney(num(row['מחיר לקג מעודכן']))}</td>
+                          <td>{formatMoney(num(row['הכנסה צפויה']))}</td>
+                        </tr>
+                        {isOpen && (
+                          <tr>
+                            <td />
+                            <td colSpan={10} style={{ padding: '10px 14px', background: 'var(--bg-secondary)' }}>
+                              {days.length === 0 ? (
+                                <div className="empty-state" style={{ padding: 0 }}>אין תאריכי התחלה/סוף שבוע כדי לפרק לימים.</div>
+                              ) : (
+                                <>
+                                  <div className="table-wrap">
+                                    <table className="data-table">
+                                      <thead><tr><th>תאריך</th><th>יום</th><th>קג צפוי ליום</th></tr></thead>
+                                      <tbody>
+                                        {days.map((d) => (
+                                          <tr key={d.key}>
+                                            <td>{formatDate(d.key)}</td>
+                                            <td>{d.weekday}</td>
+                                            <td style={{ color: PLANNED_COLOR, fontWeight: 600 }}>{formatNumber(d.value, 1)}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                  <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                                    חלוקה שווה של "קג צפוי" השבועי על-פני {days.length} הימים שבטווח {formatDate(row['תחילת שבוע'])}–{formatDate(row['סוף שבוע'])}.
+                                    פירוט יומי ל"קג בפועל" אינו זמין כרגע — הנתון הקיים הוא רק סך שבועי למבנה זה.
+                                  </div>
+                                </>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     );
                   })}
                 </tbody>
