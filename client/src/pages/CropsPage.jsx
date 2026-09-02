@@ -8,6 +8,7 @@
 // ============================================================
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
+import PageHeader from '../components/PageHeader.jsx';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { formatNumber, formatMoney, formatDate, safeValue } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
@@ -118,9 +119,7 @@ export default function CropsPage() {
 function PageTitle({ tab, setTab }) {
   return (
     <>
-      <div className="page-head">
-        <div className="page-header"><h2><span aria-hidden="true">🌾 </span>גידולים ותחזיות</h2></div>
-      </div>
+      <PageHeader icon="🌾" title="גידולים ותחזיות" />
       <div className="tabs no-print" style={{ marginBottom: 18 }}>
         {TABS.map((t) => <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>{t}</button>)}
       </div>
