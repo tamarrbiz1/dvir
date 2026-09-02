@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { formatMoney, formatNumber } from '../utils/format.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
-import { t } from '../i18n.js';
+import { t, translateStructureName } from '../i18n.js';
 
 const fmt = (d) => {
   if (!d) return '';
@@ -183,7 +183,7 @@ export default function WorkerEarnings({ api, worker }) {
                       <tr key={r.id}>
                         <td>{fmt(r['תאריך'])}</td>
                         <td>{workTypeName(r, '—')}</td>
-                        <td>{structureName(r['מבנה'])}</td>
+                        <td>{translateStructureName(structureName(r['מבנה']))}</td>
                         <td>{formatNumber(r['כמות'])}</td>
                         <td>{formatNumber(r['סכום שעות'])}</td>
                         <td style={{ fontWeight: 700 }}>{formatMoney(r['סכום לתשלום'])}</td>

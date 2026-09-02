@@ -140,8 +140,8 @@ export default function WorkerRequestsPage() {
     setBusy(false);
   };
 
-  if (loading) return <div><PageHeader icon="🗣️" title="בקשות עובדים" /><div className="skeleton skeleton-card" /></div>;
-  if (missing) return <div><PageHeader icon="🗣️" title="בקשות עובדים" /><MissingRequestsTable /></div>;
+  if (loading) return <div><PageHeader icon="🗣️" title={t('requests')} /><div className="skeleton skeleton-card" /></div>;
+  if (missing) return <div><PageHeader icon="🗣️" title={t('requests')} /><MissingRequestsTable /></div>;
 
   const tabs = [
     [REQUEST_STATUS.pending, `${t('m_tPending')} (${counts[REQUEST_STATUS.pending]})`],
@@ -152,7 +152,7 @@ export default function WorkerRequestsPage() {
 
   return (
     <div>
-      <PageHeader icon="🗣️" title="בקשות עובדים" />
+      <PageHeader icon="🗣️" title={t('requests')} />
       {loadError && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {loadError}</div>}
 
       {/* KPI */}
@@ -176,7 +176,7 @@ export default function WorkerRequestsPage() {
         <div><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>{t('m_worker')}</label>
           <select className="select" value={fWorker} onChange={(e) => setFWorker(e.target.value)}>
             <option value="">{t('c_all')}</option>
-            {workers.map((w) => <option key={w.id} value={w.id}>{`${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || 'עובד'}</option>)}
+            {workers.map((w) => <option key={w.id} value={w.id}>{`${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || t('m_theWorker')}</option>)}
           </select></div>
         <div><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>{t('m_reqType')}</label>
           <select className="select" value={fType} onChange={(e) => setFType(e.target.value)}>
@@ -185,7 +185,7 @@ export default function WorkerRequestsPage() {
         <div><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>{t('c_from')}</label><input type="date" className="input" value={fFrom} onChange={(e) => setFFrom(e.target.value)} /></div>
         <div><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>{t('c_to')}</label><input type="date" className="input" value={fTo} onChange={(e) => setFTo(e.target.value)} /></div>
         <div style={{ flex: 1, minWidth: 160 }}><label style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block' }}>{t('c_search').replace('...', '')}</label><input className="input" style={{ width: '100%' }} placeholder={t('c_search')} value={search} onChange={(e) => setSearch(e.target.value)} /></div>
-        {(fWorker || fType || fFrom || fTo || search) && <button className="btn btn-sm btn-ghost" onClick={() => { setFWorker(''); setFType(''); setFFrom(''); setFTo(''); setSearch(''); }}>✕ נקה</button>}
+        {(fWorker || fType || fFrom || fTo || search) && <button className="btn btn-sm btn-ghost" onClick={() => { setFWorker(''); setFType(''); setFFrom(''); setFTo(''); setSearch(''); }}>✕ {t('c_clearFilters')}</button>}
       </div>
 
       {visible.length === 0 ? (
@@ -204,8 +204,8 @@ export default function WorkerRequestsPage() {
                 </div>
                 <div style={{ fontWeight: 600 }}>{typeDisplay(r.type)}</div>
                 <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>📅 {formatDate(r.date)}{r.time ? ` · ${r.time}` : ''}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>נשלח: {fmtDateTime(r.created)}</div>
-                {r.note && <div style={{ fontSize: 13, marginTop: 8, background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: 8 }}>הערת מנהל: {r.note}</div>}
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>{t('m_sent')}: {fmtDateTime(r.created)}</div>
+                {r.note && <div style={{ fontSize: 13, marginTop: 8, background: 'var(--bg-secondary)', padding: '6px 10px', borderRadius: 8 }}>{t('w_managerNote')}: {r.note}</div>}
               </div>
             );
           })}
@@ -230,7 +230,7 @@ function RequestDrawer({ req, busy, error, onClose, onAnswer, onDelete, canAct =
   return (
     <div className="drawer-overlay" onClick={() => !busy && onClose()}>
       <div className="drawer" onClick={(e) => e.stopPropagation()}>
-        <div className="drawer-header"><span>🗣️ בקשה — {req.worker}</span><button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button></div>
+        <div className="drawer-header"><span>🗣️ {t('m_requestTitle')} — {req.worker}</span><button type="button" className="drawer-close" onClick={onClose} aria-label={t('nav_close')} title={t('nav_close')}>✕</button></div>
         <div className="drawer-body">
           {error && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
           <div className="card">

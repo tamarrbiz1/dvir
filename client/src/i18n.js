@@ -221,6 +221,7 @@ export const translations = {
   m_reqType: { he: 'סוג בקשה', th: 'ประเภทคำขอ' },
   m_reqOf: { he: 'בקשה', th: 'คำขอ' },
   m_theWorker: { he: 'העובד', th: 'พนักงาน' },
+  m_requestTitle: { he: 'בקשה', th: 'คำขอ' },
   m_sent: { he: 'נשלח', th: 'ส่งเมื่อ' },
   m_answerDate: { he: 'תאריך תשובה', th: 'วันที่ตอบ' },
   m_workerNote: { he: 'הערת העובד', th: 'หมายเหตุพนักงาน' },
@@ -249,6 +250,21 @@ export const t = (key) => {
   if (!entry) return key;
   return entry[currentLang] || entry.he;
 };
+
+// תרגום שם מבנה לתאילנדית עבור אפליקציית העובד — מילות המפתח הידועות בלבד
+// מתורגמות (מספרי המבנה נשארים כפי שהם); בעברית מוחזר השם כמו שהוא.
+const STRUCTURE_WORDS_TH = [
+  ['מבנה', 'โรงเรือน'],
+  ['חממה ישנה', 'เรือนกระจกเก่า'],
+  ['צד ימין', 'ด้านขวา'],
+  ['צד שמאל', 'ด้านซ้าย'],
+];
+export function translateStructureName(name) {
+  if (!name || currentLang !== 'th') return name;
+  let out = String(name);
+  for (const [he, th] of STRUCTURE_WORDS_TH) out = out.split(he).join(th);
+  return out;
+}
 
 // שם חודש מקוצר לפי השפה הפעילה (לצירי גרפים ולפילטרים)
 export function monthShort(i) {

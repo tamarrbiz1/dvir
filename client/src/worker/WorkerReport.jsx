@@ -2,7 +2,7 @@
 // דיווח עבודה — יצירת רשומת "עבודות עובדים" ב-Airtable
 // ============================================================
 import { useEffect, useState } from 'react';
-import { t } from '../i18n.js';
+import { t, translateStructureName } from '../i18n.js';
 import { workTypeName } from '../utils/field.js';
 
 export default function WorkerReport({ api, worker, approvedDate = null, onDone, onAskDateChange }) {
@@ -113,7 +113,7 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
           <select className="select" style={{ width: '100%' }} value={structure} onChange={(e) => setStructure(e.target.value)}>
             <option value="">{t('w_chooseStructure')}</option>
             {structures.map((s) => (
-              <option key={s.id} value={s.id}>{s['מספר מבנה'] || s['סוג מבנה'] || s.id}</option>
+              <option key={s.id} value={s.id}>{translateStructureName(s['מספר מבנה'] || s['סוג מבנה'] || s.id)}</option>
             ))}
           </select>
         </div>
