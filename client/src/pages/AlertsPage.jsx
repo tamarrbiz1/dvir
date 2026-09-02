@@ -122,7 +122,9 @@ export default function AlertsPage() {
     return Object.entries(b).map(([k, v]) => ({ label: k, value: v }));
   }, [anomalies]);
 
-  // מלאי נמוך (לא התריא מהאיפיון אבל שימושי; נציג כפי שהיה)
+  // מלאי נמוך: פריטים מ"מלאי בסיסי" שהכמות הנוכחית בהם ירדה מתחת למינימום שהוגדר.
+  // לא חלק מהאיפיון המקורי של מסך זה, אבל שימושי כאן כי מי שבודק חריגות שבועיות
+  // רוצה לראות גם התרעות מלאי בו-זמנית. אותו נתון בדיוק מוצג גם במסך "מלאי".
   const lowStock = inventory.filter((i) => Number(i['מלאי נוכחי']) <= Number(i['מלאי מינימום']));
 
   return (
@@ -214,7 +216,7 @@ export default function AlertsPage() {
 
           {/* מלאי נמוך */}
           <div style={{ marginTop: 22 }}>
-            <div className="section-title">מלאי נמוך (השלמה)</div>
+            <div className="section-title">מלאי נמוך</div>
             {lowStock.length === 0 ? (
               <div className="empty-state">אין פריטי מלאי מתחת למינימום</div>
             ) : (
