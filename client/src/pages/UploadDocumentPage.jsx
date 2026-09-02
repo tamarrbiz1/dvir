@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatDate, formatMoney, formatNumber } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
-import { removeRecord } from '../components/RecordForm.jsx';
+import { confirmDialog, toast } from '../utils/ui.js';
 
 // ============================================================
 // העלאת מסמך — "גרסה סופית" באיפיון (שורות 3845–4118)
@@ -36,7 +36,7 @@ const TARGETS = {
     analysis: [['תאריך תעודה', 'תאריך תעודה', 'date'], ['משווק', 'משווק-AI'], ['קרטונים', 'כמות קרטונים', 'num'], ['משקל כולל', 'משקל כולל', 'num'], ['משקל ממוצע לקרטון', 'משקל ממוצע לקרטון', 'num']],
   },
   cheque: {
-    table: 'צ׳קים', field: 'צילום צ\'ק', dateField: 'תאריך פירעון', uploadedField: 'תאריך העלאה האחרון',
+    table: 'צ׳קים', field: 'צילום צ׳ק', dateField: 'תאריך פירעון', uploadedField: 'תאריך העלאה האחרון',
     analysis: [['סכום', 'סכום צ׳ק', 'money'], ['מוטב', 'מוטב'], ['תאריך פירעון', 'תאריך פירעון', 'date']],
   },
   spray: {
@@ -230,6 +230,28 @@ export default function UploadDocumentPage() {
 
   const sizeLabel = (n) => (n > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
 
+  // מחיקת מסמך מההיסטוריה — כשהמסמך עדיין לא נותח, ייתכן שהוא בעיבוד פעיל
+  // אצל Make ברגע זה; מחיקה עלולה לגרום לשגיאה שם (הרשומה נעלמת תוך כדי
+  // עדכון). אזהרה ייעודית מוצגת רק במקרה הזה, ולא בכל מחיקה.
+  const deleteHistoryRow = async (h) => {
+    const ok = await confirmDialog({
+      title: `מחיקת ${h.label}`,
+      message: h.analyzed
+        ? 'הפריט ימחק ולא יינתן לשחזור.\nהאם אתה בטוח שברצונך לבצע פעולה זו?'
+        : 'המסמך עדיין מסומן כ"ממתין לעיבוד" — ייתכן שהוא בעיבוד פעיל כרגע. מחיקה עכשיו עלולה להתנגש עם הניתוח ולגרום לשגיאה בצד המערכת המנתחת.\nהפריט ימחק ולא יינתן לשחזור. להמשיך במחיקה?',
+      confirmLabel: 'מחק', danger: true,
+    });
+    if (!ok) return;
+    try {
+      await app.api.remove(h.table, h.id);
+    } catch {
+      toast('לא ניתן היה למחוק את הפריט.', 'error');
+      return;
+    }
+    toast('הפריט נמחק בהצלחה');
+    loadHistory();
+  };
+
   return (
     <div>
       <PageHeader icon="⬆️" title="העלאת מסמך" />
@@ -381,9 +403,7 @@ export default function UploadDocumentPage() {
                         <td className="no-print">
                           <button type="button" className="btn btn-sm btn-ghost" aria-label={`מחיקת ${h.label}`} title="מחיקה"
                             style={{ color: 'var(--error)' }}
-                            onClick={async () => {
-                              if (await removeRecord(app.api, h.table, h.id, h.label)) loadHistory();
-                            }}>🗑</button>
+                            onClick={() => deleteHistoryRow(h)}>🗑</button>
                         </td>
                       )}
                     </tr>

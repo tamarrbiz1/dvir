@@ -37,6 +37,28 @@ const create = async (t, fields) => {
 const patch = (t, id, fields) => api('PATCH', `${enc(t)}/${id}`, fields);
 const del = (t, id) => api('DELETE', `${enc(t)}/${id}`);
 
+// תקרית 2026-09-02: בדיקה שיצרה רשומה חשופה (בלי קובץ) בטבלת "הוצאות" —
+// אוטומציית Make שמאזינה לטבלה הזו (וגם לחשבוניות/תעודות משלוח/צ׳קים)
+// נתקלה בה תוך כדי הריצה (הניקוי קורה רק בסוף הסקריפט, אחרי כל שאר
+// הבדיקות) וקיבלה "Missing value of required parameter 'url'" — 3 שגיאות
+// רצופות והתרחיש הושבת אוטומטית. מאז ואילך: כל רשומת בדיקה בטבלה
+// שיש לה אוטומציית ניתוח מסמכים נוצרת עם קובץ אמיתי מצורף מהרגע הראשון,
+// דרך אותו /api/upload-document שהמסך עצמו משתמש בו (לא רשומה ריקה
+// שמקבלת קובץ בשלב מאוחר יותר, ולא רשומה בלי קובץ בכלל).
+const TEST_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const createWithFile = async (table, field, extraFields = {}) => {
+  const png = Buffer.from(TEST_PNG_B64, 'base64');
+  const fd = new FormData();
+  fd.append('file', new Blob([png], { type: 'image/png' }), 'qa.png');
+  fd.append('table', table);
+  fd.append('field', field);
+  const j = await api('POST', 'upload-document', fd, true);
+  if (!j?.record?.id) throw new Error('לא נוצרה רשומה עם הקובץ');
+  cleanup.push({ table, id: j.record.id });
+  if (Object.keys(extraFields).length) await patch(table, j.record.id, extraFields);
+  return j.record;
+};
+
 async function test(name, fn, warnMs = WRITE_WARN_MS) {
   const t0 = Date.now();
   try {
@@ -114,8 +136,8 @@ await test('ספק: יצירה + הוספת פרטים', async () => {
   await patch('ספקים', rec.id, { 'טלפון': '050-1111111' });
 });
 
-await test('הוצאה: יצירה + קשר לספק', async () => {
-  const rec = await create('הוצאות', { 'הערות': MARK, 'תאריך העלאת החשבונית': today });
+await test('הוצאה: יצירה עם קובץ מצורף + קשר לספק', async () => {
+  const rec = await createWithFile('הוצאות', 'חשבונית', { 'הערות': MARK, 'תאריך העלאת החשבונית': today });
   if (suppliersList[0]?.id) await patch('הוצאות', rec.id, { 'ספקים': [suppliersList[0].id] });
 });
 
@@ -159,19 +181,19 @@ await test('משווק: יצירה + עריכה', async () => {
   await patch('משווקים', rec.id, { 'איש קשר': 'בדיקה' });
 });
 
-await test('חשבונית: יצירה + סטטוס תשלום', async () => {
+await test('חשבונית: יצירה עם קובץ מצורף + סטטוס תשלום', async () => {
   const opts = await api('GET', `select-options/${enc('חשבוניות')}/${enc('סטטוס תשלום')}`).catch(() => ({ choices: [] }));
-  const rec = await create('חשבוניות', { 'קוד שבוע': MARK });
+  const rec = await createWithFile('חשבוניות', 'חשבונית', { 'קוד שבוע': MARK });
   if (opts.choices?.[0]) await patch('חשבוניות', rec.id, { 'סטטוס תשלום': opts.choices[0] });
 });
 
-await test('תעודת משלוח: יצירה + עדכון + מחיקה', async () => {
-  const rec = await create('תעודות משלוח', { 'קוד שבוע': MARK });
+await test('תעודת משלוח: יצירה עם קובץ מצורף + עדכון', async () => {
+  const rec = await createWithFile('תעודות משלוח', 'תעודת משלוח', { 'קוד שבוע': MARK });
   await patch('תעודות משלוח', rec.id, { 'קוד שבוע': MARK + 'b' });
 });
 
-await test("צ'ק: יצירה + סטטוס", async () => {
-  const rec = await create('צ׳קים', { 'מוטב': MARK, 'סכום צ׳ק': '123', 'תאריך פירעון': '01/10/2026' });
+await test("צ'ק: יצירה עם קובץ מצורף + סטטוס", async () => {
+  const rec = await createWithFile('צ׳קים', 'צילום צ׳ק', { 'מוטב': MARK, 'סכום צ׳ק': '123', 'תאריך פירעון': '01/10/2026' });
   await patch('צ׳קים', rec.id, { 'סטטוס': 'נפרע' });
 });
 
