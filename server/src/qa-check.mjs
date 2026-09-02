@@ -309,6 +309,67 @@ await test('עדכון תאריך: בקשה → אישור עם תוקף 48ש �
   return 'אושר, בתוקף 48ש';
 });
 
+// ============ 3.5. מקרי קצה (שימוש אמיתי: קלט חריג, לא רק "מסלול מאושר") ============
+
+await test('שדות ריקים: רשומה עם שדה חובה בלבד לא שוברת קריאה', async () => {
+  // ספק בלי שום שדה אופציונלי (טלפון/אימייל/הערות/תנאי תשלום וכו') —
+  // מוודאים שקריאה חוזרת של הטבלה כולה לא נכשלת ושה-API מחזיר בבטחה
+  const rec = await create('ספקים', { 'שם ספק': `${MARK}-empty` });
+  const list = await api('GET', `${enc('ספקים')}?maxRecords=500`);
+  const back = list.find((x) => x.id === rec.id);
+  if (!back) throw new Error('הרשומה עם השדות הריקים לא הופיעה ברשימה');
+  return 'נקרא בבטחה עם שדות אופציונליים ריקים';
+});
+
+await test('תאריכים קיצוניים: עבר רחוק ועתיד רחוק נשמרים ונקראים נכון', async () => {
+  const past = await create('ימי אי עבודה', { 'תאריך': '1900-01-01' });
+  const future = await create('ימי אי עבודה', { 'תאריך': '2099-12-31' });
+  const backPast = await api('GET', `${enc('ימי אי עבודה')}/${past.id}`);
+  const backFuture = await api('GET', `${enc('ימי אי עבודה')}/${future.id}`);
+  if (!String(backPast['תאריך'] || '').startsWith('1900-01-01')) throw new Error('התאריך הרחוק בעבר לא נשמר נכון');
+  if (!String(backFuture['תאריך'] || '').startsWith('2099-12-31')) throw new Error('התאריך הרחוק בעתיד לא נשמר נכון');
+  return '1900-01-01 ו-2099-12-31 תקינים';
+});
+
+await test('תאילנדית: טקסט חופשי נשמר ונקרא ללא שיבוש (UTF-8)', async () => {
+  const thaiText = 'สวัสดีครับ ทดสอบภาษาไทย 123 — ' + MARK;
+  const rec = await create('גידולים', { 'שם גידול': thaiText.slice(0, 60) });
+  const back = await api('GET', `${enc('גידולים')}/${rec.id}`);
+  if (back['שם גידול'] !== thaiText.slice(0, 60)) throw new Error('הטקסט התאילנדי השתבש בסבב הקריאה/כתיבה');
+  return 'טקסט תאילנדי חוזר זהה בייט-לבייט';
+});
+
+await test('טקסט ארוך וכולל תווים מיוחדים לא שובר את ה-API', async () => {
+  const weird = `${MARK} ${'א'.repeat(1500)} <script>alert(1)</script> "quotes" 'apostrophe' \\backslash\\ \n newline`;
+  const rec = await create('ספקים', { 'שם ספק': `${MARK}-weird`, 'הערות': weird });
+  const back = await api('GET', `${enc('ספקים')}/${rec.id}`);
+  if (back['הערות'] !== weird) throw new Error('טקסט ארוך/עם תווים מיוחדים לא חזר זהה');
+  return `${weird.length} תווים חזרו זהים`;
+});
+
+await test('כתיבות מקבילות לאותה רשומה: המצב הסופי עקבי (לא שחיתות נתונים)', async () => {
+  const rec = await create('ספקים', { 'שם ספק': `${MARK}-race` });
+  // שתי כתיבות בו-זמנית לשדות שונים — בודקים שהמטמון (readCache/invalidateReads)
+  // לא משאיר תשובה ישנה/חלקית אחרי ששתיהן הסתיימו
+  await Promise.all([
+    patch('ספקים', rec.id, { 'טלפון': '050-1111111' }),
+    patch('ספקים', rec.id, { 'איש קשר': 'בדיקת מקביליות' }),
+  ]);
+  const back = await api('GET', `${enc('ספקים')}/${rec.id}`);
+  if (back['טלפון'] !== '050-1111111' || back['איש קשר'] !== 'בדיקת מקביליות') {
+    throw new Error(`מצב לא עקבי אחרי כתיבה מקבילה: ${JSON.stringify({ טלפון: back['טלפון'], איש_קשר: back['איש קשר'] })}`);
+  }
+  return 'שתי הכתיבות המקבילות נשמרו — אין שחיתות';
+});
+
+await test('טבלה גדולה: קריאת maxRecords גבוה לא נכשלת ולא נתקעת', async () => {
+  const t0 = Date.now();
+  const rows = await api('GET', `${enc('עבודות עובדים')}?maxRecords=3000`);
+  const ms = Date.now() - t0;
+  if (!Array.isArray(rows)) throw new Error('לא הוחזר מערך');
+  return `${rows.length} רשומות ב-${ms}ms`;
+}, 5000);
+
 // ============ 4. ניקוי מלא ============
 let cleaned = 0, cleanFailed = 0;
 for (const c of cleanup.reverse()) {
