@@ -3,7 +3,7 @@
 // ------------------------------------------------------------
 // לפי האיפיון: פילטר תקופה מרכזי (היום/השבוע/החודש/חודש קודם/
 // השנה/טווח מותאם), שורות KPI (כספים · תפוקה · עובדים · בקרה),
-// גרפים עם Drill-down, פעולות מהירות ו"פעילות אחרונה".
+// גרפים עם Drill-down, פעולות מהירות.
 // כל הנתונים מ-Airtable; ה-JSONים של "סיכום שבועי" הם המקור לתפוקה.
 // ============================================================
 import { useEffect, useMemo, useState } from 'react';
@@ -65,7 +65,7 @@ const num = (v) => (Number(v) || 0);
 export default function DashboardPage() {
   const app = useApp();
   const navigate = useNavigate();
-  const [data, setData] = useState({ invoices: [], expenses: [], structures: [], weeks: [], works: [], notes: [], sprays: [], requests: [] });
+  const [data, setData] = useState({ invoices: [], expenses: [], structures: [], weeks: [], works: [] });
   const [loading, setLoading] = useState(true);
   const [preset, setPreset] = useState('year');
   const [from, setFrom] = useState('');
@@ -80,18 +80,15 @@ export default function DashboardPage() {
     ].map(enc).join(',');
     const load = async () => {
       try {
-        const [i, e, s, w, wk, dn, sp, rq] = await Promise.all([
+        const [i, e, s, w, wk] = await Promise.all([
           app.api.get('חשבוניות', '?maxRecords=1000&raw=1'),
           app.api.get('הוצאות', '?maxRecords=1000'),
           app.api.get('מבנים', '?maxRecords=200'),
           app.api.get('עבודות עובדים', '?maxRecords=3000'),
           app.api.get('סיכום שבועי', `?maxRecords=300&raw=1&fields=${weekFields}`).catch(() => []),
-          app.api.get('תעודות משלוח', '?maxRecords=300').catch(() => []),
-          app.api.get('ריסוסים', '?maxRecords=300').catch(() => []),
-          app.api.get('בקשות עובדים', '?maxRecords=200').catch(() => []),
         ]);
         const arr = (v) => (Array.isArray(v) ? v : []);
-        setData({ invoices: arr(i), expenses: arr(e), structures: arr(s), works: arr(w), weeks: arr(wk), notes: arr(dn), sprays: arr(sp), requests: arr(rq) });
+        setData({ invoices: arr(i), expenses: arr(e), structures: arr(s), works: arr(w), weeks: arr(wk) });
       } catch (err) {
         console.error(err);
       } finally {
@@ -209,45 +206,6 @@ export default function DashboardPage() {
     });
     return Object.entries(m).map(([name, value]) => ({ name, value: Math.round(value) })).filter((x) => x.value > 0);
   }, [fExpenses]);
-
-  // ============ פעילות אחרונה ============
-  const feed = useMemo(() => {
-    const items = [];
-    data.invoices.forEach((i) => items.push({
-      date: i['תאריך העלאת קובץ'] || i['תאריך-AI'],
-      icon: '🧾', bg: 'var(--revenue-soft)',
-      label: `חשבונית ${i['מספר חשבונית'] ?? ''} ${i['שם משווק'] ? `· ${i['שם משווק']}` : ''}`.trim(),
-      to: `/invoices?open=${i.id}`,
-    }));
-    data.notes.forEach((n) => items.push({
-      date: n['תאריך העלאת קובץ'] || n['תאריך תעודה'],
-      icon: '📄', bg: 'var(--docs-soft)',
-      label: `תעודת משלוח ${n['מספר תעודה'] ?? ''} ${displayName(n['משווק'], '') ? `· ${displayName(n['משווק'], '')}` : ''}`.trim(),
-      to: `/delivery-notes?open=${n.id}`,
-    }));
-    data.works.forEach((r) => items.push({
-      date: r['תאריך'],
-      icon: '👷', bg: 'var(--workers-soft)',
-      label: `עבודה: ${displayName(r['עובד'], 'עובד')} · ${displayName(r['מבנה'], '')}`.trim(),
-      to: '/workers?tab=jobs',
-    }));
-    data.sprays.forEach((r) => items.push({
-      date: r['תאריך'],
-      icon: '🧴', bg: 'var(--spray-soft)',
-      label: `ריסוס ${displayName(r['מבנה'], '')} · ${displayName(r['חומר ריסוס'], '')}`.trim(),
-      to: '/spraying',
-    }));
-    data.requests.forEach((r) => items.push({
-      date: r['נוצר בתאריך'] || r['תאריך'],
-      icon: '🗣️', bg: 'var(--warning-soft)',
-      label: `בקשת עובד: ${displayName(r['עובד'], 'עובד')} · ${r['סוג בקשה'] || ''}`.trim(),
-      to: '/requests',
-    }));
-    return items
-      .filter((x) => x.date && !Number.isNaN(new Date(x.date).getTime()))
-      .sort((a, b) => new Date(b.date) - new Date(a.date))
-      .slice(0, 12);
-  }, [data]);
 
   if (loading) {
     return (
@@ -471,39 +429,24 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* ===== פעולות מהירות + פעילות אחרונה ===== */}
-      <div className="grid-2" style={{ marginTop: 18 }}>
-        <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>פעולות מהירות</div>
-          <div className="quick-actions">
-            <button type="button" className="btn btn-primary" onClick={() => navigate('/upload')}>⬆️ העלאת מסמך</button>
-            <button type="button" className="btn btn-ghost" onClick={() => navigate('/workers?tab=jobs&new=1')}>👷 עבודה חדשה</button>
-            <button type="button" className="btn btn-ghost" onClick={() => navigate('/spraying?new=1')}>🧴 ריסוס חדש</button>
-            <button type="button" className="btn btn-ghost" onClick={() => navigate('/planting')}>🌱 תוכנית שתילה חדשה</button>
-          </div>
-
-          <div className="section-title">מבנים</div>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            {data.structures.slice(0, 14).map((s) => (
-              <span key={s.id} className="obj-chip" role="button" tabIndex={0} title="פתיחת פרטי המבנה"
-                onClick={() => navigate('/structures', { state: { openStructure: s } })}
-                onKeyDown={(e) => { if (e.key === 'Enter') navigate('/structures', { state: { openStructure: s } }); }}>
-                🏗️ {s['מספר מבנה'] || 'מבנה'}
-              </span>
-            ))}
-          </div>
+      {/* ===== פעולות מהירות ===== */}
+      <div className="card" style={{ marginTop: 18 }}>
+        <div className="section-title" style={{ marginTop: 0 }}>פעולות מהירות</div>
+        <div className="quick-actions">
+          <button type="button" className="btn btn-primary" onClick={() => navigate('/upload')}>⬆️ העלאת מסמך</button>
+          <button type="button" className="btn btn-ghost" onClick={() => navigate('/workers?tab=jobs&new=1')}>👷 עבודה חדשה</button>
+          <button type="button" className="btn btn-ghost" onClick={() => navigate('/spraying?new=1')}>🧴 ריסוס חדש</button>
+          <button type="button" className="btn btn-ghost" onClick={() => navigate('/planting')}>🌱 תוכנית שתילה חדשה</button>
         </div>
 
-        <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>פעילות אחרונה</div>
-          {feed.length === 0 ? (
-            <div className="empty-state">אין פעילות אחרונה</div>
-          ) : feed.map((f, i) => (
-            <div key={i} className="feed-item">
-              <div className="feed-icon" style={{ background: f.bg }}>{f.icon}</div>
-              <button type="button" className="feed-link" onClick={() => navigate(f.to)}>{f.label}</button>
-              <span className="feed-time">{formatDate(f.date)}</span>
-            </div>
+        <div className="section-title">מבנים</div>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          {data.structures.slice(0, 14).map((s) => (
+            <span key={s.id} className="obj-chip" role="button" tabIndex={0} title="פתיחת פרטי המבנה"
+              onClick={() => navigate('/structures', { state: { openStructure: s } })}
+              onKeyDown={(e) => { if (e.key === 'Enter') navigate('/structures', { state: { openStructure: s } }); }}>
+              🏗️ {s['מספר מבנה'] || 'מבנה'}
+            </span>
           ))}
         </div>
       </div>
