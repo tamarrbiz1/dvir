@@ -150,10 +150,11 @@ export default function NonWorkDaysPage() {
     await load();
   };
 
-  const saturdaysOfYear = () => {
+  // ימי שישי — יום המנוחה במשק (עובדים במוצאי שבת, לכן שבתות אינן מיובאות)
+  const fridaysOfYear = () => {
     const out = [];
     const d = new Date(Number(year), 0, 1);
-    while (d.getFullYear() === Number(year)) { if (d.getDay() === 6) out.push({ iso: toISO(d) }); d.setDate(d.getDate() + 1); }
+    while (d.getFullYear() === Number(year)) { if (d.getDay() === 5) out.push({ iso: toISO(d), he: 'יום שישי' }); d.setDate(d.getDate() + 1); }
     return out;
   };
 
@@ -180,8 +181,8 @@ export default function NonWorkDaysPage() {
           <button className="btn btn-ghost" disabled={importing || !thaiType} onClick={() => openImportPreview(thaiHolidaysOfYear(Number(year)), thaiType, 'חגי תאילנד')}>
             🇹🇭 ייבא חגי תאילנד
           </button>
-          <button className="btn btn-ghost" disabled={importing || !jewishType} onClick={() => openImportPreview(saturdaysOfYear().map((s) => ({ ...s, he: 'שבת' })), jewishType, 'שבתות')}>
-            🕯️ ייבא שבתות
+          <button className="btn btn-ghost" disabled={importing || !jewishType} onClick={() => openImportPreview(fridaysOfYear(), jewishType, 'ימי שישי')}>
+            🕯️ ייבא ימי שישי
           </button>
         </div>
       </PageHeader>

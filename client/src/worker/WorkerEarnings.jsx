@@ -1,3 +1,5 @@
+import { workTypeName } from '../utils/field.js';
+import { workHours } from '../utils/field.js';
 // ============================================================
 // "הרווחים שלי" — פילטר טווח + גרף + טבלה
 // ============================================================
@@ -60,7 +62,7 @@ export default function WorkerEarnings({ api, worker }) {
   }, [mine, range, dFrom, dTo]);
 
   const totalEarned = rangeRecs.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0);
-  const totalHours = rangeRecs.reduce((s, r) => s + (Number(r['סכום שעות']) || 0), 0);
+  const totalHours = rangeRecs.reduce((s, r) => s + workHours(r), 0);
   const workDays = new Set(rangeRecs.map((r) => fmt(r['תאריך']))).size;
   const avgPerDay = workDays ? totalEarned / workDays : 0;
 
@@ -180,7 +182,7 @@ export default function WorkerEarnings({ api, worker }) {
                     {rangeRecs.slice().reverse().map((r) => (
                       <tr key={r.id}>
                         <td>{fmt(r['תאריך'])}</td>
-                        <td>{r['סוג עבודה (from תמחור עבודות)'] ?? '—'}</td>
+                        <td>{workTypeName(r, '—')}</td>
                         <td>{structureName(r['מבנה'])}</td>
                         <td>{formatNumber(r['כמות'])}</td>
                         <td>{formatNumber(r['סכום שעות'])}</td>

@@ -48,6 +48,9 @@ export default function WeeklySummaryPage() {
   const [loading, setLoading] = useState(true);
   const [drawer, setDrawer] = useState(null);
   const [newWeek, setNewWeek] = useState(false);
+  const [fYear, setFYear] = useState('');
+  const [fMonth, setFMonth] = useState('');
+  const [fWeek, setFWeek] = useState('');
 
   const load = useCallback(async (handleParam = false) => {
     const [w, e] = await Promise.all([
@@ -72,6 +75,25 @@ export default function WeeklySummaryPage() {
 
   useEffect(() => { load(true).catch(() => {}).finally(() => setLoading(false)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
+  // ------ סינון לפי שנה / חודש / שבוע (מקוד השבוע) ------
+  const validCode = (w) => /^\d{8}-\d{8}$/.test(String(w[F.code] || ''));
+  const inFilter = (w) => {
+    const code = String(w[F.code] || '');
+    if (!validCode(w)) return !(fYear || fMonth || fWeek);
+    if (fYear && code.slice(0, 4) !== fYear) return false;
+    if (fMonth && code.slice(4, 6) !== fMonth) return false;
+    if (fWeek && code !== fWeek) return false;
+    return true;
+  };
+  const shown = useMemo(() => weeks.filter(inFilter), [weeks, fYear, fMonth, fWeek]);
+  const yearOptions = useMemo(() => [...new Set(weeks.filter(validCode).map((w) => String(w[F.code]).slice(0, 4)))].sort(), [weeks]);
+  const monthOptions = useMemo(() => [...new Set(weeks.filter(validCode)
+    .filter((w) => !fYear || String(w[F.code]).slice(0, 4) === fYear)
+    .map((w) => String(w[F.code]).slice(4, 6)))].sort(), [weeks, fYear]);
+  const weekOptions = useMemo(() => weeks.filter(validCode)
+    .filter((w) => (!fYear || String(w[F.code]).slice(0, 4) === fYear) && (!fMonth || String(w[F.code]).slice(4, 6) === fMonth))
+    .map((w) => String(w[F.code])).sort().reverse(), [weeks, fYear, fMonth]);
+
   // ------ חישובים ------
   // ערכי שבוע: ה-Rollup, ואם הוא ריק — סכימה מ"JSON לפי ימים מאוחד"
   const statsOf = useCallback((w) => {
@@ -84,10 +106,10 @@ export default function WeeklySummaryPage() {
       net: num(w[F.net]) || dGross,
     };
   }, []);
-  const totalNeto = weeks.reduce((s, w) => s + statsOf(w).net, 0);
-  const totalWeight = weeks.reduce((s, w) => s + statsOf(w).weight, 0);
+  const totalNeto = shown.reduce((s, w) => s + statsOf(w).net, 0);
+  const totalWeight = shown.reduce((s, w) => s + statsOf(w).weight, 0);
   const totalExpenses = expenses.reduce((s, e) => s + num(e['סכום כולל-AI']), 0);
-  const missingDocs = weeks.filter((w) => String(w[F.docStatus] || '').includes('חסר')).length;
+  const missingDocs = shown.filter((w) => String(w[F.docStatus] || '').includes('חסר')).length;
 
   // חלוקת הוצאות לשבועות לפי טווח תאריכים
   function getWeekForDate(dateStr) {
@@ -115,7 +137,7 @@ export default function WeeklySummaryPage() {
 
   const chartData = useMemo(() => {
     // רק שבועות עם קוד תקין — רשומות עם תאריך שגוי לא מציירות "?"
-    const valid = weeks.filter((w) => /^\d{8}-\d{8}$/.test(String(w[F.code] || '')));
+    const valid = shown.filter((w) => /^\d{8}-\d{8}$/.test(String(w[F.code] || '')));
     const sorted = [...valid].sort((a, b) => String(a[F.code]).localeCompare(String(b[F.code])));
     return sorted.map((w) => {
       const st = statsOf(w);
@@ -126,7 +148,7 @@ export default function WeeklySummaryPage() {
         'משקל': Math.round(st.weight),
       };
     });
-  }, [weeks, weeklyExpenses, statsOf]);
+  }, [shown, weeklyExpenses, statsOf]);
 
   return (
     <div>
@@ -137,6 +159,23 @@ export default function WeeklySummaryPage() {
         <div className="skeleton skeleton-card" />
       ) : (
         <>
+          {/* ------ סינון: שנה / חודש / שבוע ------ */}
+          <div className="filter-bar no-print">
+            <select className="select" aria-label="סינון לפי שנה" value={fYear} onChange={(e) => { setFYear(e.target.value); setFMonth(''); setFWeek(''); }}>
+              <option value="">כל השנים</option>
+              {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <select className="select" aria-label="סינון לפי חודש" value={fMonth} onChange={(e) => { setFMonth(e.target.value); setFWeek(''); }}>
+              <option value="">כל החודשים</option>
+              {monthOptions.map((m) => <option key={m} value={m}>{Number(m)}/{fYear || 'שנה'}</option>)}
+            </select>
+            <select className="select" aria-label="סינון לפי שבוע" value={fWeek} onChange={(e) => setFWeek(e.target.value)}>
+              <option value="">כל השבועות</option>
+              {weekOptions.map((c) => <option key={c} value={c}>{`${c.slice(6, 8)}/${c.slice(4, 6)} – ${c.slice(15, 17)}/${c.slice(13, 15)}`}</option>)}
+            </select>
+            {(fYear || fMonth || fWeek) && <button className="btn btn-ghost" onClick={() => { setFYear(''); setFMonth(''); setFWeek(''); }}>נקה פילטרים</button>}
+          </div>
+
           {/* ------ KPI Cards ------ */}
           <div className="kpi-grid">
             <Kpi icon="💰" bg="var(--revenue-soft)" color="var(--revenue)" label='סה"כ פדיון נטו' value={formatMoney(totalNeto)} />
@@ -158,7 +197,7 @@ export default function WeeklySummaryPage() {
           {/* ------ רשימת שבועות ------ */}
           <div className="card" style={{ marginTop: 20 }}>
             <div className="section-title" style={{ marginTop: 0 }}>רשימת שבועות</div>
-            {weeks.length === 0 ? <div className="empty-state">אין נתונים לתקופה זו</div> : (
+            {shown.length === 0 ? <div className="empty-state">אין נתונים לתקופה זו</div> : (
               <div className="table-wrap">
                 <table className="data-table">
                   <thead>
@@ -167,7 +206,7 @@ export default function WeeklySummaryPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {weeks.map((w) => (
+                    {shown.map((w) => (
                       <tr key={w.id} onClick={() => setDrawer(w)} style={{ cursor: 'pointer' }}>
                         <td>
                           <div style={{ fontWeight: 800, fontSize: 15, whiteSpace: 'nowrap' }}>{formatDate(w[F.start])} – {formatDate(w[F.end])}</div>

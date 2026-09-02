@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { t, monthShort } from '../i18n.js';
 import { useApp } from '../App.jsx';
+import { workHours , workTypeName } from '../utils/field.js';
 import { activatable } from '../utils/a11y.js';
 import { useAutoRefresh } from '../utils/live.js';
 import { formatMoney, formatNumber } from '../utils/format.js';
@@ -48,7 +49,7 @@ export default function TeamCrewPage() {
     return true;
   }), [records, year, month, from, to]);
 
-  const sumHours = filtered.reduce((s, r) => s + (Number(r['סכום שעות'] ?? r['שעות']) || 0), 0);
+  const sumHours = filtered.reduce((s, r) => s + workHours(r), 0);
   const sumPaid = filtered.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0);
 
   const workerRecs = (w) => filtered.filter((r) => {
@@ -66,7 +67,7 @@ export default function TeamCrewPage() {
       return {
         id: w.id,
         name: `${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || 'עובד',
-        hours: recs.reduce((s, r) => s + (Number(r['סכום שעות'] ?? r['שעות']) || 0), 0),
+        hours: recs.reduce((s, r) => s + workHours(r), 0),
         paid: recs.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0),
         jobs: recs.length,
       };
@@ -106,7 +107,7 @@ export default function TeamCrewPage() {
   const costByType = useMemo(() => {
     const b = {};
     filtered.forEach((r) => {
-      const k = r['סוג עבודה (from תמחור עבודות)'] ?? 'אחר';
+      const k = workTypeName(r, 'אחר');
       b[k] = (b[k] || 0) + (Number(r['סכום לתשלום']) || 0);
     });
     return Object.entries(b).map(([k, v]) => ({ name: k, value: Math.round(v) }));

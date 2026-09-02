@@ -3,6 +3,7 @@
 // ============================================================
 import { useEffect, useState } from 'react';
 import { t } from '../i18n.js';
+import { workTypeName } from '../utils/field.js';
 
 export default function WorkerReport({ api, worker, approvedDate = null, onDone, onAskDateChange }) {
   const [structures, setStructures] = useState([]);
@@ -37,7 +38,7 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
   // כדי ש"סכום לתשלום" יחושב לפי המחיר (בלי להציג את המחיר לעובד)
   const pricingOptions = pricing.map((p) => ({
     id: p.id,
-    label: [p['סוג עבודה'], p['זן']].filter(Boolean).join(' · ') || p.id,
+    label: [workTypeName(p) || p['סוג עבודה'], p['זן']].filter(Boolean).join(' · ') || p.id,
     unit: p['יחידת תמחור'],
   })).filter((p) => p.label !== p.id);
 

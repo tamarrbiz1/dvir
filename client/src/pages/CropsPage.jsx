@@ -349,7 +349,7 @@ function PricesTab({ prices, crops, api, canEdit, onChanged }) {
             <ResponsiveContainer width="100%" height={220}>
               <LineChart data={chart} margin={CHART_MARGIN_ROTATED}>
                 <CartesianGrid {...GRID_PROPS} />
-                <XAxis dataKey="label" {...xAxisProps(chart.length, { rotate: true })} />
+                <XAxis dataKey="label" {...xAxisProps(chart.length, { rotate: true, maxLabels: 8 })} angle={-40} height={92} interval={chart.length > 8 ? Math.ceil(chart.length / 8) - 1 : 0} />
                 <YAxis {...yAxisProps({ money: true })} />
                 <Tooltip {...TOOLTIP_STYLE} />
                 <Line type="monotone" dataKey="מחיר" stroke="#2878D0" strokeWidth={2} />
@@ -602,10 +602,10 @@ function ForecastTab({ rows, api, canEdit, onChanged }) {
             <ResponsiveContainer width="100%" height={240}>
               <BarChart data={chart} margin={CHART_MARGIN_ROTATED}>
                 <CartesianGrid {...GRID_PROPS} />
-                <XAxis dataKey="label" {...xAxisProps(chart.length, { rotate: true })} />
+                <XAxis dataKey="label" {...xAxisProps(chart.length, { rotate: true, maxLabels: 8 })} angle={-40} height={92} interval={chart.length > 8 ? Math.ceil(chart.length / 8) - 1 : 0} />
                 <YAxis {...yAxisProps()} />
                 <Tooltip {...TOOLTIP_STYLE} />
-                <Legend wrapperStyle={LEGEND_STYLE} />
+                <Legend verticalAlign="top" wrapperStyle={{ fontSize: 12, paddingBottom: 8 }} />
                 <Bar dataKey="צפוי" fill="#3578E5" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="בפועל" fill="#168A55" radius={[4, 4, 0, 0]} />
               </BarChart>

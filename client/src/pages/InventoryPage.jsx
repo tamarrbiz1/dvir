@@ -53,6 +53,7 @@ export default function InventoryPage() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState(''); // '' | ok | near | low
   const [editItem, setEditItem] = useState(null); // {item, mode: 'add'|'reduce', defaultAmount?}
   const [drawer, setDrawer] = useState(null);
   const [form, setForm] = useState(null);
@@ -98,6 +99,7 @@ export default function InventoryPage() {
   }, []);
 
   const filtered = items.filter((i) => {
+    if (statusFilter && itemStatus(i).key !== statusFilter) return false;
     if (!search) return true;
     return String(i['קטגוריה'] || '').toLowerCase().includes(search.toLowerCase());
   });
@@ -146,11 +148,20 @@ export default function InventoryPage() {
         <>
           {/* KPI */}
           <div className="kpi-grid">
-            <Kpi icon="📦" soft="var(--inventory-soft)" color="var(--inventory)" label="סה&quot;כ פריטים" value={items.length} />
-            <Kpi icon="✅" soft="var(--ok-soft)" color="var(--ok)" label="פריטים תקינים" value={counts.ok} />
-            <Kpi icon="🟠" soft="var(--warning-soft)" color="var(--warning)" label="קרוב למינימום" value={counts.near} />
-            <Kpi icon="⚠️" soft="var(--error-soft)" color="var(--error)" label="מתחת למינימום" value={counts.low} />
+            <Kpi icon="📦" soft="var(--inventory-soft)" color="var(--inventory)" label="סה&quot;כ פריטים" value={items.length}
+              active={statusFilter === ''} onClick={() => setStatusFilter('')} />
+            <Kpi icon="✅" soft="var(--ok-soft)" color="var(--ok)" label="פריטים תקינים" value={counts.ok}
+              active={statusFilter === 'ok'} onClick={() => setStatusFilter(statusFilter === 'ok' ? '' : 'ok')} />
+            <Kpi icon="🟠" soft="var(--warning-soft)" color="var(--warning)" label="קרוב למינימום" value={counts.near}
+              active={statusFilter === 'near'} onClick={() => setStatusFilter(statusFilter === 'near' ? '' : 'near')} />
+            <Kpi icon="⚠️" soft="var(--error-soft)" color="var(--error)" label="מתחת למינימום" value={counts.low}
+              active={statusFilter === 'low'} onClick={() => setStatusFilter(statusFilter === 'low' ? '' : 'low')} />
           </div>
+          {statusFilter && (
+            <div style={{ marginTop: 10 }}>
+              <button className="btn btn-sm btn-ghost" onClick={() => setStatusFilter('')}>✕ נקה סינון סטטוס</button>
+            </div>
+          )}
 
           {/* מלאי להורדה — הצעה מחושבת מהשבוע האחרון */}
           {lastWeek && filtered.some((i) => plannedFor(i)) && (
@@ -275,9 +286,11 @@ export default function InventoryPage() {
   );
 }
 
-function Kpi({ icon, soft, color, label, value }) {
+function Kpi({ icon, soft, color, label, value, active, onClick }) {
   return (
-    <div className="kpi-card">
+    <div className={`kpi-card ${onClick ? 'clickable' : ''}`}
+      {...(onClick ? { role: 'button', tabIndex: 0, onClick, onKeyDown: (e) => { if (e.key === 'Enter') onClick(); } } : {})}
+      style={active && onClick ? { outline: `2px solid ${color.startsWith('var') ? color : color}`, outlineOffset: -2 } : undefined}>
       <div className="kpi-top"><div className="kpi-icon" style={{ background: soft }}>{icon}</div><span className="kpi-label">{label}</span></div>
       <div className="kpi-value" style={{ color }}>{formatNumber(value)}</div>
       <div style={{ height: 12 }} />

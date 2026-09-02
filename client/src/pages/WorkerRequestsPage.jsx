@@ -5,6 +5,7 @@ import { formatDate } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import { REQUEST_TABLE, REQUEST_FIELDS, REQUEST_STATUS, isDateChangeReq, workerNotesOf, approvalExpiry, statusStyle, requestTimeLabel, MissingRequestsTable } from '../utils/requests.jsx';
 import PageHeader from '../components/PageHeader.jsx';
+import { removeRecord } from '../components/RecordForm.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 
@@ -70,7 +71,7 @@ export default function WorkerRequestsPage() {
 
   // רענון אוטומטי — מחזורי + בכל חזרה לחלון (בלי כפתור ידני)
   useEffect(() => {
-    const id = setInterval(() => { if (!document.hidden) load(); }, 60 * 1000);
+    const id = setInterval(() => { if (!document.hidden) load(); }, 20 * 1000);
     const onVis = () => { if (!document.hidden) load(); };
     document.addEventListener('visibilitychange', onVis);
     return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVis); };
@@ -211,12 +212,15 @@ export default function WorkerRequestsPage() {
         </div>
       )}
 
-      {drawer && <RequestDrawer canAct={(app.user?.role || 'owner') === 'owner'} req={drawer} busy={busy} error={actionError} onClose={() => setDrawer(null)} onAnswer={answer} />}
+      {drawer && <RequestDrawer canAct={(app.user?.role || 'owner') === 'owner'} req={drawer} busy={busy} error={actionError} onClose={() => setDrawer(null)} onAnswer={answer}
+        onDelete={(app.user?.role || 'owner') === 'owner' ? (async (r2) => {
+          if (await removeRecord(app.api, REQUEST_TABLE, r2.id, 'הבקשה')) { setDrawer(null); await load(); }
+        }) : null} />}
     </div>
   );
 }
 
-function RequestDrawer({ req, busy, error, onClose, onAnswer, canAct = true }) {
+function RequestDrawer({ req, busy, error, onClose, onAnswer, onDelete, canAct = true }) {
   useEscapeClose(onClose, !busy); // סגירה במקש Escape
   const [note, setNote] = useState(req.note || '');
   const [allowsWork, setAllowsWork] = useState(req.isDateChange ? true : req.allowsWork);
@@ -279,6 +283,9 @@ function RequestDrawer({ req, busy, error, onClose, onAnswer, canAct = true }) {
               <button className="btn btn-danger" disabled={busy} onClick={() => onAnswer(req, REQUEST_STATUS.rejected, note, false, 0)}>{t('m_rejectSend')}</button>
               {req.status !== REQUEST_STATUS.pending && (
                 <button className="btn btn-ghost" disabled={busy} onClick={() => onAnswer(req, REQUEST_STATUS.pending, note, false)}>{t('m_backToPending')}</button>
+              )}
+              {onDelete && (
+                <button className="btn btn-ghost" disabled={busy} style={{ color: 'var(--error)' }} onClick={() => onDelete(req)}>🗑 {t('c_delete')}</button>
               )}
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>{t('m_decisionSaved')}</div>

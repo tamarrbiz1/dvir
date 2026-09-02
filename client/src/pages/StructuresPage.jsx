@@ -145,10 +145,10 @@ function StructureDetails({ structure, api, onClose }) {
       api.get('קטיפים', '?maxRecords=1500'),
       api.get('ריסוסים', '?maxRecords=1500'),
       api.get('תוכניות שתילה', '?maxRecords=500'),
-      api.get('חשבוניות', '?maxRecords=200&raw=1'),
+      api.get('סיכום שבועי', `?maxRecords=300&raw=1&fields=${['קוד שבוע', 'JSON הכנסה לפי מבנים'].map(encodeURIComponent).join(',')}`).catch(() => []),
       api.get(DELIVERY_TABLE, '?maxRecords=1000').catch(() => []),
     ])
-      .then(([w, h, s, p, inv, notes]) => {
+      .then(([w, h, s, p, weeksJson, notes]) => {
         const byStruct = (arr, fld) => (Array.isArray(arr) ? arr : []).filter((r) => {
           const v = r[fld];
           if (Array.isArray(v)) return v.some((x) => String(x?.id ?? x) === sid);
@@ -159,7 +159,7 @@ function StructureDetails({ structure, api, onClose }) {
           harvests: byStruct(h, 'מבנה'),
           sprays: byStruct(s, 'מבנה'),
           planting: byStruct(p, 'מבנה'),
-          invoices: Array.isArray(inv) ? inv : [],
+          weeksJson: Array.isArray(weeksJson) ? weeksJson : [],
           // תעודות משלוח: של המבנה (לטאב "מסמכים") + כל התעודות (לניווט עמוק בתוך הכרטיס)
           notes: notesOfStructure(Array.isArray(notes) ? notes : [], sid),
           allNotes: Array.isArray(notes) ? notes : [],
@@ -200,7 +200,7 @@ function StructureDetails({ structure, api, onClose }) {
           ) : tab === 'תפוקה' ? (
             <TabYield harvests={data.harvests} />
           ) : tab === 'כספים' ? (
-            <TabFinance works={data.works} invoices={data.invoices} />
+            <TabFinance works={data.works} weeksJson={data.weeksJson || []} structName={name} />
           ) : (
             <TabDocuments structure={structure} notes={data.notes || []} allNotes={data.allNotes || []} api={api} />
           )}
@@ -400,41 +400,47 @@ function TabYield({ harvests }) {
   );
 }
 
-function TabFinance({ works, invoices }) {
-  const invNum = (inv, f) => Number(inv[f]) || 0;
-  const neto = invoices.reduce((s, inv) => s + invNum(inv, 'סכום נטו'), 0);
-  const bruto = invoices.reduce((s, inv) => s + invNum(inv, 'סכום ברוטו'), 0);
-  const kg = invoices.reduce((s, inv) => s + invNum(inv, 'משקל'), 0);
-  const cartons = invoices.reduce((s, inv) => s + invNum(inv, 'כמות קרטונים'), 0);
-  const labor = works.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0);
+function TabFinance({ works, weeksJson, structName }) {
+  // הכנסה של המבנה הזה בלבד — מתוך "JSON הכנסה לפי מבנים" בסיכום השבועי
+  const parseAny = (v) => { if (v == null || v === '') return null; if (typeof v === 'object') return v; try { return JSON.parse(String(v).replace(/\\_/g, '_')); } catch { return null; } };
+  let net = 0;
+  let weeks = 0;
+  const wantedName = String(structName);
+  weeksJson.forEach((w) => {
+    const inc = parseAny(w['JSON הכנסה לפי מבנים']);
+    const structs = Array.isArray(inc?.structures) ? inc.structures
+      : (Array.isArray(inc?.varieties) ? inc.varieties.flatMap((v) => (Array.isArray(v.structures) ? v.structures : [])) : []);
+    let hit = false;
+    structs.forEach((st) => {
+      const nm = String(st.structure || '');
+      if (nm === wantedName || nm === `מבנה ${wantedName}` || nm.endsWith(` ${wantedName}`)) {
+        net += Number(st.net_income) || 0;
+        hit = true;
+      }
+    });
+    if (hit) weeks += 1;
+  });
+  const labor = works.reduce((s2, r) => s2 + (Number(r['סכום לתשלום']) || 0), 0);
 
   return (
     <div>
-      <div className="card">
-        <div className="section-title" style={{ marginTop: 0 }}>עלות עבודה</div>
-        <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--workers)' }}>
-          {formatMoney(labor)}
+      <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(2,1fr)' }}>
+        <div className="kpi-card">
+          <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">הכנסה נטו של המבנה</span></div>
+          <div className="kpi-value" style={{ color: 'var(--revenue)' }}>{net ? formatMoney(net) : 'אין נתונים'}</div>
+          <div className="kpi-sub">{weeks ? `מ-${weeks} שבועות` : ''}</div>
         </div>
-        <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-          מתוך {works.length} עבודות
-        </div>
-      </div>
-
-      <div className="card" style={{ marginTop: 14 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>הכנסות (פדיון)</div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 14 }}>
-          <span style={{ color: 'var(--text-secondary)' }}>פדיון ברוטו</span><b>{formatMoney(bruto)}</b>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 14 }}>
-          <span style={{ color: 'var(--text-secondary)' }}>פדיון נטו</span><b>{formatMoney(neto)}</b>
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)', fontSize: 14 }}>
-          <span style={{ color: 'var(--text-secondary)' }}>ק"ג / קרטונים</span><b>{formatNumber(kg)} ק"ג · {formatNumber(cartons)} קרטונים</b>
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
-          סך כל חשבוניות הפרויקט. החשבוניות אינן מקושרות לרמת מבנה ספציפי, לכן הפדיון מוצג בטוטאל ואינו מפולח למבנה.
+        <div className="kpi-card">
+          <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--workers-soft)' }}>👷</div><span className="kpi-label">עלות עבודה במבנה</span></div>
+          <div className="kpi-value" style={{ color: 'var(--workers)' }}>{formatMoney(labor)}</div>
+          <div className="kpi-sub">{works.length} עבודות</div>
         </div>
       </div>
+      {net > 0 && (
+        <div className="card" style={{ marginTop: 14 }}>
+          <div className="obj-row"><span className="obj-row-label">רווח גולמי (הכנסה − עבודה)</span><span className="obj-row-value" style={{ color: net - labor >= 0 ? 'var(--profit)' : 'var(--error)' }}>{formatMoney(net - labor)}</span></div>
+        </div>
+      )}
     </div>
   );
 }

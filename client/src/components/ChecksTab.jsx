@@ -139,6 +139,9 @@ export default function ChecksTab({ checks, onRefresh }) {
 
   return (
     <div>
+      <div className="no-print" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button type="button" className="btn btn-primary" onClick={() => navigate('/upload', { state: { docType: "צ'ק" } })}>⬆️ העלאת צ'ק</button>
+      </div>
       {/* ---- KPI ---- */}
       <div className="kpi-grid">
         <Kpi icon="📅" label="לפירעון השבוע" value={formatMoney(kpi.dueWeek)} color="var(--revenue)" soft="var(--revenue-soft)" />

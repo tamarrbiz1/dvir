@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
+import { exportCsv, fileStamp } from '../utils/table.js';
+import { formatMoney } from '../utils/format.js';
 import { formatDate, formatNumber } from '../utils/format.js';
 import { pick } from '../utils/field.js';
 import { displayName, firstId } from '../utils/resolve.js';
@@ -85,8 +89,26 @@ function todayBadge(ev) {
 }
 
 // ============================================================
-export default function TreatmentsPage() {
+const MATERIAL_FORM_FIELDS = [
+  { name: 'שם חומר', label: 'שם חומר', type: 'text', required: true },
+  { name: 'מחיר', label: 'מחיר (₪)', type: 'number' },
+  { name: 'גודל האריזה', label: 'גודל אריזה', type: 'number' },
+  { name: 'מינון בסמ"ק', label: 'מינון ברירת מחדל', type: 'number' },
+  { name: 'יחידת תמחור', label: 'יחידת תמחור', type: 'select' },
+];
+
+export default function TreatmentsPage({ initialTab = 'calendar' }) {
   const app = useApp();
+  const navigate = useNavigate();
+  const canEdit = (app.user?.role || 'owner') === 'owner'; // מנהל עבודה צופה בלבד
+  const [tab, setTab] = useState(initialTab);
+  // מעבר מלשונית צד ללשונית צד אחרת של אותו מסך — הטאב מסתנכרן מהניתוב
+  useEffect(() => { setTab(initialTab); }, [initialTab]);
+  const [listSearch, setListSearch] = useState('');
+  const [materialSearch, setMaterialSearch] = useState('');
+  const [reportSearch, setReportSearch] = useState('');
+  const [materialForm, setMaterialForm] = useState(null);
+  const [listLimit, setListLimit] = useState(30);
   const [treatments, setTreatments] = useState([]);
   const [materials, setMaterials] = useState([]);
   const [structures, setStructures] = useState([]);
@@ -188,6 +210,29 @@ export default function TreatmentsPage() {
   }), [events, fStructure, fCrop, fVariety, fType]);
 
   const onDate = useCallback((d) => filtered.filter((e) => e.start <= d && e.end >= d), [filtered]);
+
+  // שורות לשונית הרשימה — חיפוש חופשי מעל הפילטרים המשותפים
+  const listRows = useMemo(() => filtered.filter((e) => {
+    if (!listSearch) return true;
+    const hay = [e.material, e.structNames.join(' '), e.crop, e.variety, e.status, e.notes, e.basis].join(' ').toLowerCase();
+    return hay.includes(listSearch.toLowerCase());
+  }).sort((a, b) => b.start - a.start), [filtered, listSearch]);
+
+  const rangeLabel = (e) => (e.start.getTime() === e.end.getTime()
+    ? formatDate(e.start) : `${formatDate(e.start)} – ${formatDate(e.end)}`);
+
+  const exportList = () => exportCsv(`ריסוסים-${fileStamp()}`, [
+    { label: 'תאריך', get: rangeLabel },
+    { label: 'מבנה', get: (e) => e.structNames.join(', ') },
+    { label: 'חומר', get: (e) => e.material },
+    { label: 'גידול', get: (e) => (e.crop === 'לא זמין' ? '' : e.crop) },
+    { label: 'זן', get: (e) => e.variety },
+    { label: 'מינון', get: (e) => e.dosage ?? '' },
+    { label: 'בסיס מינון', get: (e) => e.basis },
+    { label: 'סטטוס', get: (e) => e.status },
+    { label: 'בוצע', get: (e) => (e.done ? 'כן' : 'לא') },
+    { label: 'הערות', get: (e) => e.notes },
+  ], listRows);
 
   // ---------- KPI (סעיף 25) ----------
   const kpi = useMemo(() => {
@@ -292,14 +337,25 @@ export default function TreatmentsPage() {
 
   return (
     <div>
-      <PageHeader icon="📅" title="תכנון טיפולים">
-        <button className="btn btn-primary" onClick={() => openForm(null)}>+ טיפול חדש</button>
+      <PageHeader icon="🧴" title="ריסוסים וטיפולים">
+        {tab === 'list' && <button type="button" className="btn btn-ghost no-print" onClick={() => window.print()}>🖨️ הדפסה</button>}
+        {tab === 'list' && <button type="button" className="btn btn-ghost no-print" onClick={exportList} disabled={!listRows.length}>⬇️ ייצוא</button>}
+        {tab === 'reports' && <button className="btn btn-primary no-print" onClick={() => navigate('/upload', { state: { docType: 'דוח ריסוסים' } })}>⬆️ העלאת דוח</button>}
+        {tab === 'materials' && canEdit && <button className="btn btn-primary no-print" onClick={() => setMaterialForm({})}>+ חומר חדש</button>}
+        {(tab === 'calendar' || tab === 'list') && canEdit && <button className="btn btn-primary no-print" onClick={() => openForm(null)}>+ טיפול חדש</button>}
       </PageHeader>
+
+      <div className="tabs no-print" style={{ marginBottom: 16 }}>
+        {[['calendar', '📅 לוח שנה'], ['list', '📋 רשימה'], ['materials', '🧪 חומרי ריסוס'], ['reports', '📄 דוחות']].map(([k, l]) => (
+          <button key={k} className={`tab ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>{l}</button>
+        ))}
+      </div>
 
       {loadError && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {loadError}</div>}
       {actionError && !form && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {actionError}</div>}
 
       {/* KPI — סעיף 25 */}
+      {(tab === 'calendar' || tab === 'list') && <>
       <div className="kpi-grid" style={{ marginBottom: 16 }}>
         {[
           { l: 'מספר טיפולים', v: kpi.total, c: 'var(--spray)', i: '🧴' },
@@ -326,10 +382,11 @@ export default function TreatmentsPage() {
         <Sel label="סוג טיפול" value={fType} onChange={setFType} options={[['', 'הכל'], ...Object.keys(TYPES).map((k) => [k, k])]} />
         {filtersActive && <button className="btn btn-sm btn-ghost" onClick={() => { setFStructure(''); setFCrop(''); setFVariety(''); setFType(''); }}>✕ נקה פילטר</button>}
       </div>
+      </>}
 
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+      {tab === 'calendar' && <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
         <div className="tabs">
-          {[['calendar', '📋 לוח שנה'], ['week', '🗓️ שבוע'], ['list', '📄 רשימה']].map(([k, l]) => (
+          {[['calendar', '🗓️ חודש'], ['week', '📆 שבוע']].map(([k, l]) => (
             <button key={k} className={`tab ${view === k ? 'active' : ''}`} onClick={() => setView(k)}>{l}</button>
           ))}
         </div>
@@ -344,9 +401,9 @@ export default function TreatmentsPage() {
             <span style={{ width: 12, height: 12, background: TODAY_BG, border: `2px solid ${TODAY_BORDER}`, borderRadius: 3 }} />פעיל היום
           </span>
         </div>
-      </div>
+      </div>}
 
-      {view === 'calendar' && (
+      {tab === 'calendar' && view === 'calendar' && (
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 18px', borderBottom: '1px solid var(--border)' }}>
             <button className="btn btn-ghost btn-sm" onClick={prevMonth}>‹ קודם</button>
@@ -358,7 +415,7 @@ export default function TreatmentsPage() {
         </div>
       )}
 
-      {view === 'week' && (
+      {tab === 'calendar' && view === 'week' && (
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 18px', borderBottom: '1px solid var(--border)' }}>
             <button className="btn btn-ghost btn-sm" onClick={() => stepWeek(-1)}>‹ קודם</button>
@@ -372,12 +429,47 @@ export default function TreatmentsPage() {
         </div>
       )}
 
-      {view === 'list' && <ListView events={filtered} onOpen={(ev) => setDayDrawer({ date: ev.start, events: [ev] })} />}
+      {tab === 'list' && (
+        <ListTab
+          rows={listRows} search={listSearch} setSearch={setListSearch}
+          canEdit={canEdit} busy={busy}
+          limit={listLimit} onMore={() => setListLimit((l) => l + 50)}
+          onOpen={(ev) => setDayDrawer({ date: ev.start, events: [ev] })}
+          onEdit={openForm} onToggle={toggleDone} onDelete={removeTreatment}
+        />
+      )}
+
+      {tab === 'materials' && (
+        <MaterialsTab
+          materials={materials} search={materialSearch} setSearch={setMaterialSearch}
+          canEdit={canEdit} api={app.api} onChanged={load} onEdit={setMaterialForm}
+        />
+      )}
+
+      {tab === 'reports' && (
+        <ReportsTab
+          events={events} search={reportSearch} setSearch={setReportSearch}
+          canEdit={canEdit} busy={busy}
+          onEdit={openForm} onToggle={toggleDone} onDelete={removeTreatment}
+        />
+      )}
 
       {dayDrawer && (
         <DayDrawer
           date={dayDrawer.date} events={dayDrawer.events} busy={busy} error={actionError}
-          onClose={() => setDayDrawer(null)} onEdit={openForm} onToggle={toggleDone} onDelete={removeTreatment}
+          onClose={() => setDayDrawer(null)}
+          onEdit={canEdit ? openForm : null} onToggle={canEdit ? toggleDone : null} onDelete={canEdit ? removeTreatment : null}
+        />
+      )}
+
+      {materialForm !== null && (
+        <RecordForm
+          api={app.api} table="חומרי ריסוס"
+          title={materialForm.id ? `עריכת ${materialForm['שם חומר'] || 'חומר'}` : 'חומר ריסוס חדש'}
+          record={materialForm.id ? materialForm : null}
+          fields={MATERIAL_FORM_FIELDS}
+          onClose={() => setMaterialForm(null)}
+          onSaved={async () => { setMaterialForm(null); await load(); toast('החומר נשמר בהצלחה'); }}
         />
       )}
 
@@ -548,9 +640,9 @@ function DayDrawer({ date, events, busy, error, onClose, onEdit, onToggle, onDel
                   {badge && <span className="badge" style={{ background: TODAY_BORDER, color: '#fff' }}>{badge}</span>}
                   <span className={`badge ${ev.done ? 'badge-ok' : 'badge-warn'}`}>{ev.done ? 'בוצע' : (ev.status || 'לא בוצע')}</span>
                   <div style={{ flex: 1 }} />
-                  <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" disabled={busy} onClick={() => onEdit(ev)}>✎</button>
-                  <button className="btn btn-sm btn-ghost" title={ev.done ? 'סמן כלא בוצע' : 'סמן כבוצע'} disabled={busy} onClick={() => onToggle(ev)}>{ev.done ? '↩' : '✓'}</button>
-                  <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }} disabled={busy} onClick={() => onDelete(ev)}>🗑</button>
+                  {onEdit && <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" disabled={busy} onClick={() => onEdit(ev)}>✎</button>}
+                  {onToggle && <button className="btn btn-sm btn-ghost" title={ev.done ? 'סמן כלא בוצע' : 'סמן כבוצע'} disabled={busy} onClick={() => onToggle(ev)}>{ev.done ? '↩' : '✓'}</button>}
+                  {onDelete && <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }} disabled={busy} onClick={() => onDelete(ev)}>🗑</button>}
                 </div>
                 <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 6 }}>{ev.material}</div>
                 {row('תאריך / טווח', ev.days > 1 ? `${formatDate(ev.start)} – ${formatDate(ev.end)} (${ev.days} ימים)` : formatDate(ev.start))}
@@ -664,5 +756,171 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
         </form>
       </div>
     </div>
+  );
+}
+
+
+// ============================================================
+// לשונית הרשימה — התצוגה התפעולית (חיפוש · פעולות · ייצוא)
+// ============================================================
+function ListTab({ rows, search, setSearch, canEdit, busy, limit, onMore, onOpen, onEdit, onToggle, onDelete }) {
+  const rangeLabel = (e) => (e.start.getTime() === e.end.getTime()
+    ? formatDate(e.start) : `${formatDate(e.start)} – ${formatDate(e.end)}`);
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+        <input className="input no-print" aria-label="חיפוש טיפול" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <span className="muted" style={{ fontSize: 13 }}>{formatNumber(rows.length, 0)} טיפולים</span>
+      </div>
+      {rows.length === 0 ? <div className="empty-state"><div className="icon">🧴</div>אין נתונים לתקופה זו</div> : (
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>תאריך</th><th>סוג</th><th>מבנה</th><th>חומר</th><th>גידול / זן</th><th>מינון</th><th>סטטוס</th><th>בוצע</th>
+                {canEdit && <th className="no-print">פעולות</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, limit).map((e) => {
+                const c = TYPES[e.type] || TYPES['אחר'];
+                return (
+                  <tr key={e.id} style={{ cursor: 'pointer' }} onClick={() => onOpen(e)}>
+                    <td style={{ whiteSpace: 'nowrap' }}>{rangeLabel(e)}</td>
+                    <td><span className="badge" style={{ background: c.bg, border: `1px solid ${c.border}` }}>{c.label}</span></td>
+                    <td>{e.structNames.length ? e.structNames.map((n, i) => <span key={i} className="obj-chip static">🏗️ {n}</span>) : 'לא זמין'}</td>
+                    <td style={{ fontWeight: 600 }}>{e.material}</td>
+                    <td>{[e.crop === 'לא זמין' ? '' : e.crop, e.variety].filter(Boolean).join(' · ') || '—'}</td>
+                    <td>{e.dosage != null && e.dosage !== '' ? `${formatNumber(e.dosage)}${e.basis ? ` (${e.basis})` : ''}` : '—'}</td>
+                    <td>{e.status || '—'}</td>
+                    <td><span className={`badge ${e.done ? 'badge-ok' : 'badge-warn'}`}>{e.done ? '✓ בוצע' : '● לא בוצע'}</span></td>
+                    {canEdit && (
+                      <td className="no-print" onClick={(ev2) => ev2.stopPropagation()}>
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <button className="btn btn-sm btn-ghost" disabled={busy} aria-label={e.done ? 'סמן כלא בוצע' : 'סמן כבוצע'} title={e.done ? 'סמן כלא בוצע' : 'סמן כבוצע'} onClick={() => onToggle(e)}>{e.done ? '↩' : '✓'}</button>
+                          <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={() => onEdit(e)}>✎</button>
+                          <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }} onClick={() => onDelete(e)}>🗑</button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {rows.length > limit && (
+        <div style={{ textAlign: 'center', marginTop: 12 }}>
+          <button className="btn btn-ghost no-print" onClick={onMore}>הצג עוד ({formatNumber(rows.length - limit, 0)})</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// לשונית חומרי הריסוס (סעיף 20 באיפיון)
+// ============================================================
+function MaterialsTab({ materials, search, setSearch, canEdit, api, onChanged, onEdit }) {
+  const list = materials.filter((m) => !search || String(m['שם חומר'] || '').toLowerCase().includes(search.toLowerCase()));
+  return (
+    <>
+      <div className="filter-bar no-print">
+        <input className="input" aria-label="חיפוש חומר" placeholder="חיפוש חומר..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{formatNumber(list.length, 0)} חומרים</span>
+      </div>
+      <div className="grid">
+        {list.length === 0 && <div className="empty-state" style={{ gridColumn: '1 / -1' }}><div className="icon">🧪</div>אין נתונים לתקופה זו</div>}
+        {list.map((m) => (
+          <div key={m.id} className="card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <b style={{ fontSize: 16 }}>🧪 {m['שם חומר'] || 'חומר'}</b>
+              {m['יחידת תמחור'] && <span className="badge" style={{ background: 'var(--spray-soft)', color: 'var(--spray)' }}>{m['יחידת תמחור']}</span>}
+            </div>
+            <div style={{ fontSize: 14 }}>
+              {m['מחיר'] != null && <div className="obj-row"><span className="obj-row-label">מחיר</span><span className="obj-row-value">{formatMoney(m['מחיר'])}</span></div>}
+              {m['גודל האריזה'] != null && <div className="obj-row"><span className="obj-row-label">גודל אריזה</span><span className="obj-row-value">{formatNumber(m['גודל האריזה'])}</span></div>}
+              {m['מינון בסמ"ק'] != null && <div className="obj-row"><span className="obj-row-label">מינון ברירת מחדל</span><span className="obj-row-value">{formatNumber(m['מינון בסמ"ק'])}</span></div>}
+              {m['מחיר לדונם בריסוס'] != null && <div className="obj-row"><span className="obj-row-label">מחיר לדונם</span><span className="obj-row-value">{formatMoney(m['מחיר לדונם בריסוס'])}</span></div>}
+            </div>
+            {canEdit && (
+              <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+                <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={() => onEdit(m)}>✎</button>
+                <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
+                  onClick={async () => {
+                    if (await removeRecord(api, 'חומרי ריסוס', m.id, m['שם חומר'] || 'החומר')) await onChanged();
+                  }}>🗑</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+// ============================================================
+// לשונית הדוחות — טיפולים שמקורם בדוח סרוק (כרטיסים עם פעולות)
+// ============================================================
+function ReportsTab({ events, search, setSearch, canEdit, busy, onEdit, onToggle, onDelete }) {
+  const rows = events
+    .filter((e) => (Array.isArray(e.raw['דוח ריסוסים']) && e.raw['דוח ריסוסים'].length) || e.raw['פירוק טבלת דוח (AI ניתוח טבלה)'])
+    .filter((e) => {
+      if (!search) return true;
+      const hay = [e.material, e.structNames.join(' '), e.crop, e.variety, e.status].join(' ').toLowerCase();
+      return hay.includes(search.toLowerCase());
+    })
+    .sort((a, b) => b.start - a.start);
+  const rangeLabel = (e) => (e.start.getTime() === e.end.getTime()
+    ? formatDate(e.start) : `${formatDate(e.start)} – ${formatDate(e.end)}`);
+  return (
+    <>
+      <div className="filter-bar no-print">
+        <input className="input" aria-label="חיפוש" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{formatNumber(rows.length, 0)} טיפולים מדוחות</span>
+      </div>
+      {rows.length === 0 ? (
+        <div className="empty-state">
+          <div className="icon">📄</div>
+          <div>אין טיפולים מדוחות ריסוסים</div>
+          <div style={{ fontSize: 13, marginTop: 6 }}>העלו דוח במסך "העלאת מסמך" והטיפולים יופיעו כאן</div>
+        </div>
+      ) : (
+        <div className="grid">
+          {rows.map((e) => {
+            const c = TYPES[e.type] || TYPES['אחר'];
+            const doc = Array.isArray(e.raw['דוח ריסוסים']) && e.raw['דוח ריסוסים'][0];
+            return (
+              <div key={e.id} className="card" style={{ borderRight: `4px solid ${c.border}` }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <b>🧴 {e.material}</b>
+                  <span className={`badge ${e.done ? 'badge-ok' : 'badge-warn'}`}>{e.done ? '✓ בוצע' : '● לא בוצע'}</span>
+                </div>
+                <div style={{ fontSize: 13.5, color: 'var(--text-secondary)', display: 'grid', gap: 3 }}>
+                  <div>תאריך: <b style={{ color: 'var(--text-main)' }}>{rangeLabel(e)}</b></div>
+                  {e.structNames.length > 0 && (
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                      מבנה: {e.structNames.map((n, i) => <span key={i} className="obj-chip static">🏗️ {n}</span>)}
+                    </div>
+                  )}
+                  {e.crop !== 'לא זמין' && <div>גידול / זן: {[e.crop, e.variety].filter(Boolean).join(' · ')}</div>}
+                  {e.dosage != null && e.dosage !== '' && <div>מינון: {formatNumber(e.dosage)}{e.basis ? ` (${e.basis})` : ''}</div>}
+                  {e.status && <div>סטטוס: {e.status}</div>}
+                  {doc && <div>📎 <a href={doc.url} target="_blank" rel="noopener noreferrer">{doc.filename || 'קובץ הדוח'}</a></div>}
+                </div>
+                {canEdit && (
+                  <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+                    <button className="btn btn-sm btn-ghost" disabled={busy} onClick={() => onToggle(e)}>{e.done ? '↩' : '✓ בוצע'}</button>
+                    <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={() => onEdit(e)}>✎</button>
+                    <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }} onClick={() => onDelete(e)}>🗑</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </>
   );
 }

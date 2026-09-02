@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { t, monthShort } from '../i18n.js';
 import { useApp } from '../App.jsx';
+import { workHours , workTypeName } from '../utils/field.js';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
@@ -48,6 +49,8 @@ export default function WorkersPage() {
   const location = useLocation();
   const [params, setParams] = useSearchParams();
   const [tab, setTab] = useState(params.get('tab') === 'jobs' ? 'jobs' : 'workers');
+  // ניווט עם ?tab= בזמן שהמסך פתוח — הטאב מסתנכרן
+  useEffect(() => { setTab(params.get('tab') === 'jobs' ? 'jobs' : 'workers'); }, [params]);
   const [workers, setWorkers] = useState([]);
   const [workRecords, setWorkRecords] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -83,7 +86,7 @@ export default function WorkersPage() {
   }, [location.state]);
 
   // סיוע: שעות וסכום
-  const hoursOf = (arr) => arr.reduce((s, r) => s + (Number(r['סכום שעות'] ?? r['שעות']) || 0), 0);
+  const hoursOf = (arr) => arr.reduce((s, r) => s + workHours(r), 0);
   const paidOf = (arr) => arr.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0);
 
   // עבודות עובד ספציפי
@@ -237,7 +240,7 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
 
   const workerName = (r) => displayName(r['עובד'], '');
   const structName = (r) => displayName(r['מבנה'], '');
-  const workType = (r) => r['סוג עבודה (from תמחור עבודות)'] ?? '';
+  const workType = (r) => workTypeName(r);
   const unit = (r) => r['יחידת תמחור (from תמחור עבודות)'];
 
   const filtered = useMemo(() => works.filter((r) => {
@@ -252,7 +255,7 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
   }).sort((a, b) => String(b['תאריך'] || '').localeCompare(String(a['תאריך'] || ''))), [works, search, fWorker, from, to]);
 
   const totalPaid = filtered.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0);
-  const totalHours = filtered.reduce((s, r) => s + (Number(r['סכום שעות']) || 0), 0);
+  const totalHours = filtered.reduce((s, r) => s + workHours(r), 0);
   const hasFilters = search || fWorker || from || to;
 
   // "רענן מחיר" (סעיף 15): עדכון מחיר=false → true → המתנה לאוטומציה → קריאה מחדש.
@@ -520,7 +523,7 @@ function WorkerDetails({ worker, records, onClose }) {
     return true;
   }), [records, from, to]);
 
-  const totalHours = filtered.reduce((s, r) => s + (Number(r['סכום שעות'] ?? r['שעות']) || 0), 0);
+  const totalHours = filtered.reduce((s, r) => s + workHours(r), 0);
   const totalPaid = filtered.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0);
   const workDays = new Set(filtered.map((r) => (r['תאריך'] ? new Date(r['תאריך']).toDateString() : 'x'))).size;
   const avgPerDay = workDays ? totalPaid / workDays : 0;
@@ -552,7 +555,7 @@ function WorkerDetails({ worker, records, onClose }) {
       const d = new Date(r['תאריך']);
       if (Number.isNaN(d.getTime())) return;
       const k = `${d.getDate()}/${d.getMonth() + 1}`;
-      b[k] = (b[k] || 0) + (Number(r['סכום שעות'] ?? r['שעות']) || 0);
+      b[k] = (b[k] || 0) + workHours(r);
     });
     return Object.entries(b).sort((a, b) => a[0] > b[0] ? 1 : -1).map(([k, v]) => ({ label: k, value: Math.round(v) }));
   };
@@ -569,7 +572,7 @@ function WorkerDetails({ worker, records, onClose }) {
   const byWorkType = (field) => {
     const b = {};
     filtered.forEach((r) => {
-      const k = r['סוג עבודה (from תמחור עבודות)'] ?? 'אחר';
+      const k = workTypeName(r, 'אחר');
       b[k] = (b[k] || 0) + (Number(r[field === 'hours' ? 'סכום שעות' : 'סכום לתשלום']) || 0);
     });
     return Object.entries(b).map(([k, v]) => ({ name: k, value: Math.round(v) }));

@@ -41,6 +41,11 @@ export default function FinancePage() {
   const [loading, setLoading] = useState(true);
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTabState] = useState(() => TAB_KEYS[searchParams.get('tab')] || 'סקירה');
+  // ניווט עם ?tab= בזמן שהמסך פתוח — הטאב מסתנכרן
+  useEffect(() => {
+    const wanted = TAB_KEYS[searchParams.get('tab')];
+    if (wanted) setTabState(wanted);
+  }, [searchParams]);
   const setTab = (name) => {
     setTabState(name);
     const next = new URLSearchParams(searchParams);

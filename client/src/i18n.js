@@ -242,6 +242,8 @@ export const translations = {
 
 let currentLang = 'he';
 export const setLang = (lang) => { currentLang = lang; };
+export const getLang = () => currentLang;
+
 export const t = (key) => {
   const entry = translations[key];
   if (!entry) return key;

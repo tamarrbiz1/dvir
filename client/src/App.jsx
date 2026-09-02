@@ -21,9 +21,7 @@ import WorkerRequestsPage from './pages/WorkerRequestsPage.jsx';
 import PricingPage from './pages/PricingPage.jsx';
 import CropsPage from './pages/CropsPage.jsx';
 import NonWorkDaysPage from './pages/NonWorkDaysPage.jsx';
-import SprayReportsPage from './pages/SprayReportsPage.jsx';
 import HarvestsPage from './pages/HarvestsPage.jsx';
-import SprayingPage from './pages/SprayingPage.jsx';
 import TreatmentsPage from './pages/TreatmentsPage.jsx';
 import InventoryPage from './pages/InventoryPage.jsx';
 import SuppliersPage from './pages/SuppliersPage.jsx';
@@ -214,7 +212,7 @@ export default function App() {
       const badWeeks = list(weeks).filter((w) =>
         (w['סטטוס התאמה'] && w['סטטוס התאמה'] !== 'תקין')
         || (w['סטטוס התאמת קטיף'] && !String(w['סטטוס התאמת קטיף']).includes('תקין'))
-        || w['שגיאת חישוב קג לפי מבנים']).length;
+        || String(w['שגיאת חישוב קג לפי מבנים'] || '').trim()).length;
       setBadges({ requests: pending, alerts: pending + low + badWeeks });
     };
     refresh();
@@ -331,9 +329,9 @@ export default function App() {
               <Route path="/workers" element={<WorkersPage />} />
               <Route path="/requests" element={<WorkerRequestsPage />} />
               <Route path="/harvests" element={<HarvestsPage />} />
-              <Route path="/spraying" element={<SprayingPage />} />
-              <Route path="/materials" element={<SprayingPage initialTab="materials" />} />
-              <Route path="/treatments" element={<TreatmentsPage />} />
+              <Route path="/spraying" element={<TreatmentsPage initialTab="list" />} />
+              <Route path="/materials" element={<TreatmentsPage initialTab="materials" />} />
+              <Route path="/treatments" element={<TreatmentsPage initialTab="calendar" />} />
               <Route path="/inventory" element={<InventoryPage />} />
               <Route path="/suppliers" element={<SuppliersPage />} />
               <Route path="/finance" element={<FinancePage />} />
@@ -344,7 +342,7 @@ export default function App() {
               <Route path="/weekly" element={<WeeklySummaryPage />} />
               <Route path="/alerts" element={<AlertsPage />} />
               <Route path="/nonworkdays" element={<NonWorkDaysPage />} />
-              <Route path="/spray-reports" element={<SprayReportsPage />} />
+              <Route path="/spray-reports" element={<TreatmentsPage initialTab="reports" />} />
               <Route path="/upload" element={<UploadDocumentPage />} />
               {/* מסלול בדיקה של אפליקציית העובד (לבעל העסק) */}
               <Route path="/worker" element={<WorkerApp />} />

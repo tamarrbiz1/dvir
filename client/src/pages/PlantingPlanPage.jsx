@@ -156,6 +156,7 @@ function DateRow({ label, value, changed }) {
 // ============================================================
 export default function PlantingPlanPage() {
   const app = useApp();
+  const canEdit = (app.user?.role || 'owner') === 'owner'; // מנהל עבודה צופה בלבד
 
   const [plans, setPlans] = useState([]);
   const [periods, setPeriods] = useState([]);
@@ -665,7 +666,7 @@ export default function PlantingPlanPage() {
     <div>
       {/* ---------- כותרת, שנה ופילטרים (סעיף 46) ---------- */}
       <PageHeader icon="🌱" title={`תוכנית שתילה — ${year}`}>
-        <button className="btn btn-primary" onClick={() => openNewPlan(null)}>+ תוכנית חדשה</button>
+        {canEdit && <button className="btn btn-primary" onClick={() => openNewPlan(null)}>+ תוכנית חדשה</button>}
         <button className="btn btn-ghost" onClick={() => setShowNonWork(true)}>🗓️ ימי אי עבודה</button>
       </PageHeader>
 
@@ -879,6 +880,7 @@ export default function PlantingPlanPage() {
           info={planInfo(planDrawer)}
           forecasts={forecasts.filter((f) => firstId(f['תוכנית שתילה']) === planDrawer.id)}
           periods={periods.filter((p) => firstId(p['תוכנית שתילה']) === planDrawer.id)}
+          canWrite={canEdit}
           onDeletePeriod={async (p) => {
             const yes = await confirmDialog({
               title: 'מחיקת תקופה',
@@ -1066,7 +1068,7 @@ export default function PlantingPlanPage() {
               <button type="button" className="drawer-close" onClick={() => setShowNonWork(false)} aria-label="סגירה" title="סגירה">✕</button>
             </div>
             <div className="drawer-body">
-              <NonWorkQuickAdd app={app} year={year} onChanged={() => load({ silent: true })} onRecalc={recalcYearPlans} />
+              {canEdit && <NonWorkQuickAdd app={app} year={year} onChanged={() => load({ silent: true })} onRecalc={recalcYearPlans} />}
               <div className="table-wrap">
                 <table className="data-table">
                   <thead><tr><th>תאריך</th><th>חג</th><th>סוג החג</th></tr></thead>
@@ -1184,7 +1186,7 @@ function CalendarGrid({ days, leadingBlanks, tall, eventsOnDate, nonWorkByKey, o
 // ============================================================
 // כרטיס תוכנית (סעיפים 14–15)
 // ============================================================
-function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate, onDeletePeriod }) {
+function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate, onDeletePeriod, canWrite = true }) {
   useEscapeClose(onClose, !busy); // סגירה במקש Escape
   const pairs = [
     ['תחילת שתילה', 'תחילת שתילה מקורית', 'תחילת שתילה מעודכנת'],
@@ -1277,6 +1279,28 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
             )}
           </div>
 
+          {forecasts.length > 0 && (() => {
+            const totKg = forecasts.reduce((s2, f) => s2 + (num(f[KG_EXPECTED]) || 0), 0);
+            const totRev = forecasts.reduce((s2, f) => s2 + (num(f['הכנסה צפויה']) || 0), 0);
+            const totAct = forecasts.reduce((s2, f) => s2 + (num(f['קג בפועל']) || 0), 0);
+            return (
+              <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(3,1fr)', marginBottom: 14 }}>
+                <div className="kpi-card" style={{ padding: '12px 14px' }}>
+                  <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>סה"כ צפוי לתוכנית</span></div>
+                  <div className="kpi-value" style={{ fontSize: 19, color: 'var(--planned)' }}>{fmt(totKg)} ק"ג</div>
+                </div>
+                <div className="kpi-card" style={{ padding: '12px 14px' }}>
+                  <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>בוצע עד כה</span></div>
+                  <div className="kpi-value" style={{ fontSize: 19, color: 'var(--actual)' }}>{totAct ? `${fmt(totAct)} ק"ג` : 'טרם'}</div>
+                </div>
+                <div className="kpi-card" style={{ padding: '12px 14px' }}>
+                  <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>הכנסה צפויה</span></div>
+                  <div className="kpi-value" style={{ fontSize: 19, color: 'var(--revenue)' }}>{formatMoney(Math.round(totRev))}</div>
+                </div>
+              </div>
+            );
+          })()}
+
           <div className="card" style={{ marginBottom: 14 }}>
             <div className="section-title" style={{ marginTop: 0 }}>תקופות</div>
             {periods.length === 0 ? (
@@ -1306,9 +1330,9 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
                                 : (p['מקור'] || 'לא זמין')}
                             </td>
                             <td className="no-print">
-                              <button className="btn btn-sm btn-ghost" aria-label="מחיקת התקופה" title="מחיקת התקופה"
+                              {canWrite && <button className="btn btn-sm btn-ghost" aria-label="מחיקת התקופה" title="מחיקת התקופה"
                                 style={{ color: 'var(--error)' }} disabled={busy}
-                                onClick={() => onDeletePeriod(p)}>🗑</button>
+                                onClick={() => onDeletePeriod(p)}>🗑</button>}
                             </td>
                           </tr>
                         );
@@ -1319,12 +1343,12 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
             )}
           </div>
 
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {canWrite && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button className="btn btn-primary" disabled={busy} onClick={onEdit}>עריכת תוכנית</button>
             <button className="btn btn-ghost" disabled={busy} onClick={onShift}>הזז תוכנית</button>
             <button className="btn btn-ghost" disabled={busy} onClick={onPeriod}>שינוי תקופה</button>
             <button className="btn btn-ghost" disabled={busy} onClick={onDuplicate}>שכפול תוכנית</button>
-          </div>
+          </div>}
         </div>
       </div>
     </div>
@@ -1880,6 +1904,21 @@ function PlanSheet({
     return map;
   }, [forecasts, allWeeks, weekIndexOf]);
 
+  // ---- סה"כ צפוי לכל תוכנית (ק"ג + הכנסה) — כמו בעמודת הסיכום באקסל ----
+  const planTotals = useMemo(() => {
+    const m = new Map();
+    for (const f of forecasts) {
+      const pid = firstId(f['תוכנית שתילה']);
+      if (!pid) continue;
+      const cur = m.get(pid) || { kg: 0, revenue: 0, actual: 0 };
+      cur.kg += num(f[KG_EXPECTED]) || 0;
+      cur.revenue += num(f['הכנסה צפויה']) || 0;
+      cur.actual += num(f['קג בפועל']) || 0;
+      m.set(pid, cur);
+    }
+    return m;
+  }, [forecasts]);
+
   // ---- שורות המבנים ----
   const rows = useMemo(() => {
     const byStructure = new Map();
@@ -2131,12 +2170,24 @@ function PlanSheet({
 
             {rows.map((row) => (
               <tr key={row.id}>
-                <th className="ps-rowhead">{row.name}</th>
+                <th className="ps-rowhead">
+                  <div>{row.name}</div>
+                  {row.plans.map((r) => {
+                    const t = planTotals.get(r.plan.id);
+                    if (!t || !t.kg) return null;
+                    return (
+                      <div key={r.plan.id} className="ps-plan-total" title={`${r.info.crop}: צפי ${fmt(t.kg)} ק"ג · הכנסה צפויה ${formatMoney(Math.round(t.revenue))}`}>
+                        {r.info.icon} {fmt(t.kg)} ק"ג
+                      </div>
+                    );
+                  })}
+                </th>
                 <th className="ps-rowhead ps-dunam">{row.dunam !== null ? formatNumber(row.dunam, 2) : ''}</th>
                 {weeks.map((w) => {
                   const items = cellOf(row, w);
                   if (!items.length) return <td key={w.key} className={isCurrentWeek(w) ? 'ps-today-col' : ''} />;
                   const main = items[0];
+                  const weekPassed = w.end < today;
                   const style = main.phase === 'harvest'
                     ? { background: SHEET_HARVEST.bg, color: SHEET_HARVEST.text }
                     : { background: SHEET_PLANT.bg, color: SHEET_PLANT.text };
@@ -2153,11 +2204,13 @@ function PlanSheet({
                         <>
                           {mode !== 'actual' && <div className="ps-exp">{main.expected === null ? '—' : fmt(main.expected)}</div>}
                           {mode !== 'plan' && (main.actual !== null
-                            ? <div className="ps-act">{fmt(main.actual)}</div>
-                            : (mode === 'actual' && <div className="ps-exp" style={{ color: 'var(--text-muted)', fontWeight: 400 }}>טרם</div>))}
+                            ? <div className="ps-act">✓ {fmt(main.actual)}</div>
+                            : (weekPassed
+                              ? <div className="ps-pending">טרם</div>
+                              : (mode === 'actual' && <div className="ps-exp" style={{ color: 'var(--text-muted)', fontWeight: 400 }}>עתידי</div>)))}
                         </>
                       ) : (
-                        <div className="ps-plant-label">{main.label}</div>
+                        <div className="ps-plant-label">{weekPassed ? '✓ ' : ''}{main.label || (weekPassed && mode !== 'plan' ? '✓' : '')}</div>
                       )}
                       {items.length > 1 && (
                         <div className="ps-more" role="button" tabIndex={0} title="פתיחת התוכנית הנוספת בתא"
@@ -2244,7 +2297,10 @@ function PlanSheet({
         <LegendSwatch bg={SHEET_PLANT.bg} border="#E5A900" label="שתילה וגידול (תאריך השתילה בתא הראשון)" />
         <LegendSwatch bg={SHEET_HARVEST.bg} border="#2E9B62" label='קטיף — ק"ג צפוי' />
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-          <b style={{ color: ACTUAL_COLOR }}>1,234</b> ק"ג בפועל (מתחת לצפוי)
+          <b style={{ color: ACTUAL_COLOR }}>✓ 1,234</b> בוצע (ק"ג בפועל)
+        </span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <b className="ps-pending" style={{ position: 'static' }}>טרם</b> שבוע שעבר ללא דיווח
         </span>
         <LegendSwatch bg={SHEET_HOLIDAY_BG} border="#F04444" label="חג / יום אי עבודה" />
       </div>

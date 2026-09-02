@@ -207,6 +207,39 @@ await test('העלאת מסמך: קובץ → רשומה עם צרופה', async
   return 'קובץ מוצמד';
 });
 
+// ---- טיפול מהטופס המשותף: כמה מבנים + טווח (התחלה בשדה, סיום בהערות) ----
+await test('טיפול משותף: רב-מבני + טווח + סטטוס', async () => {
+  const statusOpts = await api('GET', `select-options/${enc('ריסוסים')}/${enc('סטטוס')}`).catch(() => ({ choices: [] }));
+  const sIds = structures.slice(0, 2).map((x) => x.id);
+  const rec = await create('ריסוסים', {
+    'תאריך': today,
+    'מבנה': sIds,
+    'חומר ריסוס': [mId],
+    'מינון ': 120,
+    ...(statusOpts.choices?.[0] ? { 'סטטוס': statusOpts.choices[0] } : {}),
+    'הערות': `${MARK}\nתאריך סיום: 05/12/2026`,
+  });
+  const back = await api('GET', `${enc('ריסוסים')}/${rec.id}`);
+  if (!Array.isArray(back['מבנה']) || back['מבנה'].length !== sIds.length) throw new Error('קישורי המבנים לא נשמרו');
+  if (!String(back['הערות'] || '').includes('תאריך סיום')) throw new Error('סימון סוף הטווח לא נשמר');
+  return `${sIds.length} מבנים + טווח`;
+});
+
+// ---- ספק עם שדות בחירה אמיתיים (select + multi-select) ----
+await test('ספק: תנאי תשלום (בחירה) + תחום אספקה (רב-בחירה)', async () => {
+  const pay = await api('GET', `select-options/${enc('ספקים')}/${enc('תנאי תשלום')}`);
+  const domain = await api('GET', `select-options/${enc('ספקים')}/${enc('תחום אספקה')}`);
+  const rec = await create('ספקים', {
+    'שם ספק': MARK + '-select',
+    'תנאי תשלום': pay.choices[0],
+    'תחום אספקה': domain.choices.slice(0, 2),
+  });
+  const back = await api('GET', `${enc('ספקים')}/${rec.id}`);
+  if (back['תנאי תשלום'] !== pay.choices[0]) throw new Error('תנאי התשלום לא נשמרו');
+  if (!Array.isArray(back['תחום אספקה']) || back['תחום אספקה'].length !== 2) throw new Error('תחום האספקה לא נשמר');
+  return `${pay.choices[0]} + 2 תחומים`;
+});
+
 // ---- הרשאות מנהל (מקור אמת בצד השרת) ----
 await test('כניסת מנהל: מייל+קוד נכונים → תפקיד מהטבלה', async () => {
   const admins = await get('הרשאת מנהל', '?raw=1');

@@ -1,3 +1,4 @@
+import { workHours , workTypeName } from '../utils/field.js';
 // ============================================================
 // מסך בית לעובד — כרטיסי רווחים
 // ============================================================
@@ -38,7 +39,7 @@ export default function WorkerHome({ api, worker }) {
   const monthRecs = mine.filter((r) => inMonth(r, 0));
   const prevRecs = mine.filter((r) => inMonth(r, -1));
 
-  const hours = (arr) => arr.reduce((s, r) => s + (Number(r['סכום שעות'] ?? r['שעות']) || 0), 0);
+  const hours = (arr) => arr.reduce((s, r) => s + workHours(r), 0);
   const paid = (arr) => arr.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0);
 
   const cards = [
@@ -90,7 +91,7 @@ export default function WorkerHome({ api, worker }) {
                     {mine.slice(-15).reverse().map((r) => (
                       <tr key={r.id}>
                         <td>{formatDate(r['תאריך'])}</td>
-                        <td>{r['סוג עבודה (from תמחור עבודות)'] ?? '—'}</td>
+                        <td>{workTypeName(r, '—')}</td>
                         <td>{structureName(r['מבנה'])}</td>
                         <td>{formatNumber(r['כמות'])}</td>
                         <td>{formatNumber(r['סכום שעות'])}</td>

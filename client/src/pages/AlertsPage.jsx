@@ -58,7 +58,7 @@ export default function AlertsPage() {
       const harvest = parseJson(w['JSON התאמת קטיף לתעודות משלוח']);
       const status = w['סטטוס התאמה'];
       const harvestStatus = w['סטטוס התאמת קטיף'];
-      const calcErr = w['שגיאת חישוב קג לפי מבנים'];
+      const calcErr = String(w['שגיאת חישוב קג לפי מבנים'] || '').trim();
       const notes = parseArray(w['רשימת הערות התאמה']);
 
       // א. סטטוס מסמכים לא תקין
@@ -77,17 +77,18 @@ export default function AlertsPage() {
       if (Array.isArray(daily)) {
         daily.forEach((d) => {
           const note = d.note || d['הערה'] || d.notes;
-          if (note && String(note).toLowerCase().includes('קרטון')) out.push({ week: code, type: String(note).slice(0, 60), cat: 'cartonDiff', label: String(note).slice(0, 60) });
-          if (note && String(note).toLowerCase().includes('משקל')) out.push({ week: code, type: String(note).slice(0, 60), cat: 'weightDiff', label: String(note).slice(0, 60) });
+          if (note && String(note).toLowerCase().includes('קרטון')) out.push({ week: code, type: String(note), cat: 'cartonDiff', label: String(note) });
+          if (note && String(note).toLowerCase().includes('משקל')) out.push({ week: code, type: String(note), cat: 'weightDiff', label: String(note) });
         });
       }
       // ה. רשימת הערות נוספות
       if (Array.isArray(notes)) {
         notes.forEach((n) => {
-          const s = String(n);
-          if (s.includes('קרטון')) out.push({ week: code, type: s.slice(0, 60), cat: 'cartonDiff', label: s.slice(0, 60) });
-          else if (s.includes('חשבונית')) out.push({ week: code, type: s.slice(0, 60), cat: 'missingInvoice', label: s.slice(0, 60) });
-          else out.push({ week: code, type: s.slice(0, 60), cat: 'harvestDiff', label: s.slice(0, 60) });
+          const s = String(n).replace(/^\d+\.\s*/, ''); // בלי המספור הטכני
+          const cat = s.includes('קרטון') ? 'cartonDiff'
+            : (s.includes('חסרה תעודת') || s.includes('חסרה חשבונית') || s.includes('חשבונית')) ? 'missingInvoice'
+            : s.includes('משקל') ? 'weightDiff' : 'harvestDiff';
+          out.push({ week: code, type: s, cat, label: s });
         });
       }
     });
@@ -196,7 +197,7 @@ export default function AlertsPage() {
                         <tr key={i} onClick={() => (a.open ? navigate(a.open) : a.week && setWeek(weeks.find((w) => w['קוד שבוע'] === a.week)))}>
                           <td><b>{a.week}</b></td>
                           <td><span className="badge" style={{ background: (cat?.color || '#888') + '22', color: cat?.color }}>{cat?.label || a.cat}</span></td>
-                          <td style={{ fontSize: 13 }}>{a.type}</td>
+                          <td style={{ fontSize: 13, whiteSpace: 'normal', maxWidth: 480, lineHeight: 1.5 }}>{a.type}</td>
                           <td>
                             {a.open
                               ? <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); navigate(a.open); }} aria-label={`פתיחת ${a.objectLabel}`}>🧾 פתח אובייקט</button>
@@ -305,9 +306,11 @@ function parseJson(v) {
 }
 function parseArray(v) {
   if (!v) return [];
-  if (Array.isArray(v)) return v;
+  if (Array.isArray(v)) return v.map(String).filter(Boolean);
   try {
     const p = JSON.parse(v);
-    return Array.isArray(p) ? p : [String(p)];
-  } catch { return [String(v)]; }
+    if (Array.isArray(p)) return p.map(String).filter(Boolean);
+  } catch {}
+  // טקסט רב-שורות (כמו בסיכום השבועי) — כל שורה היא הערה נפרדת
+  return String(v).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 }

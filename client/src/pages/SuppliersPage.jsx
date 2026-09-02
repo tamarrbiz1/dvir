@@ -27,8 +27,8 @@ const SUPPLIER_FIELDS = [
   { name: 'טלפון', label: 'טלפון', type: 'text' },
   { name: 'אימייל', label: 'אימייל', type: 'text' },
   { name: 'כתובת', label: 'כתובת', type: 'text' },
-  { name: 'תחום אספקה', label: 'תחום אספקה', type: 'text' },
-  { name: 'תנאי תשלום', label: 'תנאי תשלום', type: 'text' },
+  { name: 'תחום אספקה', label: 'תחום אספקה', type: 'multiselect' },
+  { name: 'תנאי תשלום', label: 'תנאי תשלום', type: 'select' },
   { name: 'הערות', label: 'הערות', type: 'textarea' },
 ];
 
@@ -103,7 +103,7 @@ export default function SuppliersPage() {
     { label: 'טלפון', get: (s) => s['טלפון'] || '' },
     { label: 'אימייל', get: (s) => s['אימייל'] || '' },
     { label: 'כתובת', get: (s) => s['כתובת'] || '' },
-    { label: 'תחום אספקה', get: (s) => s['תחום אספקה'] || '' },
+    { label: 'תחום אספקה', get: (s) => (Array.isArray(s['תחום אספקה']) ? s['תחום אספקה'].join(' · ') : s['תחום אספקה']) || '' },
     { label: 'תנאי תשלום', get: (s) => s['תנאי תשלום'] || '' },
   ], filtered);
 
@@ -132,7 +132,7 @@ export default function SuppliersPage() {
               <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
                 {s['איש קשר'] && <div>איש קשר: {s['איש קשר']}</div>}
                 {s['טלפון'] && <div>טלפון: {s['טלפון']}</div>}
-                {s['תחום אספקה'] && <div>{s['תחום אספקה']}</div>}
+                {s['תחום אספקה'] && <div>{Array.isArray(s['תחום אספקה']) ? s['תחום אספקה'].join(' · ') : s['תחום אספקה']}</div>}
               </div>
               {canEdit && (
                 <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
@@ -211,7 +211,7 @@ function SupplierDrawer({ supplier, expenses, checks, inventory, canEdit, onAddD
 function DetailsTab({ s, canEdit, onAddDetails, onEdit }) {
   const rows = SUPPLIER_FIELDS
     .filter((f) => f.name !== 'הערות')
-    .map((f) => [f.label, s[f.name]])
+    .map((f) => [f.label, Array.isArray(s[f.name]) ? s[f.name].join(' · ') : s[f.name]])
     .filter(([, v]) => v != null && v !== '');
   const hasMissing = SUPPLIER_FIELDS.some((f) => s[f.name] == null || s[f.name] === '');
 

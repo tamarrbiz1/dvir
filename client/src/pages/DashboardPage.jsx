@@ -11,7 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
-import { expenseCategory } from '../utils/field.js';
+import { expenseCategory , workHours } from '../utils/field.js';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, CartesianGrid,
@@ -147,7 +147,7 @@ export default function DashboardPage() {
   const kPallets = fDays.reduce((s, d) => s + d.pallets, 0);
   const activeStructures = data.structures.filter((s) => String(s['סטטוס המבנה'] || '').startsWith('חלקה שתולה')).length;
   const kLabor = fWorks.reduce((s, r) => s + num(r['סכום לתשלום']), 0);
-  const kHours = fWorks.reduce((s, r) => s + num(r['סכום שעות'] ?? r['שעות']), 0);
+  const kHours = fWorks.reduce((s, r) => s + workHours(r), 0);
   const kActiveWorkers = new Set(fWorks.map((r) => {
     const ref = r['עובד'];
     return Array.isArray(ref) ? (ref[0]?.id ?? ref[0]) : ref;
@@ -339,7 +339,7 @@ export default function DashboardPage() {
         const has = (v, k) => String(v || '').includes(k);
         const missingDocs = data.weeks.filter((w) => has(w['סטטוס התאמה'], 'חסר')).length;
         const mismatches = data.weeks.filter((w) => has(w['סטטוס התאמה'], 'אי התאמה') || has(w['סטטוס התאמת קטיף'], 'אי התאמה')).length;
-        const calcErrors = data.weeks.filter((w) => w['שגיאת חישוב קג לפי מבנים']).length;
+        const calcErrors = data.weeks.filter((w) => String(w['שגיאת חישוב קג לפי מבנים'] || '').trim()).length;
         const active = missingDocs + mismatches + calcErrors;
         const cards = [
           { label: 'התראות פעילות', value: active, icon: '🔔', to: '/alerts', color: active ? 'var(--error)' : 'var(--ok)', bg: 'var(--error-soft)' },

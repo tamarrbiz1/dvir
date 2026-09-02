@@ -33,7 +33,13 @@ export default function WorkerRequests({ api, worker, onEnterWork, initialOpen =
   }, [api]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { const id = setInterval(load, 60 * 1000); return () => clearInterval(id); }, [load]);
+  // תשובת המנהל מגיעה בזמן אמת: רענון כל 15 שניות + בכל חזרה לאפליקציה
+  useEffect(() => {
+    const id = setInterval(() => { if (!document.hidden) load(); }, 15 * 1000);
+    const onVis = () => { if (!document.hidden) load(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVis); };
+  }, [load]);
 
   const mine = useMemo(() => items
     .filter((r) => firstId(r[REQUEST_FIELDS.worker]) === workerId && !r[REQUEST_FIELDS.hidden])

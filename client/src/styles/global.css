@@ -977,19 +977,19 @@ textarea.input {
   z-index: 2;
   text-align: right;
   font-weight: 700;
-  min-width: 128px;
+  min-width: 156px;
   background: var(--bg-secondary);
   border-right: 1px solid var(--border);
 }
 .plan-sheet .ps-dunam {
-  right: 128px;
+  right: 156px;
   min-width: 52px;
   text-align: center;
   font-weight: 500;
   color: var(--text-secondary);
 }
 .plan-sheet thead .ps-corner { z-index: 5; }
-.plan-sheet thead .ps-rowhead.ps-dunam { right: 128px; }
+.plan-sheet thead .ps-rowhead.ps-dunam { right: 156px; }
 .plan-sheet .ps-section th { background: #E8F1FF; color: var(--planned); }
 .plan-sheet .ps-section td { background: #F7FAFF; height: 22px; }
 
@@ -1008,7 +1008,7 @@ textarea.input {
 .plan-sheet .ps-actual-row td.ps-num { background: #F3FBF6; }
 .plan-sheet .ps-month-row td.ps-month-total { background: #EEF2F7; border-left: 2px solid #B9C7D6; }
 .plan-sheet .ps-year-row td.ps-year-total { background: #E6F0FA; text-align: right; padding-right: 10px; font-weight: 800; }
-.plan-sheet .ps-year-text { position: sticky; right: 190px; display: inline-block; }
+.plan-sheet .ps-year-text { position: sticky; right: 220px; display: inline-block; }
 .plan-sheet .ps-clickable { cursor: pointer; }
 .plan-sheet .ps-clickable:hover { text-decoration: underline; }
 
@@ -1360,3 +1360,17 @@ th.sortable.active .sort-ind { color: var(--weight); }
 /* תרשים מבנה — מבט מלמעלה */
 .structure-topview { direction: ltr; }
 .structure-topview .gable:hover { fill-opacity: 0.55; }
+
+/* גיליון שנתי — סה"כ צפוי לכל תוכנית בסרגל המבנים, ו"טרם" לשבוע שעבר */
+.plan-sheet .ps-plan-total {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--harvest);
+  white-space: nowrap;
+}
+.plan-sheet .ps-pending {
+  font-size: 10px;
+  font-weight: 700;
+  color: #B42318;
+  line-height: 1.1;
+}
