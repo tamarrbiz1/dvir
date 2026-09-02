@@ -79,6 +79,20 @@ app.get('/api/select-options/:table/:field', async (req, res) => {
 // ============================================================
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
+/**
+ * בדיקת תוכן הקובץ לפי "מספרי קסם" (magic bytes) — לא לפי סיומת/MIME שהדפדפן
+ * מדווח (ניתנים לזיוף, למשל טקסט רגיל שנשמר בשם "קובץ.pdf"). מוודאת שהקובץ
+ * הוא באמת PDF/JPEG/PNG לפני יצירת רשומה ב-Airtable ושליחה ל-Make לניתוח.
+ */
+function isValidDocumentFile(buffer) {
+  if (!buffer || buffer.length < 4) return false;
+  const b = buffer;
+  if (b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46) return true; // "%PDF"
+  if (b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return true; // JPEG
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return true; // PNG
+  return false;
+}
+
 app.post('/api/upload-document', upload.single('file'), async (req, res) => {
   try {
     const { table, field, weekCode } = req.body;
@@ -87,6 +101,9 @@ app.post('/api/upload-document', upload.single('file'), async (req, res) => {
     // מגבלת נקודת הקצה של Airtable להעלאת קובץ בבקשה אחת
     if (req.file.size > 5 * 1024 * 1024) {
       return res.status(400).json({ error: 'הקובץ גדול מ-5MB. יש להעלות קובץ קטן יותר (תמונות מוקטנות אוטומטית).' });
+    }
+    if (!isValidDocumentFile(req.file.buffer)) {
+      return res.status(400).json({ error: 'הקובץ אינו תקין. יש להעלות PDF, JPG או PNG תקין.', invalidFile: true });
     }
 
     // 1) יצירת הרשומה (עם קוד שבוע כשנדרש) 2) העלאת הקובץ אליה.

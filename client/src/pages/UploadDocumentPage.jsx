@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatDate, formatMoney, formatNumber } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
+import { removeRecord } from '../components/RecordForm.jsx';
 
 // ============================================================
 // העלאת מסמך — "גרסה סופית" באיפיון (שורות 3845–4118)
@@ -100,6 +101,7 @@ function weekOf(start) {
 
 export default function UploadDocumentPage() {
   const app = useApp();
+  const canEdit = (app.user?.role || 'owner') === 'owner'; // מנהל עבודה צופה בלבד
   const location = useLocation();
   // הגעה ממסך אחר עם סוג מסמך מוכן (למשל "העלאת תעודה" ממסך תעודות משלוח)
   const [topic, setTopic] = useState(() => TOPICS.find((t) => t.label === location.state?.docType)?.key ?? null);
@@ -129,7 +131,8 @@ export default function UploadDocumentPage() {
       app.api.get(t.table, '?maxRecords=60&raw=1').then((d) => (Array.isArray(d) ? d : [])
         .filter((r) => Array.isArray(r[t.field]) && r[t.field].length)
         .map((r) => ({
-          key, label: TOPICS.find((x) => x.key === key)?.label || t.table,
+          key, id: r.id, table: t.table,
+          label: TOPICS.find((x) => x.key === key)?.label || t.table,
           date: r[t.dateField] || r['תאריך'] || r['תאריך העלאת קובץ'] || '',
           uploadedAt: r[t.uploadedField] || r[t.dateField] || '',
           week: r['קוד שבוע'] || '',
@@ -206,6 +209,9 @@ export default function UploadDocumentPage() {
       if (needsWeek) fd.append('weekCode', week.code);
       const r = await fetch('/api/upload-document', { method: 'POST', body: fd });
       const data = await r.json().catch(() => ({}));
+      // קובץ פגום/לא רלוונטי (למשל טקסט שנשמר בשם "קובץ.pdf") — הודעה ברורה,
+      // בלי ניסוח טכני, ובלי שנוצרה רשומה כלשהי ב-Airtable (השרת בדק לפני היצירה)
+      if (data.invalidFile) { setStatus('error'); setMessage(data.error || 'הקובץ אינו תקין.'); return; }
       if (!r.ok || data.error) throw new Error(data.error || `שגיאה ${r.status}`);
       // הצלחה מוצגת רק אחרי ש-Airtable החזיר את הרשומה שנוצרה בפועל
       const recId = data.record?.id;
@@ -359,7 +365,7 @@ export default function UploadDocumentPage() {
         ) : (
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>נושא</th><th>קובץ</th><th>תאריך העלאה</th><th>תאריך מסמך</th><th>שבוע</th><th>סטטוס</th></tr></thead>
+              <thead><tr><th>נושא</th><th>קובץ</th><th>תאריך העלאה</th><th>תאריך מסמך</th><th>שבוע</th><th>סטטוס</th>{canEdit && <th className="no-print" />}</tr></thead>
               <tbody>
                 {history.map((h, i) => {
                   const meta = TOPICS.find((t) => t.key === h.key);
@@ -371,6 +377,15 @@ export default function UploadDocumentPage() {
                       <td>{h.date ? formatDate(h.date) : 'לא זמין'}</td>
                       <td style={{ direction: 'ltr', textAlign: 'right' }}>{h.week || '—'}</td>
                       <td>{h.analyzed ? <span className="badge badge-ok">נותח</span> : <span className="badge badge-warn">ממתין לעיבוד</span>}</td>
+                      {canEdit && (
+                        <td className="no-print">
+                          <button type="button" className="btn btn-sm btn-ghost" aria-label={`מחיקת ${h.label}`} title="מחיקה"
+                            style={{ color: 'var(--error)' }}
+                            onClick={async () => {
+                              if (await removeRecord(app.api, h.table, h.id, h.label)) loadHistory();
+                            }}>🗑</button>
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
