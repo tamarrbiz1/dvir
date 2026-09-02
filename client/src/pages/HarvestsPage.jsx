@@ -357,7 +357,7 @@ function HarvestForm({ api, structures, record, onClose, onSaved }) {
         <h3 style={{ textAlign: 'center' }}>{record ? 'עריכת קטיף' : 'קטיף חדש'}</h3>
         {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12 }}>⚠️ {error}</div>}
         <form onSubmit={submit}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 12px' }}>
+          <div className="form-grid-2" style={{ gap: '0 12px' }}>
             <div className="form-group"><label className="required">תאריך</label>
               <input type="date" className="input" style={{ width: '100%' }} value={date} onChange={(e) => setDate(e.target.value)} /></div>
             <div className="form-group"><label className="required">מבנה</label>

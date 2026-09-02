@@ -1222,7 +1222,9 @@ function CalendarGrid({ days, leadingBlanks, tall, eventsOnDate, nonWorkByKey, o
   const minHeight = tall ? 150 : 86;
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', fontSize: 12 }}>
+    // גלילה אופקית בטלפון במקום כיווץ 7 העמודות לבלתי-קריא (min-width שומר על תא קריא)
+    <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', fontSize: 12, minWidth: 560 }}>
       {['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'].map((d) => (
         <div key={d} style={{
           padding: 6, textAlign: 'center', background: 'var(--bg-secondary)',
@@ -1283,6 +1285,7 @@ function CalendarGrid({ days, leadingBlanks, tall, eventsOnDate, nonWorkByKey, o
           </div>
         );
       })}
+    </div>
     </div>
   );
 }

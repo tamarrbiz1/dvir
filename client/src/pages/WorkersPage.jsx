@@ -169,7 +169,7 @@ export default function WorkersPage() {
                   </div>
                   <span className={`badge ${w['סטטוס'] === 'פעיל' ? 'badge-ok' : 'badge-warn'}`}>{w['סטטוס'] || t('c_notAvailable')}</span>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, fontSize: 13 }}>
+                <div className="form-grid-2" style={{ gap: 6, fontSize: 13 }}>
                   <div><span style={{ color: 'var(--text-muted)' }}>{t('m_hoursMonth')}: </span><b>{formatNumber(hoursOf(cur))}</b></div>
                   <div><span style={{ color: 'var(--text-muted)' }}>{t('m_jobs')}: </span><b>{cur.length}</b></div>
                   <div><span style={{ color: 'var(--text-muted)' }}>{t('m_earnedMonth')}: </span><b style={{ color: 'var(--revenue)' }}>{formatMoney(paidOf(cur))}</b></div>
@@ -467,7 +467,7 @@ function WorkForm({ api, workers, record, onClose, onSaved }) {
         <h3 style={{ textAlign: 'center' }}>{record ? 'עריכת עבודה' : 'עבודה חדשה'}</h3>
         {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12 }}>⚠️ {error}</div>}
         <form onSubmit={submit}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 12px' }}>
+          <div className="form-grid-2" style={{ gap: '0 12px' }}>
             <div className="form-group"><label className="required">תאריך</label>
               <input type="date" className="input" style={{ width: '100%' }} value={date} onChange={(e) => setDate(e.target.value)} /></div>
             <div className="form-group"><label className="required">עובד</label>

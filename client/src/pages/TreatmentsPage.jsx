@@ -533,7 +533,8 @@ function MonthGrid({ year, month, onDate, onOpen }) {
   const count = new Date(year, month + 1, 0).getDate();
   const lead = new Date(year, month, 1).getDay();
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', fontSize: 12 }}>
+    <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', fontSize: 12, minWidth: 560 }}>
       {DAYS.map((d) => <div key={d} style={{ padding: 6, textAlign: 'center', background: 'var(--bg-secondary)', fontWeight: 600, borderBottom: '1px solid var(--border)' }}>{d}</div>)}
       {Array.from({ length: lead }).map((_, i) => <div key={`b${i}`} style={{ minHeight: 92, background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }} />)}
       {Array.from({ length: count }, (_, i) => new Date(year, month, i + 1)).map((day) => {
@@ -554,6 +555,7 @@ function MonthGrid({ year, month, onDate, onOpen }) {
         );
       })}
     </div>
+    </div>
   );
 }
 
@@ -561,7 +563,8 @@ function WeekGrid({ weekStart, onDate, onOpen }) {
   const today = startOfToday();
   const days = Array.from({ length: 7 }, (_, i) => new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + i));
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', fontSize: 12 }}>
+    <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', fontSize: 12, minWidth: 560 }}>
       {days.map((day) => {
         const evs = onDate(day);
         const isToday = day.getTime() === today.getTime();
@@ -576,6 +579,7 @@ function WeekGrid({ weekStart, onDate, onOpen }) {
           </div>
         );
       })}
+    </div>
     </div>
   );
 }

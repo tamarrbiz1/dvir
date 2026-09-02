@@ -875,12 +875,20 @@ button.nav-item {
   }
 }
 
+/* --- רשת 2 עמודות משותפת (טפסים/כרטיסי-סטטיסטיקה) — משמשת בכמה מסכים
+   במקום סגנון inline חוזר, כדי שהמדיה-קווארי למטה תוכל לכווץ לעמודה אחת --- */
+.form-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
 /* --- מסכי טלפון צרים: עמודה אחת בכל רשת כרטיסים, בלי לגלוש --- */
 @media (max-width: 560px) {
   .kpi-grid,
   .grid,
   .grid-2,
-  .chart-pair {
+  .chart-pair,
+  .form-grid-2 {
     grid-template-columns: 1fr !important;
   }
   .topbar h1 { font-size: 22px; }

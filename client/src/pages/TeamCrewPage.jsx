@@ -174,7 +174,7 @@ export default function TeamCrewPage() {
             {perWorker.map((w) => (
               <div key={w.id} className="card clickable" {...activatable(() => navigate('/workers', { state: { openWorkerId: w.id } }), `פתיחת כרטיס העובד ${w.name}`)}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>👤 {w.name}</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, fontSize: 13 }}>
+                <div className="form-grid-2" style={{ gap: 6, fontSize: 13 }}>
                   <div><span style={{ color: 'var(--text-muted)' }}>{t('w_hours')}: </span><b>{formatNumber(w.hours)}</b></div>
                   <div><span style={{ color: 'var(--text-muted)' }}>{t('m_jobs')}: </span><b>{w.jobs}</b></div>
                   <div style={{ gridColumn: '1 / -1' }}><span style={{ color: 'var(--text-muted)' }}>{t('m_income')}: </span><b style={{ color: 'var(--revenue)' }}>{formatMoney(w.paid)}</b></div>
