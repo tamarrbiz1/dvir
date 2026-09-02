@@ -24,7 +24,6 @@ export const NAV_GROUPS = [
       { to: '/spraying', icon: '🧴', labelKey: 'spraying' },
       { to: '/materials', icon: '🧪', labelKey: 'sprayMaterials' },
       { to: '/spray-reports', icon: '📋', labelKey: 'sprayReports' },
-      { to: '/treatments', icon: '📅', labelKey: 'treatments' },
     ],
   },
   {
@@ -119,7 +118,7 @@ const PARENT_ROUTE = {
   '/materials': '/spraying',
   '/planting': '/structures',
   '/nonworkdays': '/planting',
-  '/treatments': '/planting',
+  '/treatments': '/spraying',
   '/harvests': '/crops',
   '/spray-reports': '/spraying',
   '/crew': '/workers',

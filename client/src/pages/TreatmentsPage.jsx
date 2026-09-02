@@ -101,9 +101,15 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
   const app = useApp();
   const navigate = useNavigate();
   const canEdit = (app.user?.role || 'owner') === 'owner'; // מנהל עבודה צופה בלבד
-  const [tab, setTab] = useState(initialTab);
+  // "list" הייתה פעם לשונית עליונה נפרדת; היום היא תצוגה בתוך "calendar" (לצד חודש/שבוע) —
+  // נשמרת תאימות לאחור לקישורים/ניווטים ישנים שמעבירים initialTab="list"
+  const [tab, setTab] = useState(initialTab === 'list' ? 'calendar' : initialTab);
+  const [view, setView] = useState(initialTab === 'list' ? 'list' : 'calendar');
   // מעבר מלשונית צד ללשונית צד אחרת של אותו מסך — הטאב מסתנכרן מהניתוב
-  useEffect(() => { setTab(initialTab); }, [initialTab]);
+  useEffect(() => {
+    setTab(initialTab === 'list' ? 'calendar' : initialTab);
+    if (initialTab === 'list') setView('list');
+  }, [initialTab]);
   const [listSearch, setListSearch] = useState('');
   const [materialSearch, setMaterialSearch] = useState('');
   const [reportSearch, setReportSearch] = useState('');
@@ -118,7 +124,6 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
-  const [view, setView] = useState('calendar');
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth());
@@ -266,7 +271,8 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       material: r ? firstId(r['חומר ריסוס']) || '' : '',
       plan: typeof r?.['תוכנית שתילה'] === 'string' ? r['תוכנית שתילה'] : '',
       sprayer: r?.['סוג מרסס'] || '',
-      sprayerSize: r?.['גודל מרסס בליטר'] || '',
+      // ברירת מחדל לטיפול חדש: 200 ליטר (הגודל הנפוץ בפועל) — בעריכת טיפול קיים מוצג הערך השמור בפועל
+      sprayerSize: ev ? (r?.['גודל מרסס בליטר'] || '') : '200',
       basis: r?.['בסיס מינון'] || '',
       dosage: r ? (pick(r, DOSAGE_FIELDS) ?? '') : '',
       status: r?.['סטטוס'] || '',
@@ -332,21 +338,21 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
   const filtersActive = fStructure || fCrop || fVariety || fType;
 
   if (loading) {
-    return <div><PageHeader icon="📅" title="תכנון טיפולים" /><div className="skeleton skeleton-chart" /></div>;
+    return <div><PageHeader icon="🧴" title="ריסוסים וטיפולים" /><div className="skeleton skeleton-chart" /></div>;
   }
 
   return (
     <div>
       <PageHeader icon="🧴" title="ריסוסים וטיפולים">
-        {tab === 'list' && <button type="button" className="btn btn-ghost no-print" onClick={() => window.print()}>🖨️ הדפסה</button>}
-        {tab === 'list' && <button type="button" className="btn btn-ghost no-print" onClick={exportList} disabled={!listRows.length}>⬇️ ייצוא</button>}
+        {tab === 'calendar' && <button type="button" className="btn btn-ghost no-print" onClick={() => window.print()}>🖨️ הדפסה</button>}
+        {tab === 'calendar' && <button type="button" className="btn btn-ghost no-print" onClick={exportList} disabled={!listRows.length}>⬇️ ייצוא</button>}
         {tab === 'reports' && <button className="btn btn-primary no-print" onClick={() => navigate('/upload', { state: { docType: 'דוח ריסוסים' } })}>⬆️ העלאת דוח</button>}
         {tab === 'materials' && canEdit && <button className="btn btn-primary no-print" onClick={() => setMaterialForm({})}>+ חומר חדש</button>}
-        {(tab === 'calendar' || tab === 'list') && canEdit && <button className="btn btn-primary no-print" onClick={() => openForm(null)}>+ טיפול חדש</button>}
+        {tab === 'calendar' && canEdit && <button className="btn btn-primary no-print" onClick={() => openForm(null)}>+ טיפול חדש</button>}
       </PageHeader>
 
       <div className="tabs no-print" style={{ marginBottom: 16 }}>
-        {[['calendar', '📅 לוח שנה'], ['list', '📋 רשימה'], ['materials', '🧪 חומרי ריסוס'], ['reports', '📄 דוחות']].map(([k, l]) => (
+        {[['calendar', '📅 טיפולים'], ['materials', '🧪 חומרי ריסוס'], ['reports', '📄 דוחות']].map(([k, l]) => (
           <button key={k} className={`tab ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>{l}</button>
         ))}
       </div>
@@ -355,7 +361,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       {actionError && !form && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {actionError}</div>}
 
       {/* KPI — סעיף 25 */}
-      {(tab === 'calendar' || tab === 'list') && <>
+      {tab === 'calendar' && <>
       <div className="kpi-grid" style={{ marginBottom: 16 }}>
         {[
           { l: 'מספר טיפולים', v: kpi.total, c: 'var(--spray)', i: '🧴' },
@@ -386,21 +392,23 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
 
       {tab === 'calendar' && <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
         <div className="tabs">
-          {[['calendar', '🗓️ חודש'], ['week', '📆 שבוע']].map(([k, l]) => (
+          {[['calendar', '🗓️ חודש'], ['week', '📆 שבוע'], ['list', '📋 רשימה']].map(([k, l]) => (
             <button key={k} className={`tab ${view === k ? 'active' : ''}`} onClick={() => setView(k)}>{l}</button>
           ))}
         </div>
         <div style={{ flex: 1 }} />
-        <div style={{ display: 'flex', gap: 14, fontSize: 12, flexWrap: 'wrap' }}>
-          {Object.values(TYPES).map((t) => (
-            <span key={t.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-              <span style={{ width: 12, height: 12, background: t.bg, border: `2px solid ${t.border}`, borderRadius: 3 }} />{t.label}
+        {view !== 'list' && (
+          <div style={{ display: 'flex', gap: 14, fontSize: 12, flexWrap: 'wrap' }}>
+            {Object.values(TYPES).map((t) => (
+              <span key={t.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ width: 12, height: 12, background: t.bg, border: `2px solid ${t.border}`, borderRadius: 3 }} />{t.label}
+              </span>
+            ))}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 12, height: 12, background: TODAY_BG, border: `2px solid ${TODAY_BORDER}`, borderRadius: 3 }} />פעיל היום
             </span>
-          ))}
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-            <span style={{ width: 12, height: 12, background: TODAY_BG, border: `2px solid ${TODAY_BORDER}`, borderRadius: 3 }} />פעיל היום
-          </span>
-        </div>
+          </div>
+        )}
       </div>}
 
       {tab === 'calendar' && view === 'calendar' && (
@@ -429,7 +437,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
         </div>
       )}
 
-      {tab === 'list' && (
+      {tab === 'calendar' && view === 'list' && (
         <ListTab
           rows={listRows} search={listSearch} setSearch={setListSearch}
           canEdit={canEdit} busy={busy}

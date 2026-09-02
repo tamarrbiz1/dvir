@@ -18,7 +18,7 @@ export const translations = {
   planting: { he: 'תוכנית שתילה', th: 'แผนการปลูก' },
   crops: { he: 'גידולים ותחזיות', th: 'พืชผลและการคาดการณ์' },
   harvests: { he: 'קטיפים', th: 'การเก็บ' },
-  spraying: { he: 'ריסוסים', th: 'การพ่นยา' },
+  spraying: { he: 'ריסוסים וטיפולים', th: 'การพ่นยาและการดูแล' },
   sprayReports: { he: 'דוחות ריסוסים', th: 'รายงานการพ่นยา' },
   sprayMaterials: { he: 'חומרי ריסוס', th: 'สารพ่นยา' },
   treatments: { he: 'תכנון טיפולים', th: 'การวางแผนดูแล' },
