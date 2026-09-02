@@ -38,6 +38,9 @@ export default function NonWorkDaysPage() {
   const [formError, setFormError] = useState('');
 
   const [year, setYear] = useState(String(new Date().getFullYear()));
+  const yearValid = /^\d{4}$/.test(year);
+  // שנה בטוחה לחישובים (לוח שנה וכו') — נופלת לשנה הנוכחית כל עוד המשתמש עדיין מקליד שנה לא-שלמה
+  const yearNum = yearValid ? Number(year) : new Date().getFullYear();
   const [view, setView] = useState('list');
   const [importing, setImporting] = useState(false);
   const [preview, setPreview] = useState(null); // {label, type, items:[{iso,he,checked}]}
@@ -67,13 +70,6 @@ export default function NonWorkDaysPage() {
 
   const jewishType = holidayTypes.find((t) => kindOf(t) === 'jewish') || '';
   const thaiType = holidayTypes.find((t) => kindOf(t) === 'thai') || '';
-
-  const yearsAvailable = useMemo(() => {
-    const set = new Set(items.map((i) => String(i['תאריך'] || '').slice(0, 4)).filter(Boolean));
-    const y = new Date().getFullYear();
-    [y - 1, y, y + 1].forEach((n) => set.add(String(n)));
-    return [...set].sort();
-  }, [items]);
 
   const visible = useMemo(
     () => items
@@ -153,8 +149,8 @@ export default function NonWorkDaysPage() {
   // ימי שישי — יום המנוחה במשק (עובדים במוצאי שבת, לכן שבתות אינן מיובאות)
   const fridaysOfYear = () => {
     const out = [];
-    const d = new Date(Number(year), 0, 1);
-    while (d.getFullYear() === Number(year)) { if (d.getDay() === 5) out.push({ iso: toISO(d), he: 'יום שישי' }); d.setDate(d.getDate() + 1); }
+    const d = new Date(yearNum, 0, 1);
+    while (d.getFullYear() === yearNum) { if (d.getDay() === 5) out.push({ iso: toISO(d), he: 'יום שישי' }); d.setDate(d.getDate() + 1); }
     return out;
   };
 
@@ -171,19 +167,23 @@ export default function NonWorkDaysPage() {
     <div>
       <PageHeader icon="🗓️" title={`ימי אי עבודה — ${year}`}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <select className="select" aria-label="בחירת שנה" value={year} onChange={(e) => { setYear(e.target.value); setNotice(''); }}>
-            {yearsAvailable.map((y) => <option key={y} value={y}>{y}</option>)}
-          </select>
+          <input
+            className="input" style={{ width: 90, textAlign: 'center' }}
+            aria-label="שנה" title="שנה" type="text" inputMode="numeric" pattern="\d{4}" maxLength={4}
+            value={year}
+            onChange={(e) => { setYear(e.target.value.replace(/\D/g, '').slice(0, 4)); setNotice(''); }}
+          />
           <button className="btn btn-primary" disabled={!holidayTypes.length} onClick={() => openAdd()}>+ הוסף יום</button>
-          <button className="btn btn-ghost" disabled={importing || !jewishType} onClick={() => openImportPreview(jewishHolidaysOfYear(Number(year)), jewishType, 'חגי ישראל')}>
+          <button className="btn btn-ghost" disabled={importing || !jewishType || !yearValid} onClick={() => openImportPreview(jewishHolidaysOfYear(yearNum), jewishType, 'חגי ישראל')}>
             {importing ? 'מייבא...' : `✡️ ייבא חגי ישראל ${year}`}
           </button>
-          <button className="btn btn-ghost" disabled={importing || !thaiType} onClick={() => openImportPreview(thaiHolidaysOfYear(Number(year)), thaiType, 'חגי תאילנד')}>
+          <button className="btn btn-ghost" disabled={importing || !thaiType || !yearValid} onClick={() => openImportPreview(thaiHolidaysOfYear(yearNum), thaiType, 'חגי תאילנד')}>
             🇹🇭 ייבא חגי תאילנד
           </button>
-          <button className="btn btn-ghost" disabled={importing || !jewishType} onClick={() => openImportPreview(fridaysOfYear(), jewishType, 'ימי שישי')}>
+          <button className="btn btn-ghost" disabled={importing || !jewishType || !yearValid} onClick={() => openImportPreview(fridaysOfYear(), jewishType, 'ימי שישי')}>
             🕯️ ייבא ימי שישי
           </button>
+          {!yearValid && <span className="muted" style={{ fontSize: 12, alignSelf: 'center' }}>יש להקליד שנה בת 4 ספרות</span>}
         </div>
       </PageHeader>
 
@@ -271,7 +271,7 @@ export default function NonWorkDaysPage() {
           )}
         </div>
       ) : (
-        <YearCalendar year={Number(year)} byDate={byDate} onDay={(iso, rec) => (rec ? openEdit(rec) : openAdd(iso))} />
+        <YearCalendar year={yearNum} byDate={byDate} onDay={(iso, rec) => (rec ? openEdit(rec) : openAdd(iso))} />
       )}
 
       {form && (
