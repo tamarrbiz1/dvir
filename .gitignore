@@ -48,3 +48,6 @@ client/node_modules/.vite/
 
 # SSH keys of the zite system user - never commit
 .ssh/
+
+# Reference source files kept on the server only, not in git
+docs/baruch-planting-plan.xlsx

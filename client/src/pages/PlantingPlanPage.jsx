@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
@@ -88,6 +88,28 @@ function num(value) {
 
 const quarterInfo = (q) => QUARTERS.find((x) => x.q === Number(q)) || null;
 const quarterOfDate = (d) => QUARTERS.find((q) => q.months.includes(d.getMonth()));
+
+const WEEKDAY_HE = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+
+/**
+ * פירוק "קג צפוי" שבועי לימים — חלוקה שווה על-פני מספר הימים האמיתי בטווח
+ * (כולל), לפי תחילת/סוף שבוע כפי שחושבו ב-Airtable. אין הנחת קבוע של 6/7 ימים:
+ * שבוע חלקי (למשל תחילת/סוף תוכנית) מחולק במספר הימים שבאמת קיימים בו.
+ */
+function splitWeekToDays(startStr, endStr, total) {
+  const start = parseDate(startStr);
+  const end = parseDate(endStr);
+  if (!start || !end || total === null || total === undefined) return [];
+  const dayCount = Math.round((end - start) / 86400000) + 1;
+  if (dayCount <= 0) return [];
+  const perDay = total / dayCount;
+  const out = [];
+  for (let i = 0; i < dayCount; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    out.push({ date: d, key: dateKey(d), weekday: WEEKDAY_HE[d.getDay()], value: perDay });
+  }
+  return out;
+}
 
 const startOfToday = () => {
   const d = new Date();
@@ -1188,6 +1210,7 @@ function CalendarGrid({ days, leadingBlanks, tall, eventsOnDate, nonWorkByKey, o
 // ============================================================
 function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate, onDeletePeriod, canWrite = true }) {
   useEscapeClose(onClose, !busy); // סגירה במקש Escape
+  const [openWeek, setOpenWeek] = useState(null); // מזהה רשומת תחזית שפתוחה לפירוט יומי
   const pairs = [
     ['תחילת שתילה', 'תחילת שתילה מקורית', 'תחילת שתילה מעודכנת'],
     ['סוף שתילה', 'סוף שתילה מקורי', 'סוף שתילה מעודכן'],
@@ -1250,6 +1273,7 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
                 <table className="data-table">
                   <thead>
                     <tr>
+                      <th />
                       <th>שבוע</th><th>רבעון</th><th>קג לדונם</th><th>שטח בדונם</th>
                       <th>ימי קטיף</th><th>קג צפוי</th><th>קג בפועל</th><th>מחיר לקג</th><th>הכנסה צפויה</th>
                     </tr>
@@ -1257,20 +1281,58 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
                   <tbody>
                     {sorted.map((f) => {
                       const a = actualKg(f);
+                      const isOpen = openWeek === f.id;
+                      const days = isOpen ? splitWeekToDays(f['תחילת שבוע'], f['סוף שבוע'], num(f[KG_EXPECTED])) : [];
                       return (
-                        <tr key={f.id}>
-                          <td>{f['שבוע'] || formatDate(f['תחילת שבוע'])}</td>
-                          <td><QuarterBadge q={f['רבעון']} /></td>
-                          <td>{formatNumber(num(f['קג לדונם לשבוע (from תפוקה רבעונית)']))}</td>
-                          <td>{formatNumber(num(f['שטח בדונם (from מבנה) (from תוכנית שתילה)']))}</td>
-                          <td>{formatNumber(num(f['ימי קטיף פעילים']), 0)}</td>
-                          <td style={{ color: PLANNED_COLOR, fontWeight: 600 }}>{formatNumber(num(f[KG_EXPECTED]), 0)}</td>
-                          <td style={{ color: a.received ? ACTUAL_COLOR : 'var(--text-muted)', fontWeight: 600 }}>
-                            {a.received ? formatNumber(a.value, 0) : 'טרם'}
-                          </td>
-                          <td>{formatMoney(num(f['מחיר לקג מעודכן']))}</td>
-                          <td>{formatMoney(num(f['הכנסה צפויה']))}</td>
-                        </tr>
+                        <Fragment key={f.id}>
+                          <tr style={{ cursor: 'pointer' }} onClick={() => setOpenWeek(isOpen ? null : f.id)}>
+                            <td style={{ width: 20, color: 'var(--text-muted)' }}>{isOpen ? '▾' : '▸'}</td>
+                            <td>{f['שבוע'] || formatDate(f['תחילת שבוע'])}</td>
+                            <td><QuarterBadge q={f['רבעון']} /></td>
+                            <td>{formatNumber(num(f['קג לדונם לשבוע (from תפוקה רבעונית)']))}</td>
+                            <td>{formatNumber(num(f['שטח בדונם (from מבנה) (from תוכנית שתילה)']))}</td>
+                            <td>{formatNumber(num(f['ימי קטיף פעילים']), 0)}</td>
+                            <td style={{ color: PLANNED_COLOR, fontWeight: 600 }}>{formatNumber(num(f[KG_EXPECTED]), 0)}</td>
+                            <td style={{ color: a.received ? ACTUAL_COLOR : 'var(--text-muted)', fontWeight: 600 }}>
+                              {a.received ? formatNumber(a.value, 0) : 'טרם'}
+                            </td>
+                            <td>{formatMoney(num(f['מחיר לקג מעודכן']))}</td>
+                            <td>{formatMoney(num(f['הכנסה צפויה']))}</td>
+                          </tr>
+                          {isOpen && (
+                            <tr key={`${f.id}-days`}>
+                              <td />
+                              <td colSpan={9} style={{ padding: '10px 14px', background: 'var(--bg-secondary)' }}>
+                                {days.length === 0 ? (
+                                  <div className="empty-state" style={{ padding: 0 }}>אין תאריכי התחלה/סוף שבוע כדי לפרק לימים.</div>
+                                ) : (
+                                  <>
+                                    <div className="table-wrap">
+                                      <table className="data-table">
+                                        <thead>
+                                          <tr><th>תאריך</th><th>יום</th><th>קג צפוי ליום</th></tr>
+                                        </thead>
+                                        <tbody>
+                                          {days.map((d) => (
+                                            <tr key={d.key}>
+                                              <td>{formatDate(d.key)}</td>
+                                              <td>{d.weekday}</td>
+                                              <td style={{ color: PLANNED_COLOR, fontWeight: 600 }}>{formatNumber(d.value, 1)}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                    <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                                      חלוקה שווה של "קג צפוי" השבועי על-פני {days.length} הימים שבטווח {formatDate(f['תחילת שבוע'])}–{formatDate(f['סוף שבוע'])}.
+                                      פירוט יומי ל"קג בפועל" אינו זמין כרגע — הנתון הקיים הוא רק סך שבועי למבנה זה.
+                                    </div>
+                                  </>
+                                )}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
                       );
                     })}
                   </tbody>
@@ -1287,11 +1349,11 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
               <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(3,1fr)', marginBottom: 14 }}>
                 <div className="kpi-card" style={{ padding: '12px 14px' }}>
                   <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>סה"כ צפוי לתוכנית</span></div>
-                  <div className="kpi-value" style={{ fontSize: 19, color: 'var(--planned)' }}>{fmt(totKg)} ק"ג</div>
+                  <div className="kpi-value" style={{ fontSize: 19, color: 'var(--planned)' }}>{formatNumber(totKg, 0)} ק"ג</div>
                 </div>
                 <div className="kpi-card" style={{ padding: '12px 14px' }}>
                   <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>בוצע עד כה</span></div>
-                  <div className="kpi-value" style={{ fontSize: 19, color: 'var(--actual)' }}>{totAct ? `${fmt(totAct)} ק"ג` : 'טרם'}</div>
+                  <div className="kpi-value" style={{ fontSize: 19, color: 'var(--actual)' }}>{totAct ? `${formatNumber(totAct, 0)} ק"ג` : 'טרם'}</div>
                 </div>
                 <div className="kpi-card" style={{ padding: '12px 14px' }}>
                   <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>הכנסה צפויה</span></div>
