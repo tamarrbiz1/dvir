@@ -12,15 +12,23 @@ import { useEffect, useMemo, useState } from 'react';
 import { confirmDialog } from '../utils/ui.js';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
-import { formatMoney, formatDate } from '../utils/format.js';
+import { formatMoney, formatDate, formatNumber } from '../utils/format.js';
 import { pick } from '../utils/field.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { CHART_MARGIN, GRID_PROPS, xAxisProps, yAxisProps, TOOLTIP_STYLE, LEGEND_STYLE } from '../utils/chart.js';
+import { monthShort } from '../i18n.js';
 import {
   CHECKS_TABLE, CHECK_FIELDS, STATUS,
   checkNumber, checkTitle, checkStatus, isCancelled, isPaid, isPending,
   checkAmount, checkDueDate, checkPayee, checkOwner, checkNotes,
   checkSupplierName, checkSupplierId, checkInvoices, checkExpenses, checkPhoto, sortByDue,
 } from '../utils/checks.js';
+
+// נפרע מול לא נפרע — צבעים עקביים בכל התצוגה (גרף, KPI, תגיות): אותם
+// צבעים בדיוק כמו badge-ok/badge-warn (var(--ok) / var(--warning))
+const PAID_COLOR = '#12B76A';
+const PENDING_COLOR = '#F79009';
 
 const PAGE_SIZE = 50;
 const NO_STATUS = '__none__';
@@ -123,6 +131,28 @@ export default function ChecksTab({ checks, onRefresh }) {
     };
   }, [filtered]);
 
+  // ---- סיכום חודשי (עצמאי מפילטרי הטבלה — תמונה כספית מלאה של השנה) ----
+  const currentYear = new Date().getFullYear();
+  const [chartYear, setChartYear] = useState(String(currentYear));
+  const chartYears = useMemo(() => {
+    const s = new Set([currentYear]);
+    checks.forEach((c) => { const d = checkDueDate(c); if (d) s.add(d.getFullYear()); });
+    return [...s].sort((a, b) => b - a);
+  }, [checks]);
+  const monthlyData = useMemo(() => {
+    const months = MONTHS.map((label, i) => ({ month: monthShort(i), fullLabel: label, monthIdx: i, paid: 0, pending: 0 }));
+    checks.forEach((c) => {
+      if (isCancelled(c)) return;
+      const d = checkDueDate(c);
+      if (!d || String(d.getFullYear()) !== chartYear) return;
+      const bucket = months[d.getMonth()];
+      if (isPaid(c)) bucket.paid += checkAmount(c);
+      else bucket.pending += checkAmount(c);
+    });
+    return months;
+  }, [checks, chartYear]);
+  const monthlyTotal = monthlyData.reduce((s, m) => s + m.paid + m.pending, 0);
+
   const visible = useMemo(
     () => sortByDue(filtered.filter((c) => showCancelled || !isCancelled(c))),
     [filtered, showCancelled],
@@ -148,6 +178,37 @@ export default function ChecksTab({ checks, onRefresh }) {
         <Kpi icon="🗓️" label="לפירעון החודש" value={formatMoney(kpi.dueMonth)} color="var(--revenue)" soft="var(--revenue-soft)" />
         <Kpi icon="🏦" label="סכום לפירעון" value={formatMoney(kpi.totalPending)} sub={`${kpi.pendingCount} צ'קים ממתינים`} color="var(--revenue)" soft="var(--revenue-soft)" />
         <Kpi icon="❌" label="מבוטלים" value={kpi.cancelled} color="var(--error)" soft="var(--error-soft)" />
+      </div>
+
+      {/* ---- סיכום חודשי: כמה יצא (נפרע) וכמה עתיד לצאת (ממתין) בכל חודש ---- */}
+      <div className="card" style={{ marginTop: 18 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
+          <div className="section-title" style={{ margin: 0 }}>סיכום חודשי — נפרע מול ממתין</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>סה"כ {chartYear}: {formatMoney(monthlyTotal)}</span>
+            <select className="select" aria-label="שנה לסיכום החודשי" value={chartYear} onChange={(e) => setChartYear(e.target.value)}>
+              {chartYears.map((y) => <option key={y} value={String(y)}>{y}</option>)}
+            </select>
+          </div>
+        </div>
+        {monthlyTotal === 0 ? (
+          <div className="empty-state">אין צ'קים עם תאריך פירעון בשנת {chartYear}</div>
+        ) : (
+          <div style={{ direction: 'ltr' }}>
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={monthlyData} margin={CHART_MARGIN}>
+                <CartesianGrid {...GRID_PROPS} />
+                <XAxis dataKey="month" {...xAxisProps(12)} />
+                <YAxis {...yAxisProps({ money: true })} />
+                <Tooltip {...TOOLTIP_STYLE} formatter={(v, key) => [formatMoney(v), key === 'paid' ? 'נפרע' : 'ממתין']}
+                  labelFormatter={(_, payload) => payload?.[0]?.payload?.fullLabel || ''} />
+                <Legend wrapperStyle={LEGEND_STYLE} formatter={(key) => (key === 'paid' ? 'נפרע' : 'ממתין')} />
+                <Bar dataKey="paid" name="paid" fill={PAID_COLOR} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="pending" name="pending" fill={PENDING_COLOR} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
       </div>
 
       {/* ---- פילטרים + חיפוש ---- */}
