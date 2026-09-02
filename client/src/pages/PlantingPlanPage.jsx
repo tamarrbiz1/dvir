@@ -33,13 +33,22 @@ const HARVEST = { key: 'קטיף', bg: '#DCF7E7', border: '#2E9B62', label: 'ק�
 const UPDATED_ACCENT = '#3578E5';
 const PLANNED_COLOR = '#3578E5';
 const ACTUAL_COLOR = '#168A55';
+const PENDING_COLOR = '#E5A900'; // שבוע/יום שעבר בלי דיווח — דורש תשומת לב
+const FUTURE_COLOR = '#98A2B3';  // עתיד — עדיין לא רלוונטי
 const KG_PER_CARTON = 12.3; // משקל ממוצע לקרטון (ק"ג)
 const KG_PER_PALLET = 690; // "משטח שבועי" בגיליון הלקוח: 3,750 ק"ג = 5.43 משטחים
+
+// שלוש הוריאציות המחייבות של תוכנית השתילה — משמעות אחידה בכל תצוגה
+// (הגיליון השבועי ולוח השנה היומי כאחד), עם תג קבוע שמבהיר תמיד היכן נמצאים.
+const MODE_META = {
+  plan: { label: 'תכנון', icon: '📋', color: PLANNED_COLOR, soft: '#E8F1FF', explain: 'לפי השדות המקוריים בלבד — מה שתוכנן מלכתחילה' },
+  actual: { label: 'בפועל', icon: '✅', color: ACTUAL_COLOR, soft: '#E5F7EE', explain: 'לפי השדות המעודכנים ונתונים אמיתיים מהמסמכים בלבד' },
+  combined: { label: 'משולב', icon: '🔀', color: UPDATED_ACCENT, soft: '#EEF2FF', explain: 'עד היום: מה שבאמת קרה (מעודכן) · מהיום ואילך: מה שמתוכנן (מקורי)' },
+};
 
 // צבעי הגיליון השנתי — כמו בקובץ האקסל של הלקוח: צהוב = שתילה/גידול, ירוק = קטיף
 const SHEET_PLANT = { bg: '#FFF06A', text: '#5C4A00' };
 const SHEET_HARVEST = { bg: '#8FE0A6', text: '#0F3D22' };
-const SHEET_VARIETY_BG = '#D6F5DE';
 const SHEET_HOLIDAY_BG = '#FFD6D6';
 
 const QUARTERS = [
@@ -77,6 +86,25 @@ function parseDate(value) {
 
 const dateKey = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+/**
+ * טווחי שתילה/קטיף מקוריים ומעודכנים לתוכנית — משותף לגיליון השבועי וללוח
+ * היומי, כדי ששתי התצוגות יסתמכו על אותה הגדרה בדיוק לכל וריאציה.
+ */
+function computePlanRanges(plan) {
+  const rangesOf = (startField, endField) => {
+    const s = parseDate(plan?.[startField]);
+    if (!s) return [];
+    const e = parseDate(plan?.[endField]) || s;
+    return [[s, e]];
+  };
+  return {
+    plantOriginal: rangesOf('תחילת שתילה מקורית', 'סוף שתילה מקורי'),
+    plantUpdated: rangesOf('תחילת שתילה מעודכנת', 'סוף שתילה מעודכן'),
+    harvestOriginal: rangesOf('תחילת קטיף מקורית', 'סוף קטיף מקורי'),
+    harvestUpdated: rangesOf('תחילת קטיף מעודכנת', 'סוף קטיף מעודכן'),
+  };
+}
 
 /** שדה JSON מ-Airtable — עשוי להגיע כבר כאובייקט, כמחרוזת, או ריק/שבור */
 function parseJsonField(v) {
@@ -215,7 +243,8 @@ export default function PlantingPlanPage() {
   // חלוניות
   const [planDrawer, setPlanDrawer] = useState(null);
   const [weekDrawer, setWeekDrawer] = useState(null);
-  const [execWeekKey, setExecWeekKey] = useState(null); // השבוע הפעיל בטאב "תכנון מול ביצוע"
+  const [execWeekKey, setExecWeekKey] = useState(null); // השבוע הפעיל בלוח השנה היומי
+  const [execMode, setExecMode] = useState('combined'); // תכנון / בפועל / משולב — אותה משמעות כמו בגיליון השבועי
   const [planForm, setPlanForm] = useState(null); // יצירה / שכפול / עריכה
   const [shiftForm, setShiftForm] = useState(null);
   const [periodForm, setPeriodForm] = useState(null);
@@ -463,20 +492,38 @@ export default function PlantingPlanPage() {
   }, [weeklySummaries]);
 
   // ------------------------------------------------------------
-  // פירוק שבוע (מטאב "תכנון מול ביצוע") לימים בפועל — צפי מפוצל שווה
-  // על-פני הימים האמיתיים בטווח (תואם לחלוקה בכרטיס התוכנית),
-  // ובפועל כלל-חוותי מהמסמכים המנותחים לאותו תאריך.
+  // פירוק שבוע ללוח היומי — לפי הוריאציה הפעילה (תכנון/בפועל/משולב):
+  // כל יום נבדק מול הטווח המקורי או המעודכן של אותה תוכנית (בהתאם
+  // למצב ולמיקומו ביחס להיום), ומוצג רק אם הוא נכלל בטווח הרלוונטי —
+  // בלי להמציא נתון שאינו קיים. צפי מפוצל שווה על-פני הימים האמיתיים;
+  // בפועל הוא הנתון האמיתי הכלל-חוותי מהמסמכים המנותחים (JSON לפי
+  // ימים מאוחד), לא הערכה מפוצלת של הבפועל השבועי.
   // ------------------------------------------------------------
-  const dayRowsForWeek = useCallback((w) => {
+  const dayRowsForWeek = useCallback((w, mode) => {
     if (!w) return [];
+    const today = startOfToday();
     const byDate = new Map();
+    // מקדימים את כל ימי השבוע (גם ללא קטיף מתוכנן) — תצוגת לוח מלאה, לא רק ימים עם נתון
+    for (let d = new Date(w.start); d <= w.end; d = addDays(d, 1)) {
+      const key = dateKey(d);
+      byDate.set(key, {
+        date: new Date(d), key, weekday: WEEKDAY_HE[d.getDay()],
+        useUpdated: mode === 'actual' || (mode === 'combined' && d < today),
+        plans: [],
+      });
+    }
     for (const row of w.rows) {
       const plan = planById.get(firstId(row['תוכנית שתילה']));
       const info = planInfo(plan);
+      if (!plan) continue;
+      const { harvestOriginal, harvestUpdated } = computePlanRanges(plan);
       const days = splitWeekToDays(row['תחילת שבוע'], row['סוף שבוע'], num(row[KG_EXPECTED]));
       for (const d of days) {
-        if (!byDate.has(d.key)) byDate.set(d.key, { date: d.date, key: d.key, weekday: d.weekday, plans: [] });
-        byDate.get(d.key).plans.push({ info, expected: d.value });
+        const useUpdated = mode === 'actual' || (mode === 'combined' && d.date < today);
+        const relevant = useUpdated ? harvestUpdated : harvestOriginal;
+        if (!relevant.some(([a, b]) => d.date >= a && d.date <= b)) continue;
+        const entry = byDate.get(d.key);
+        if (entry) entry.plans.push({ info, expected: useUpdated ? null : d.value });
       }
     }
     return [...byDate.values()].sort((a, b) => a.key.localeCompare(b.key)).map((d) => ({
@@ -800,8 +847,8 @@ export default function PlantingPlanPage() {
 
       <div className="tabs" style={{ marginBottom: 18 }}>
         {[
-          { key: 'build', label: 'בניית תוכנית' },
-          { key: 'exec', label: 'תכנון מול ביצוע' },
+          { key: 'build', label: 'א. גיליון שבועי' },
+          { key: 'exec', label: 'ב. לוח שנה יומי' },
           { key: 'dash', label: 'דשבורד' },
         ].map((t) => (
           <button key={t.key} className={`tab ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
@@ -895,13 +942,14 @@ export default function PlantingPlanPage() {
         </div>
       )}
 
-      {/* ================= תכנון מול ביצוע — חלוקה יומית ================= */}
+      {/* ================= לוח שנה יומי (וריאציה ב) ================= */}
       {tab === 'exec' && (
         weeks.length === 0 ? (
           <div className="card empty-state">אין נתוני תחזית לשנה או לפילטרים שנבחרו.</div>
         ) : (
           <ExecWeekView
             weeks={weeks} execWeek={execWeek} execWeekIdx={execWeekIdx}
+            mode={execMode} onMode={setExecMode}
             onStep={stepExecWeek} onPick={setExecWeekKey}
             weekTotals={weekTotals} dayRowsForWeek={dayRowsForWeek}
             nonWorkByKey={nonWorkByKey}
@@ -1458,13 +1506,25 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
 // מספר הימים האמיתי בטווח) וכמה ק"ג התקבלו בפועל באותו תאריך בפועל
 // (כלל-חוותי, מהמסמכים המנותחים — לא מפוצל לפי מבנה, ומסומן ככזה).
 // ============================================================
-function ExecWeekView({ weeks, execWeek, execWeekIdx, onStep, onPick, weekTotals, dayRowsForWeek, nonWorkByKey, onOpenPlan, onOpenWeek }) {
+function ExecWeekView({ weeks, execWeek, execWeekIdx, mode, onMode, onStep, onPick, weekTotals, dayRowsForWeek, nonWorkByKey, onOpenPlan, onOpenWeek }) {
   const today = startOfToday();
   const totals = execWeek ? weekTotals(execWeek.rows) : null;
-  const days = execWeek ? dayRowsForWeek(execWeek) : [];
+  const days = execWeek ? dayRowsForWeek(execWeek, mode) : [];
 
   return (
     <div>
+      <div className="card" style={{ padding: '12px 18px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div className="tabs" style={{ padding: 3 }}>
+          {[['combined', 'משולב'], ['plan', 'תכנון'], ['actual', 'בפועל']].map(([k, l]) => (
+            <button key={k} type="button" className={`tab ${mode === k ? 'active' : ''}`}
+              style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => onMode(k)}>{l}</button>
+          ))}
+        </div>
+        <span className="badge" style={{ background: MODE_META[mode].soft, color: MODE_META[mode].color, fontWeight: 700 }}>
+          {MODE_META[mode].icon} {MODE_META[mode].explain}
+        </span>
+      </div>
+
       <div className="card" style={{ padding: '12px 18px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <button className="btn btn-sm btn-ghost" disabled={execWeekIdx <= 0} onClick={() => onStep(-1)}>‹ שבוע קודם</button>
         <button className="btn btn-sm btn-ghost" onClick={() => onPick(null)}>השבוע הנוכחי</button>
@@ -1491,16 +1551,22 @@ function ExecWeekView({ weeks, execWeek, execWeekIdx, onStep, onPick, weekTotals
           </div>
 
           <div style={{ display: 'grid', gap: 10 }}>
-            {days.length === 0 ? (
-              <div className="card empty-state">אין תאריכי תחילת/סוף שבוע לפירוק לימים.</div>
-            ) : days.map((d) => {
+            {days.map((d) => {
               const isToday = d.key === dateKey(today);
               const holiday = holidayInfo(d.date, nonWorkByKey.get(d.key));
+              // מספר אחד ברור ליום: צפוי (תכנון/עתיד-משולב) או בפועל כלל-חוותי (בפועל/עבר-משולב) — לא שניהם יחד
+              const hasPlans = d.plans.length > 0;
+              const dayLabel = d.useUpdated ? 'בפועל (כלל החווה)' : 'צפוי';
+              const dayValue = d.useUpdated
+                ? (d.actual ? `${formatNumber(d.actual.weight, 0)} ק"ג` : (hasPlans ? 'טרם דווח' : null))
+                : (hasPlans ? `${formatNumber(d.totalExpected, 0)} ק"ג` : null);
+              const dayColor = d.useUpdated ? (d.actual ? ACTUAL_COLOR : PENDING_COLOR) : (hasPlans ? PLANNED_COLOR : FUTURE_COLOR);
               return (
                 <div key={d.key} className="card" style={{
                   padding: '12px 16px',
                   outline: isToday ? `2px solid ${UPDATED_ACCENT}` : 'none', outlineOffset: '-2px',
                   background: holiday ? holiday.style.bg : undefined,
+                  opacity: hasPlans || d.actual ? 1 : 0.6,
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1509,27 +1575,20 @@ function ExecWeekView({ weeks, execWeek, execWeekIdx, onStep, onPick, weekTotals
                       {isToday && <span className="badge" style={{ background: '#E8F1FF', color: UPDATED_ACCENT }}>היום</span>}
                       {holiday && <span className="badge" style={{ background: `${holiday.style.border}22`, color: holiday.style.border }}>{holiday.name.he}</span>}
                     </div>
-                    <div style={{ display: 'flex', gap: 20, fontSize: 14 }}>
-                      <div style={{ textAlign: 'center' }}>
-                        <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>צפוי</div>
-                        <b style={{ color: PLANNED_COLOR }}>{d.totalExpected ? `${formatNumber(d.totalExpected, 0)} ק"ג` : '—'}</b>
-                      </div>
-                      <div style={{ textAlign: 'center' }}>
-                        <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>בפועל (כלל החווה)</div>
-                        <b style={{ color: d.actual ? ACTUAL_COLOR : 'var(--text-muted)' }}>
-                          {d.actual ? `${formatNumber(d.actual.weight, 0)} ק"ג` : 'אין נתון'}
-                        </b>
-                      </div>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>{dayLabel}</div>
+                      <b style={{ color: dayValue ? dayColor : 'var(--text-muted)' }}>{dayValue || 'אין קטיף מתוכנן ביום זה'}</b>
                     </div>
                   </div>
-                  {d.plans.length > 0 && (
+                  {hasPlans && (
                     <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
                       {d.plans.map((p, i) => (
                         <span key={i} className="badge" role="button" tabIndex={0}
                           style={{ cursor: p.info ? 'pointer' : 'default', background: 'var(--bg-secondary)' }}
                           onClick={() => p.info && onOpenPlan(p.info.id)}
                           onKeyDown={(e) => { if (e.key === 'Enter' && p.info) onOpenPlan(p.info.id); }}>
-                          {p.info?.icon || '🌱'} {p.info?.structure || 'לא זמין'} · {p.info?.crop || ''} · {formatNumber(p.expected, 1)} ק"ג
+                          {p.info?.icon || '🌱'} {p.info?.structure || 'לא זמין'} · {p.info?.crop || ''}
+                          {p.expected != null ? ` · ${formatNumber(p.expected, 1)} ק"ג` : ''}
                         </span>
                       ))}
                     </div>
@@ -2026,6 +2085,21 @@ const shortDate = (d, year) =>
   `${d.getDate()}/${d.getMonth() + 1}${d.getFullYear() !== Number(year) ? `/${d.getFullYear()}` : ''}`;
 const overlaps = (aStart, aEnd, bStart, bEnd) => aStart <= bEnd && aEnd >= bStart;
 
+/**
+ * טקסט סטטוס ברור לתא קטיף — בלי סימונים דו-משמעיים ("-", "V"). כל מצב
+ * מקבל ניסוח מפורש: מספר קג ממשי, "עתידי" (עוד לא הגיע המועד), "טרם דווח"
+ * (המועד עבר ואין עדיין דיווח אמיתי), או "לא זמין" (אין נתון מתוכנן כלל).
+ */
+function harvestCellStatus(item, week, today) {
+  if (item.hasData) return { text: `${formatNumber(item.kg, 0)} ק"ג`, color: item.useUpdated ? ACTUAL_COLOR : PLANNED_COLOR, strong: true };
+  if (item.useUpdated) {
+    return week.end < today
+      ? { text: 'טרם דווח', color: PENDING_COLOR, strong: false }
+      : { text: 'עתידי', color: FUTURE_COLOR, strong: false };
+  }
+  return { text: 'לא זמין', color: FUTURE_COLOR, strong: false };
+}
+
 /** שבועות הגיליון: מהשבוע שמכיל את 1 בינואר ועד סוף השנה (ובהמשך — עד סוף התוכנית האחרונה) */
 function buildSheetWeeks(year, lastDate) {
   const y = Number(year);
@@ -2061,46 +2135,32 @@ const structureNumber = (name) => {
 };
 
 function PlanSheet({
-  year, plans, periods, forecasts, structures, nonWorkByKey, quarterFilter,
+  year, plans, forecasts, structures, nonWorkByKey, quarterFilter,
   planInfo, view, onView, onPlan, onWeek,
 }) {
   const fmt = (v) => formatNumber(v, 0);
   const today = startOfToday();
 
-  // ---- תוכניות עם טווחי תאריכים (מעודכן גובר על מקורי; תקופות ידניות גוברות על שתיהן) ----
+  // מצב תצוגה — 3 הוריאציות המחייבות: תכנון (שדות מקוריים בלבד) /
+  // בפועל (שדות מעודכנים + נתונים אמיתיים בלבד) / משולב (עד היום לפי
+  // המעודכן-בפועל, מהיום ואילך לפי המקורי-מתוכנן — נקודת החיבור: היום)
+  const [mode, setMode] = useState('combined');
+
+  // ---- תוכניות עם טווחי תאריכים — מקורי ומעודכן נשמרים בנפרד ומלאים ----
+  // (ולא "מעודכן גובר על מקורי"): כל וריאציית תצוגה מסתמכת אך ורק על
+  // אחד מהם, ובוריאציה המשולבת ההכרעה נעשית פר-שבוע לפי היום.
+  // "תקופות תוכנית" (שינויים ידניים) אינן משמשות כאן במכוון — כל וריאציה
+  // צריכה להסתמך אך ורק על שדות התוכנית, לא על מקור שלישי.
   const planRows = useMemo(() => {
-    const periodsByPlan = new Map();
-    for (const p of periods) {
-      const id = firstId(p['תוכנית שתילה']);
-      if (!id) continue;
-      if (!periodsByPlan.has(id)) periodsByPlan.set(id, []);
-      periodsByPlan.get(id).push(p);
-    }
     return plans.map((plan) => {
       const info = planInfo(plan);
-      const pick = (updated, original) => parseDate(plan[updated] || plan[original]);
-      const plantStart = pick('תחילת שתילה מעודכנת', 'תחילת שתילה מקורית');
-      const plantEnd = pick('סוף שתילה מעודכן', 'סוף שתילה מקורי') || plantStart;
-      const harvestStart = pick('תחילת קטיף מעודכנת', 'תחילת קטיף מקורית');
-      const harvestEnd = pick('סוף קטיף מעודכן', 'סוף קטיף מקורי') || harvestStart;
-
-      const ranges = (status, fallback) => {
-        const own = (periodsByPlan.get(plan.id) || [])
-          .filter((p) => String(p['סטטוס'] || '').includes(status))
-          .map((p) => [parseDate(p['מתאריך']), parseDate(p['עד תאריך'])])
-          .filter(([a, b]) => a && b);
-        return own.length ? own : fallback;
-      };
-      const plantRanges = ranges('שתילה', plantStart ? [[plantStart, plantEnd]] : []);
-      const harvestRanges = ranges('קטיף', harvestStart ? [[harvestStart, harvestEnd]] : []);
-      if (!plantRanges.length && !harvestRanges.length) return null;
-
-      const firstPlant = plantRanges.reduce((m, [a]) => (!m || a < m ? a : m), null);
-      const firstHarvest = harvestRanges.reduce((m, [a]) => (!m || a < m ? a : m), null);
-      const lastEnd = [...plantRanges, ...harvestRanges].reduce((m, [, b]) => (!m || b > m ? b : m), null);
-      return { plan, info, plantRanges, harvestRanges, firstPlant, firstHarvest, lastEnd };
+      const { plantOriginal, plantUpdated, harvestOriginal, harvestUpdated } = computePlanRanges(plan);
+      const all = [...plantOriginal, ...plantUpdated, ...harvestOriginal, ...harvestUpdated];
+      if (!all.length) return null;
+      const lastEnd = all.reduce((m, [, b]) => (!m || b > m ? b : m), null);
+      return { plan, info, plantOriginal, plantUpdated, harvestOriginal, harvestUpdated, lastEnd };
     }).filter(Boolean);
-  }, [plans, periods, planInfo]);
+  }, [plans, planInfo]);
 
   // ---- שבועות ----
   const allWeeks = useMemo(() => {
@@ -2136,21 +2196,6 @@ function PlanSheet({
     return map;
   }, [forecasts, allWeeks, weekIndexOf]);
 
-  // ---- סה"כ צפוי לכל תוכנית (ק"ג + הכנסה) — כמו בעמודת הסיכום באקסל ----
-  const planTotals = useMemo(() => {
-    const m = new Map();
-    for (const f of forecasts) {
-      const pid = firstId(f['תוכנית שתילה']);
-      if (!pid) continue;
-      const cur = m.get(pid) || { kg: 0, revenue: 0, actual: 0 };
-      cur.kg += num(f[KG_EXPECTED]) || 0;
-      cur.revenue += num(f['הכנסה צפויה']) || 0;
-      cur.actual += num(f['קג בפועל']) || 0;
-      m.set(pid, cur);
-    }
-    return m;
-  }, [forecasts]);
-
   // ---- שורות המבנים ----
   const rows = useMemo(() => {
     const byStructure = new Map();
@@ -2174,10 +2219,17 @@ function PlanSheet({
   }, [structures, planRows]);
 
   // ---- תוכן תא: מבנה × שבוע ----
+  // תא = מבנה × שבוע. ההכרעה איזה טווח (מקורי/מעודכן) ואיזה נתון (צפוי/בפועל)
+  // מוצגים תלויה במצב התצוגה: 'plan' תמיד מקורי+צפוי, 'actual' תמיד
+  // מעודכן+בפועל, 'combined' — מעודכן+בפועל לשבועות שכבר הסתיימו,
+  // מקורי+צפוי לשבועות שטרם הגיעו (החיבור: היום).
   const cellOf = useCallback((row, week) => {
     const items = [];
+    const useUpdated = mode === 'actual' || (mode === 'combined' && week.end < today);
     for (const r of row.plans) {
-      const inHarvest = r.harvestRanges.some(([a, b]) => overlaps(a, b, week.start, week.end));
+      const harvestRanges = useUpdated ? r.harvestUpdated : r.harvestOriginal;
+      const plantRanges = useUpdated ? r.plantUpdated : r.plantOriginal;
+      const inHarvest = harvestRanges.some(([a, b]) => overlaps(a, b, week.start, week.end));
       if (inHarvest) {
         const fc = forecastMap.get(r.plan.id)?.get(week.key) || [];
         let expected = null;
@@ -2197,74 +2249,71 @@ function PlanSheet({
             actualRevenue += a.value * price;
           }
         }
-        items.push({ phase: 'harvest', r, expected, actual: anyActual ? actual : null, revenue, actualRevenue, rows: fc });
+        items.push({
+          phase: 'harvest', r, useUpdated,
+          kg: useUpdated ? (anyActual ? actual : null) : expected,
+          revenue: useUpdated ? actualRevenue : revenue,
+          hasData: useUpdated ? anyActual : expected !== null,
+          rows: fc,
+        });
         continue;
       }
-      const growthEnd = r.firstHarvest
-        ? addDays(r.firstHarvest, -1)
-        : r.plantRanges.reduce((m, [, b]) => (!m || b > m ? b : m), null);
-      if (r.firstPlant && growthEnd && overlaps(r.firstPlant, growthEnd, week.start, week.end)) {
-        const isFirst = r.firstPlant >= week.start && r.firstPlant <= week.end;
-        items.push({ phase: 'plant', r, label: isFirst ? `${shortDate(r.firstPlant, year)} ${r.info.crop}` : '' });
+      const firstPlant = plantRanges.length ? plantRanges[0][0] : null;
+      const firstHarvest = harvestRanges.length ? harvestRanges[0][0] : null;
+      const growthEnd = firstHarvest ? addDays(firstHarvest, -1) : (plantRanges.length ? plantRanges[0][1] : null);
+      if (firstPlant && growthEnd && overlaps(firstPlant, growthEnd, week.start, week.end)) {
+        const isFirst = firstPlant >= week.start && firstPlant <= week.end;
+        items.push({ phase: 'plant', r, useUpdated, firstPlant, label: isFirst ? `${shortDate(firstPlant, year)} ${r.info.crop}` : '' });
       }
     }
     return items;
-  }, [forecastMap, year]);
+  }, [forecastMap, year, mode, today]);
 
   // ---- שורות הסיכום ----
+  // מספר אחד ברור לכל שבוע (לא "צפוי" ו"בפועל" זה-לצד-זה): המשמעות
+  // נגזרת מהוריאציה הפעילה — בתכנון תמיד צפוי, בפועל תמיד בפועל,
+  // ובמשולב לפי אותה הכרעה פר-שבוע כמו בתאים עצמם.
   const summary = useMemo(() => {
+    const planTotals = new Map(); // planId -> { kg, revenue }
     const perWeek = weeks.map((week) => {
-      let expected = 0;
-      let actual = 0;
-      let anyActual = false;
+      let kg = 0;
+      let hasData = false;
       let revenue = 0;
-      let actualRevenue = 0;
-      const crops = new Set();
       const fcRows = [];
       for (const row of rows) {
         for (const item of cellOf(row, week)) {
           if (item.phase !== 'harvest') continue;
-          if (item.r.info.crop && item.r.info.crop !== 'לא זמין') crops.add(item.r.info.crop);
-          expected += item.expected || 0;
-          revenue += item.revenue;
-          if (item.actual !== null) { anyActual = true; actual += item.actual; actualRevenue += item.actualRevenue; }
           fcRows.push(...item.rows);
+          if (!item.hasData) continue;
+          hasData = true;
+          kg += item.kg || 0;
+          revenue += item.revenue || 0;
+          const pid = item.r.plan.id;
+          const t = planTotals.get(pid) || { kg: 0, revenue: 0 };
+          t.kg += item.kg || 0; t.revenue += item.revenue || 0;
+          planTotals.set(pid, t);
         }
       }
       // חגים בשבוע — מרשומות "ימי אי עבודה" ומהלוח העברי (בלי שבתות)
-      const holidays = new Map();
+      const holidayNames = [];
       for (let d = week.start; d <= week.end; d = addDays(d, 1)) {
         const rec = nonWorkByKey.get(dateKey(d));
         const computed = jewishHoliday(d);
         const info = rec ? holidayInfo(d, rec) : (computed ? { name: computed } : null);
         if (!info || info.kind === 'shabbat') continue;
-        const name = info.name.he;
-        if (!holidays.has(name)) holidays.set(name, []);
-        holidays.get(name).push(d);
+        if (!holidayNames.includes(info.name.he)) holidayNames.push(info.name.he);
       }
-      const holidayNames = [...holidays.keys()];
-      const holidayDates = [...holidays.values()].map((ds) => {
-        const first = ds[0];
-        const last = ds[ds.length - 1];
-        return first.getTime() === last.getTime()
-          ? `${first.getDate()}/${first.getMonth() + 1}`
-          : `${first.getDate()}-${last.getDate()}/${last.getMonth() + 1}`;
-      });
-      return {
-        week, expected, actual: anyActual ? actual : null, revenue,
-        actualRevenue: anyActual ? actualRevenue : null,
-        varieties: [...crops].join(' / '), holidayNames, holidayDates, fcRows,
-      };
+      return { week, kg, hasData, revenue, holidayNames, fcRows };
     });
 
     const months = [];
     for (const p of perWeek) {
       const last = months[months.length - 1];
       if (last && last.key === p.week.monthKey) {
-        last.span += 1; last.revenue += p.revenue; last.expected += p.expected;
+        last.span += 1; last.revenue += p.revenue; last.kg += p.kg;
       } else {
         months.push({
-          key: p.week.monthKey, year: p.week.year, span: 1, revenue: p.revenue, expected: p.expected,
+          key: p.week.monthKey, year: p.week.year, span: 1, revenue: p.revenue, kg: p.kg,
           label: new Date(p.week.year, p.week.month, 1).toLocaleDateString('he-IL', { month: 'long' }),
         });
       }
@@ -2273,20 +2322,12 @@ function PlanSheet({
     for (const p of perWeek) {
       const last = yearGroups[yearGroups.length - 1];
       if (last && last.year === p.week.year) {
-        last.span += 1; last.revenue += p.revenue; last.expected += p.expected; last.actualRevenue += p.actualRevenue || 0;
+        last.span += 1; last.revenue += p.revenue; last.kg += p.kg;
       } else {
-        yearGroups.push({ year: p.week.year, span: 1, revenue: p.revenue, expected: p.expected, actualRevenue: p.actualRevenue || 0 });
+        yearGroups.push({ year: p.week.year, span: 1, revenue: p.revenue, kg: p.kg });
       }
     }
-    const varietyGroups = [];
-    for (const p of perWeek) {
-      const last = varietyGroups[varietyGroups.length - 1];
-      if (last && last.label === p.varieties) last.span += 1;
-      else varietyGroups.push({ label: p.varieties, span: 1, key: p.week.key });
-    }
-    const totalActualRevenue = perWeek.reduce((s, p) => s + (p.actualRevenue || 0), 0);
-    const anyActualRevenue = perWeek.some((p) => p.actualRevenue !== null);
-    return { perWeek, months, yearGroups, varietyGroups, totalActualRevenue, anyActualRevenue };
+    return { perWeek, months, yearGroups, planTotals };
   }, [weeks, rows, cellOf, nonWorkByKey]);
 
   const openWeek = (p) => {
@@ -2298,24 +2339,6 @@ function PlanSheet({
     });
   };
 
-  // מצב תצוגה: משולב / תכנון (צפי בלבד) / ביצוע (בפועל בלבד)
-  const [mode, setMode] = useState('combined');
-
-  // משקל ממוצע לקרטון — מחושב מתעודות המשלוח האמיתיות (ברירת מחדל 12.3)
-  const [avgCarton, setAvgCarton] = useState(12.3);
-  useEffect(() => {
-    const enc = encodeURIComponent;
-    fetch(`/api/${enc('תעודות משלוח')}?raw=1&fields=${[enc('משקל כולל'), enc('כמות קרטונים')].join(',')}`)
-      .then((r) => (r.ok ? r.json() : []))
-      .then((rows2) => {
-        const list = Array.isArray(rows2) ? rows2 : [];
-        const w = list.reduce((s2, n) => s2 + (Number(n['משקל כולל']) || 0), 0);
-        const c = list.reduce((s2, n) => s2 + (Number(n['כמות קרטונים']) || 0), 0);
-        if (w > 0 && c > 0) setAvgCarton(w / c);
-      })
-      .catch(() => {});
-  }, []);
-
   const isCurrentWeek = (w) => today >= w.start && today <= w.end;
   const labelCell = (text) => <th className="ps-rowhead" colSpan={2}>{text}</th>;
 
@@ -2324,11 +2347,14 @@ function PlanSheet({
       <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <b style={{ fontSize: 16 }}>גיליון שנתי — {year}</b>
         <div className="tabs" style={{ padding: 3 }}>
-          {[['combined', 'משולב'], ['plan', 'תכנון (צפי)'], ['actual', 'ביצוע (בפועל)']].map(([k, l]) => (
+          {[['combined', 'משולב'], ['plan', 'תכנון'], ['actual', 'בפועל']].map(([k, l]) => (
             <button key={k} type="button" className={`tab ${mode === k ? 'active' : ''}`}
               style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => setMode(k)}>{l}</button>
           ))}
         </div>
+        <span className="badge" style={{ background: MODE_META[mode].soft, color: MODE_META[mode].color, fontWeight: 700 }}>
+          {MODE_META[mode].icon} {MODE_META[mode].explain}
+        </span>
         <div style={{ flex: 1 }} />
         <ViewSwitch view={view} onView={onView} />
       </div>
@@ -2365,15 +2391,6 @@ function PlanSheet({
                 </th>
               ))}
             </tr>
-            {/* זנים */}
-            <tr>
-              <th className="ps-rowhead ps-corner" colSpan={2}>זנים</th>
-              {summary.varietyGroups.map((g) => (
-                <th key={g.key} colSpan={g.span} className="ps-variety" style={{ background: g.label ? SHEET_VARIETY_BG : undefined }}>
-                  {g.label ? `${cropIcon(g.label.split(' / ')[0])} ${g.label}` : ''}
-                </th>
-              ))}
-            </tr>
             {/* חגים ומועדים */}
             <tr>
               <th className="ps-rowhead ps-corner" colSpan={2}>חגים ומועדים</th>
@@ -2382,13 +2399,6 @@ function PlanSheet({
                   title={p.holidayNames.join(', ')}>
                   {p.holidayNames.join(', ')}
                 </th>
-              ))}
-            </tr>
-            {/* הערות (תאריכי החגים) */}
-            <tr>
-              <th className="ps-rowhead ps-corner" colSpan={2}>הערות</th>
-              {summary.perWeek.map((p) => (
-                <th key={p.week.key} className="ps-note">{p.holidayDates.join(' · ')}</th>
               ))}
             </tr>
           </thead>
@@ -2405,10 +2415,10 @@ function PlanSheet({
                 <th className="ps-rowhead">
                   <div>{row.name}</div>
                   {row.plans.map((r) => {
-                    const t = planTotals.get(r.plan.id);
+                    const t = summary.planTotals.get(r.plan.id);
                     if (!t || !t.kg) return null;
                     return (
-                      <div key={r.plan.id} className="ps-plan-total" title={`${r.info.crop}: צפי ${fmt(t.kg)} ק"ג · הכנסה צפויה ${formatMoney(Math.round(t.revenue))}`}>
+                      <div key={r.plan.id} className="ps-plan-total" title={`${r.info.crop}: סה"כ ${fmt(t.kg)} ק"ג · ${formatMoney(Math.round(t.revenue))}`}>
                         {r.info.icon} {fmt(t.kg)} ק"ג
                       </div>
                     );
@@ -2419,31 +2429,32 @@ function PlanSheet({
                   const items = cellOf(row, w);
                   if (!items.length) return <td key={w.key} className={isCurrentWeek(w) ? 'ps-today-col' : ''} />;
                   const main = items[0];
-                  const weekPassed = w.end < today;
-                  const style = main.phase === 'harvest'
-                    ? { background: SHEET_HARVEST.bg, color: SHEET_HARVEST.text }
-                    : { background: SHEET_PLANT.bg, color: SHEET_PLANT.text };
-                  const title = items.map((it) =>
-                    `${it.r.info.icon} ${it.r.info.crop} · ${it.phase === 'harvest' ? 'קטיף' : 'שתילה/גידול'}`
-                    + (it.phase === 'harvest' ? ` · צפוי ${it.expected === null ? 'לא זמין' : fmt(it.expected)} ק"ג` : '')
-                    + (it.phase === 'harvest' && it.actual !== null ? ` · בפועל ${fmt(it.actual)} ק"ג` : '')
-                    + (it.phase === 'plant' && it.r.firstPlant ? ` · תאריך שתילה: ${formatDate(dateKey(it.r.firstPlant))}` : '')
-                  ).join('\n');
+                  const style = {
+                    ...(main.phase === 'harvest'
+                      ? { background: SHEET_HARVEST.bg, color: SHEET_HARVEST.text }
+                      : { background: SHEET_PLANT.bg, color: SHEET_PLANT.text }),
+                    // במצב משולב: תא "מעודכן/בפועל" (עבר) מקבל מסגרת רציפה,
+                    // תא "מקורי/מתוכנן" (עתיד) מקבל מסגרת מקווקוות — הבחנה
+                    // עקבית שלא תלויה בקריאת טקסט
+                    ...(mode === 'combined' ? { borderStyle: main.useUpdated ? 'solid' : 'dashed' } : {}),
+                  };
+                  const status = harvestCellStatus(main, w, today);
+                  const title = items.map((it) => {
+                    if (it.phase === 'plant') {
+                      return `${it.r.info.icon} ${it.r.info.crop} · שתילה/גידול (${it.useUpdated ? 'מעודכן' : 'מקורי'})`
+                        + (it.firstPlant ? ` · תאריך שתילה: ${formatDate(dateKey(it.firstPlant))}` : '');
+                    }
+                    const st = harvestCellStatus(it, w, today);
+                    return `${it.r.info.icon} ${it.r.info.crop} · קטיף (${it.useUpdated ? 'בפועל' : 'תכנון'}) · ${st.text}`;
+                  }).join('\n');
                   return (
                     <td key={w.key} className={`ps-cell ps-${main.phase} ${items.length > 1 ? 'ps-multi' : ''}`}
                       style={style} title={title}
                       {...activatable(() => onPlan(main.r.plan.id), `פתיחת תוכנית ${main.r.info.crop} ב${row.name}`)}>
                       {main.phase === 'harvest' ? (
-                        <>
-                          {mode !== 'actual' && <div className="ps-exp">{main.expected === null ? '—' : fmt(main.expected)}</div>}
-                          {mode !== 'plan' && (main.actual !== null
-                            ? <div className="ps-act">✓ {fmt(main.actual)}</div>
-                            : (weekPassed
-                              ? <div className="ps-pending">טרם</div>
-                              : (mode === 'actual' && <div className="ps-exp" style={{ color: 'var(--text-muted)', fontWeight: 400 }}>עתידי</div>)))}
-                        </>
+                        <div className="ps-status" style={{ color: status.color, fontWeight: status.strong ? 700 : 500 }}>{status.text}</div>
                       ) : (
-                        <div className="ps-plant-label">{weekPassed ? '✓ ' : ''}{main.label || (weekPassed && mode !== 'plan' ? '✓' : '')}</div>
+                        <div className="ps-plant-label">{main.label || 'בגידול'}</div>
                       )}
                       {items.length > 1 && (
                         <div className="ps-more" role="button" tabIndex={0} title="פתיחת התוכנית הנוספת בתא"
@@ -2458,84 +2469,66 @@ function PlanSheet({
               </tr>
             ))}
 
-            {/* ---------- סיכומים — במקום שהלקוח רגיל אליו, מתחת למבנים ---------- */}
-            {mode !== 'actual' && <tr className="ps-total">
-              {labelCell('ק"ג שבועי — צפי')}
+            {/* ---------- סיכומים — מספר אחד ברור לשבוע, לפי הוריאציה הפעילה ---------- */}
+            <tr className="ps-total" style={{ color: MODE_META[mode].color }}>
+              {labelCell(`ק"ג שבועי — ${MODE_META[mode].label}`)}
               {summary.perWeek.map((p) => (
-                <td key={p.week.key} className={`ps-num ${p.fcRows.length ? 'ps-clickable' : ''}`} onClick={() => openWeek(p)}>
-                  {p.expected ? fmt(p.expected) : '0'}
+                <td key={p.week.key} className={`ps-num ${p.fcRows.length ? 'ps-clickable' : ''}`} onClick={() => openWeek(p)}
+                  style={{ color: p.hasData ? MODE_META[mode].color : 'var(--text-muted)' }}>
+                  {p.hasData ? fmt(p.kg) : (p.fcRows.length ? 'אין נתון' : '0')}
                 </td>
               ))}
-            </tr>}
-            {mode !== 'plan' && <tr className="ps-total ps-actual-row">
-              {labelCell('ק"ג בפועל')}
+            </tr>
+            <tr className="ps-total">
+              {labelCell(`משטח שבועי — ${MODE_META[mode].label}`)}
               {summary.perWeek.map((p) => (
-                <td key={p.week.key} className="ps-num" style={{ color: p.actual !== null ? ACTUAL_COLOR : 'var(--text-muted)' }}>
-                  {p.actual !== null ? fmt(p.actual) : (p.expected ? 'טרם' : '')}
-                </td>
+                <td key={p.week.key} className="ps-num">{p.hasData ? formatNumber(p.kg / KG_PER_PALLET, 1) : '0'}</td>
               ))}
-            </tr>}
-            {mode !== 'actual' && <tr className="ps-total">
-              {labelCell('קרטונים צפי')}
-              {summary.perWeek.map((p) => (
-                <td key={p.week.key} className="ps-num">{p.expected ? formatNumber(Math.round(p.expected / avgCarton)) : '0'}</td>
-              ))}
-            </tr>}
-            {mode !== 'actual' && <tr className="ps-total">
-              {labelCell('משטח שבועי — צפי')}
-              {summary.perWeek.map((p) => (
-                <td key={p.week.key} className="ps-num">{p.expected ? formatNumber(p.expected / KG_PER_PALLET, 1) : '0'}</td>
-              ))}
-            </tr>}
-            {mode !== 'actual' && <tr className="ps-total">
-              {labelCell('הכנסה צפויה ₪')}
+            </tr>
+            <tr className="ps-total">
+              {labelCell(`הכנסה ₪ — ${MODE_META[mode].label}`)}
               {summary.perWeek.map((p) => (
                 <td key={p.week.key} className="ps-num">{p.revenue ? fmt(p.revenue) : '0'}</td>
               ))}
-            </tr>}
-            {mode !== 'actual' && <tr className="ps-total ps-month-row">
-              {labelCell('סה"כ לחודש ₪ — צפי')}
+            </tr>
+            <tr className="ps-total ps-month-row">
+              {labelCell(`סה"כ לחודש ₪ — ${MODE_META[mode].label}`)}
               {summary.months.map((m) => (
-                <td key={m.key} colSpan={m.span} className="ps-num ps-month-total" title={`${fmt(m.expected)} ק"ג`}>
+                <td key={m.key} colSpan={m.span} className="ps-num ps-month-total" title={`${fmt(m.kg)} ק"ג`}>
                   {fmt(m.revenue)}
                 </td>
               ))}
-            </tr>}
-            {mode !== 'actual' && <tr className="ps-total ps-year-row">
-              {labelCell('סה"כ שנתי ₪ — צפי')}
+            </tr>
+            <tr className="ps-total ps-year-row">
+              {labelCell(`סה"כ שנתי — ${MODE_META[mode].label}`)}
               {summary.yearGroups.map((g) => (
                 <td key={g.year} colSpan={g.span} className="ps-num ps-year-total">
                   {/* התא משתרע על כל השנה — הטקסט נשאר גלוי בזמן גלילה אופקית */}
                   <span className="ps-year-text">
-                    {g.year}: {formatMoney(Math.round(g.revenue))} · {fmt(g.expected)} ק"ג · {formatNumber(g.expected / KG_PER_PALLET, 1)} משטחים
+                    {g.year}: {formatMoney(Math.round(g.revenue))} · {fmt(g.kg)} ק"ג · {formatNumber(g.kg / KG_PER_PALLET, 1)} משטחים
                   </span>
                 </td>
               ))}
-            </tr>}
-            {mode !== 'plan' && <tr className="ps-total ps-actual-row">
-              {labelCell(summary.anyActualRevenue
-                ? `הכנסות בפועל ₪ (${formatMoney(Math.round(summary.totalActualRevenue))})`
-                : 'הכנסות בפועל ₪')}
-              {summary.perWeek.map((p) => (
-                <td key={p.week.key} className="ps-num" style={{ color: p.actualRevenue !== null ? ACTUAL_COLOR : 'var(--text-muted)' }}>
-                  {p.actualRevenue !== null ? fmt(p.actualRevenue) : ''}
-                </td>
-              ))}
-            </tr>}
+            </tr>
           </tbody>
         </table>
       </div>
 
       <div style={{ padding: '10px 20px', display: 'flex', gap: 16, borderTop: '1px solid var(--border)', flexWrap: 'wrap', fontSize: 12, alignItems: 'center' }}>
-        <LegendSwatch bg={SHEET_PLANT.bg} border="#E5A900" label="שתילה וגידול (תאריך השתילה בתא הראשון)" />
-        <LegendSwatch bg={SHEET_HARVEST.bg} border="#2E9B62" label='קטיף — ק"ג צפוי' />
+        <LegendSwatch bg={SHEET_PLANT.bg} border="#E5A900" label="שתילה וגידול" />
+        <LegendSwatch bg={SHEET_HARVEST.bg} border="#2E9B62" label="קטיף" />
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-          <b style={{ color: ACTUAL_COLOR }}>✓ 1,234</b> בוצע (ק"ג בפועל)
+          <b style={{ color: PENDING_COLOR }}>טרם דווח</b> — המועד עבר, עדיין אין דיווח אמיתי
         </span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-          <b className="ps-pending" style={{ position: 'static' }}>טרם</b> שבוע שעבר ללא דיווח
+          <b style={{ color: FUTURE_COLOR }}>עתידי</b> — עוד לא הגיע המועד
         </span>
         <LegendSwatch bg={SHEET_HOLIDAY_BG} border="#F04444" label="חג / יום אי עבודה" />
+        {mode === 'combined' && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 20, height: 12, border: '2px solid #666', borderRadius: 3 }} /> רציף = בפועל (עבר) · מקווקו = תכנון (עתיד)
+          </span>
+        )}
       </div>
     </div>
   );
