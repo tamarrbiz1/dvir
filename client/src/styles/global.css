@@ -763,15 +763,225 @@ button.nav-item {
 }
 
 /* ============================ Responsive ============================ */
+
+/* --- סרגל עליון נייד (המבורגר + לוגו) — מוצג רק מתחת ל-900px --- */
+.mobile-topbar {
+  display: none;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  padding-top: max(10px, env(safe-area-inset-top));
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+}
+.mobile-topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 800;
+  font-size: 16px;
+  color: var(--text-main);
+}
+.mobile-menu-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--card-bg);
+  font-size: 20px;
+  cursor: pointer;
+  color: var(--text-main);
+  flex-shrink: 0;
+}
+.mobile-menu-btn:hover { background: var(--bg-secondary); }
+.mobile-menu-badge {
+  position: absolute;
+  top: -6px;
+  inset-inline-start: -6px;
+  min-width: 18px;
+  height: 18px;
+  font-size: 10.5px;
+}
+
+/* --- מסך כהה מאחורי הסרגל הנייד הפתוח --- */
+.sidebar-overlay {
+  display: none;
+}
+
+/* --- כפתור סגירה בתוך הסרגל (מוצג רק בנייד) --- */
+.sidebar-close {
+  display: none;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  font-size: 16px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
 @media (max-width: 900px) {
-  .sidebar {
-    display: none;
+  .mobile-topbar {
+    display: flex;
   }
   .main-area {
     padding: 16px 14px;
   }
   .fs-kpi { font-size: 28px; }
   .grid-2 { grid-template-columns: 1fr; }
+  .topbar { flex-wrap: wrap; }
+
+  /* הסרגל הופך למגירה נגררת מהצד (RTL — מהימין), במקום להיעלם לגמרי */
+  .sidebar {
+    position: fixed;
+    inset-inline-end: 0;
+    top: 0;
+    width: 280px;
+    max-width: 84vw;
+    z-index: 70;
+    transform: translateX(100%);
+    transition: transform 220ms ease;
+    box-shadow: -6px 0 24px rgba(0,0,0,0.18);
+    padding-top: max(20px, env(safe-area-inset-top));
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+  }
+  .sidebar.mobile-open {
+    transform: translateX(0);
+  }
+  .sidebar-close {
+    display: inline-flex;
+  }
+  .sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(16, 24, 40, 0.5);
+    z-index: 65;
+  }
+  /* בעברית/RTL הסרגל בפריסת flex יורד לשורה נפרדת כשמוסתר — מוודאים שהוא לא תופס שטח */
+  .app-shell {
+    display: block;
+  }
+}
+
+/* --- מסכי טלפון צרים: עמודה אחת בכל רשת כרטיסים, בלי לגלוש --- */
+@media (max-width: 560px) {
+  .kpi-grid,
+  .grid,
+  .grid-2,
+  .chart-pair {
+    grid-template-columns: 1fr !important;
+  }
+  .topbar h1 { font-size: 22px; }
+  .topbar { flex-wrap: wrap; }
+  .topbar .filter-bar { width: 100%; }
+  .fs-kpi, .kpi-card .kpi-value { font-size: 26px; }
+  .card { padding: 16px 16px; }
+  .filter-bar { padding: 10px 12px; }
+  .select, .input { min-width: 0; width: 100%; }
+}
+
+/* --- מניעת זום אוטומטי ב-iOS בפוקוס על שדה (דורש גופן 16px+) --- */
+@media (max-width: 640px) {
+  .input, .select, textarea.input {
+    font-size: 16px;
+  }
+}
+
+/* --- יעדי מגע נוחים יותר באצבע במסכי מגע --- */
+@media (max-width: 900px) {
+  .btn { min-height: 44px; }
+  .btn-sm { min-height: 38px; }
+  .tab { padding: 10px 14px; }
+  .th-btn { padding: 12px 10px; }
+}
+
+/* --- טאבים מרובים (למשל 7-8 טאבים במגירת מבנה/סיכום שבועי): גלילה אופקית
+   באצבע במקום גלישה שמרחיבה את כל העמוד --- */
+@media (max-width: 640px) {
+  .tabs {
+    max-width: 100%;
+    width: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { flex-shrink: 0; }
+}
+
+/* --- טבלאות: גלילה חלקה באצבע + צמצום ריפוד בטלפון --- */
+.table-wrap {
+  -webkit-overflow-scrolling: touch;
+}
+@media (max-width: 640px) {
+  .data-table thead th,
+  .data-table tbody td {
+    padding: 10px 10px;
+    font-size: 13.5px;
+  }
+}
+
+/* --- מגירה (Drawer): מסך מלא בטלפון, כמו דיאלוג טבעי --- */
+@media (max-width: 640px) {
+  .drawer-overlay {
+    justify-content: stretch;
+  }
+  .drawer {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+  }
+  .worker-drawer,
+  .struct-drawer,
+  .dashboard-drawer {
+    width: 100%;
+    max-width: 100%;
+  }
+  .drawer-header {
+    padding: 14px 16px;
+    padding-top: max(14px, env(safe-area-inset-top));
+  }
+  .drawer-body {
+    padding: 16px;
+  }
+}
+
+/* --- מודאל: ריפוד מצומצם ורוחב מלא כמעט בטלפון --- */
+@media (max-width: 480px) {
+  .modal {
+    width: 100%;
+    padding: 18px;
+  }
+}
+
+/* --- גיליון שנתי (תוכנית שתילה): גלילה חלקה באצבע בטלפון --- */
+.plan-sheet-wrap {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* --- אפליקציית עובד: מרווח בטוח לאזורי חריץ/בית (iOS) --- */
+.worker-header {
+  padding-top: max(14px, env(safe-area-inset-top));
+}
+.worker-shell {
+  padding-bottom: calc(74px + env(safe-area-inset-bottom));
+}
+.worker-tabs {
+  height: calc(64px + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 /* ============================ אפליקציית עובד (Mobile-first) ============================ */

@@ -47,6 +47,8 @@ export const translations = {
   nav_mainNav: { he: 'ניווט ראשי', th: 'เมนูหลัก' },
   nav_skipToContent: { he: 'דילוג לתוכן הראשי', th: 'ข้ามไปยังเนื้อหาหลัก' },
   nav_youAreOn: { he: 'העמוד הנוכחי:', th: 'หน้าปัจจุบัน:' },
+  nav_openMenu: { he: 'פתח תפריט ניווט', th: 'เปิดเมนูนำทาง' },
+  nav_closeMenu: { he: 'סגור תפריט ניווט', th: 'ปิดเมนูนำทาง' },
   nav_close: { he: 'סגירה', th: 'ปิด' },
   nav_workerApp: { he: 'אפליקציית עובד', th: 'แอปพนักงาน' },
 

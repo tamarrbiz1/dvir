@@ -50,71 +50,113 @@ function RoleGate({ role, children }) {
 export const AppContext = createContext(null);
 export const useApp = () => useContext(AppContext);
 
-function Sidebar() {
+function Sidebar({ mobileOpen, onClose }) {
   const { user, lang, setAppLang, logout, badges } = useApp();
   const role = user?.role || 'owner';
   return (
-    <aside className="sidebar" role="navigation" aria-label={t('nav_mainNav')}>
-      <div className="brand">
-        <img src="/assets/logo.png" alt="לוגו" style={{ width: 34, height: 34, borderRadius: 8, objectFit: 'cover' }} />
-        <span>משק חקלאי</span>
-        {canSee(role, '/alerts') && (
-          <NavLink
-            to="/alerts"
-            aria-label={badges.alerts ? `התראות — ${badges.alerts} פעילות` : 'התראות'}
-            title="התראות"
-            style={{ marginInlineStart: 'auto', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 18 }}
-          >
-            🔔{badges.alerts > 0 && <span className="nav-badge">{badges.alerts}</span>}
-          </NavLink>
-        )}
-      </div>
-      {role !== 'owner' && (
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
-          <LanguageSwitcher lang={lang} onLang={setAppLang} />
-        </div>
-      )}
-      {role === 'manager' && (
-        <div style={{ marginBottom: 10, padding: '8px 12px', background: 'var(--workers-soft)', borderRadius: 10, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span>👷</span><span>מנהל עבודה</span>
-        </div>
-      )}
-      {NAV_GROUPS.map((group) => {
-        const items = group.items.filter((item) => canSee(role, item.to));
-        if (!items.length) return null;
-        return (
-          <div key={group.group}>
-            <div className="group-title">{t('group_' + group.group)}</div>
-            {items.map((item) => (
+    <>
+      {mobileOpen && <div className="sidebar-overlay" onClick={onClose} aria-hidden="true" />}
+      <aside
+        className={'sidebar' + (mobileOpen ? ' mobile-open' : '')}
+        role="navigation"
+        aria-label={t('nav_mainNav')}
+      >
+        <div className="brand">
+          <img src="/assets/logo.png" alt="לוגו" style={{ width: 34, height: 34, borderRadius: 8, objectFit: 'cover' }} />
+          <span>משק חקלאי</span>
+          <span style={{ marginInlineStart: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            {canSee(role, '/alerts') && (
               <NavLink
-                key={item.to}
-                to={item.to}
-                className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}
-                end={item.to === '/'}
+                to="/alerts"
+                onClick={onClose}
+                aria-label={badges.alerts ? `התראות — ${badges.alerts} פעילות` : 'התראות'}
+                title="התראות"
+                style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 18 }}
               >
-                <span className="nav-icon">{item.icon}</span>
-                <span>{t(item.labelKey)}</span>
-                {item.to === '/requests' && badges.requests > 0 && (
-                  <span className="nav-badge glow" title={`${badges.requests} בקשות ממתינות לאישור`}>{badges.requests}</span>
-                )}
-                {item.to === '/alerts' && badges.alerts > 0 && (
-                  <span className="nav-badge" title={`${badges.alerts} התראות פעילות`}>{badges.alerts}</span>
-                )}
+                🔔{badges.alerts > 0 && <span className="nav-badge">{badges.alerts}</span>}
               </NavLink>
-            ))}
-          </div>
-        );
-      })}
-      <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
-        <div style={{ padding: '0 12px 8px', fontSize: 12, color: 'var(--text-muted)' }}>
-          מחובר: <b style={{ color: 'var(--text-secondary)' }}>{user?.name || 'משתמש'}</b> · {role === 'owner' ? 'מנהל ראשי' : 'מנהל עבודה'}
+            )}
+            <button
+              type="button"
+              className="sidebar-close no-print"
+              onClick={onClose}
+              aria-label={t('nav_closeMenu')}
+            >
+              ✕
+            </button>
+          </span>
         </div>
-        <button type="button" className="nav-item" onClick={logout}>
-          <span className="nav-icon" aria-hidden="true">🚪</span>
-          <span>{t('logout')}</span>
-        </button>
+        {role !== 'owner' && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 6 }}>
+            <LanguageSwitcher lang={lang} onLang={setAppLang} />
+          </div>
+        )}
+        {role === 'manager' && (
+          <div style={{ marginBottom: 10, padding: '8px 12px', background: 'var(--workers-soft)', borderRadius: 10, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span>👷</span><span>מנהל עבודה</span>
+          </div>
+        )}
+        {NAV_GROUPS.map((group) => {
+          const items = group.items.filter((item) => canSee(role, item.to));
+          if (!items.length) return null;
+          return (
+            <div key={group.group}>
+              <div className="group-title">{t('group_' + group.group)}</div>
+              {items.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  onClick={onClose}
+                  className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}
+                  end={item.to === '/'}
+                >
+                  <span className="nav-icon">{item.icon}</span>
+                  <span>{t(item.labelKey)}</span>
+                  {item.to === '/requests' && badges.requests > 0 && (
+                    <span className="nav-badge glow" title={`${badges.requests} בקשות ממתינות לאישור`}>{badges.requests}</span>
+                  )}
+                  {item.to === '/alerts' && badges.alerts > 0 && (
+                    <span className="nav-badge" title={`${badges.alerts} התראות פעילות`}>{badges.alerts}</span>
+                  )}
+                </NavLink>
+              ))}
+            </div>
+          );
+        })}
+        <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+          <div style={{ padding: '0 12px 8px', fontSize: 12, color: 'var(--text-muted)' }}>
+            מחובר: <b style={{ color: 'var(--text-secondary)' }}>{user?.name || 'משתמש'}</b> · {role === 'owner' ? 'מנהל ראשי' : 'מנהל עבודה'}
+          </div>
+          <button type="button" className="nav-item" onClick={logout}>
+            <span className="nav-icon" aria-hidden="true">🚪</span>
+            <span>{t('logout')}</span>
+          </button>
+        </div>
+      </aside>
+    </>
+  );
+}
+
+// סרגל עליון מובייל בלבד — כפתור המבורגר לפתיחת הניווט
+function MobileTopbar({ onOpenMenu }) {
+  const { badges } = useApp();
+  const alertsAndRequests = (badges?.alerts || 0) + (badges?.requests || 0);
+  return (
+    <div className="mobile-topbar no-print">
+      <button
+        type="button"
+        className="mobile-menu-btn"
+        onClick={onOpenMenu}
+        aria-label={t('nav_openMenu')}
+      >
+        <span aria-hidden="true">☰</span>
+        {alertsAndRequests > 0 && <span className="nav-badge mobile-menu-badge">{alertsAndRequests}</span>}
+      </button>
+      <div className="mobile-topbar-brand">
+        <img src="/assets/logo.png" alt="" style={{ width: 26, height: 26, borderRadius: 6, objectFit: 'cover' }} />
+        <span>משק חקלאי</span>
       </div>
-    </aside>
+    </div>
   );
 }
 
@@ -315,11 +357,36 @@ export default function App() {
   return (
     <AppContext.Provider value={appValue}>
       <NavigationProvider role={user.role}>
-        <a className="skip-link" href="#main-content">{t('nav_skipToContent')}</a>
-        <div className="app-shell">
-          <Sidebar />
-          <main className="main-area" id="main-content" tabIndex={-1}>
-            <RoleGate role={user.role}>
+        <AppShell />
+      </NavigationProvider>
+    </AppContext.Provider>
+  );
+}
+
+// מכיל את מבנה העמוד עצמו — נפרד מ-App כדי שיוכל להשתמש ב-useLocation
+// (הזמין רק בתוך NavigationProvider/Router) לסגירת התפריט הנייד במעבר מסך.
+function AppShell() {
+  const { user } = useApp();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const location = useLocation();
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    document.body.style.overflow = mobileNavOpen ? 'hidden' : '';
+    return () => { document.body.style.overflow = ''; };
+  }, [mobileNavOpen]);
+
+  return (
+    <>
+      <a className="skip-link" href="#main-content">{t('nav_skipToContent')}</a>
+      <MobileTopbar onOpenMenu={() => setMobileNavOpen(true)} />
+      <div className="app-shell">
+        <Sidebar mobileOpen={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
+        <main className="main-area" id="main-content" tabIndex={-1}>
+          <RoleGate role={user.role}>
             <Routes>
               <Route path="/" element={<DashboardPage />} />
               <Route path="/structures" element={<StructuresPage />} />
@@ -348,10 +415,9 @@ export default function App() {
               <Route path="/worker" element={<WorkerApp />} />
               <Route path="*" element={<Navigate to={INITIAL_ROUTE(user.role)} replace />} />
             </Routes>
-            </RoleGate>
-          </main>
-        </div>
-      </NavigationProvider>
-    </AppContext.Provider>
+          </RoleGate>
+        </main>
+      </div>
+    </>
   );
 }
