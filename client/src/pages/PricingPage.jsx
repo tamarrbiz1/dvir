@@ -67,9 +67,11 @@ export default function PricingPage() {
     return true;
   });
 
-  const structName = (id) => {
-    const s = structures.find((x) => x.id === id);
-    return s ? (s['מספר מבנה'] || s['סוג מבנה'] || s.id) : id;
+  const structName = (val) => {
+    const first = Array.isArray(val) ? val[0] : val;
+    if (first && typeof first === 'object') return first.name ?? first.id ?? '';
+    const s = structures.find((x) => x.id === first);
+    return s ? (s['מספר מבנה'] || s['סוג מבנה'] || s.id) : (first ?? '');
   };
   const pricingName = (val) => {
     if (Array.isArray(val)) return val.map((x) => (typeof x === 'object' ? x.name : x)).join(', ');
@@ -206,7 +208,7 @@ function StructurePricingTable({ items, structName, pricingName, canEdit, api, s
               {items.map((r) => (
                 <tr key={r.id} onClick={() => open(r)} style={{ cursor: 'pointer' }}>
                   <td>{structName(r['מבנים'] ?? r['מבנה'])}</td>
-                  <td>{pricingName(r['תמחור עבודה'])}</td>
+                  <td>{pricingName(r['תמחור עבודות'])}</td>
                   <td>{safeValue(r['יחידת תמחור'])}</td>
                   <td>{r['מחיר'] != null ? `${formatNumber(r['מחיר'])} ₪` : 'לא זמין'}</td>
                   <td>{r['מחיר לגמלון ראשון'] != null ? `${formatNumber(r['מחיר לגמלון ראשון'])} ₪` : '—'}</td>
@@ -258,7 +260,7 @@ function StructurePricingTable({ items, structName, pricingName, canEdit, api, s
             <div className="drawer-body">
               <div className="card" style={{ marginBottom: 14 }}>
                 <div className="section-title" style={{ marginTop: 0 }}>פרטי תמחור</div>
-                <Row label="תמחור עבודה" val={pricingName(drawer['תמחור עבודה'])} />
+                <Row label="תמחור עבודה" val={pricingName(drawer['תמחור עבודות'])} />
                 <Row label="יחידת תמחור" val={safeValue(drawer['יחידת תמחור'])} />
                 <Row label="מחיר" val={drawer['מחיר'] != null ? `${formatNumber(drawer['מחיר'])} ₪` : 'לא זמין'} />
                 <Row label="מחיר לגמלון ראשון" val={drawer['מחיר לגמלון ראשון'] != null ? `${formatNumber(drawer['מחיר לגמלון ראשון'])} ₪` : '—'} />
