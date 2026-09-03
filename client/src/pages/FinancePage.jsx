@@ -36,7 +36,6 @@ export default function FinancePage() {
   const [checks, setChecks] = useState([]);
   const [invoices, setInvoices] = useState([]);
   const [deliveries, setDeliveries] = useState([]); // תעודות משלוח — לכרטיס המשווק (סעיף 27)
-  const [forecast, setForecast] = useState([]); // תחזית שתילה שבועית — הכנסות בפועל
   const [suppliers, setSuppliers] = useState([]); // ל"קשר לספק" בטאב ההוצאות
   const [loading, setLoading] = useState(true);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -77,11 +76,9 @@ export default function FinancePage() {
       app.api.get('חשבוניות', '?maxRecords=400'),
       app.api.get(DELIVERY_TABLE, '?maxRecords=1000').catch(() => []),
       app.api.get('ספקים', '?maxRecords=200').catch(() => []),
-      app.api.get('תחזית שתילה שבועית', `?maxRecords=2000&raw=1&fields=${['תחילת שבוע', 'קג בפועל', 'מחיר לקג מעודכן', 'מחיר משוער לקג (from מחירי גידול משוערים)'].map(encodeURIComponent).join(',')}`).catch(() => []),
     ])
-      .then(([w, e, s, c, inv, dn, sup, fc]) => {
+      .then(([w, e, s, c, inv, dn, sup]) => {
         setSuppliers(Array.isArray(sup) ? sup : []);
-        setForecast(Array.isArray(fc) ? fc : []);
         setWeekly(Array.isArray(w) ? w : []);
         setExpenses(Array.isArray(e) ? e : []);
         setMarketers(Array.isArray(s) ? s : []);
@@ -109,7 +106,7 @@ export default function FinancePage() {
       {loading ? (
         <div className="skeleton skeleton-card" />
       ) : tab === 'סקירה' ? (
-        <Overview weekly={weekly} expenses={expenses} forecast={forecast} checks={checks} bruto={bruto} neto={neto} expSum={expSum} profit={profit} />
+        <Overview weekly={weekly} expenses={expenses} invoices={invoices} checks={checks} bruto={bruto} neto={neto} expSum={expSum} profit={profit} />
       ) : tab === 'הוצאות' ? (
         <ExpensesTab app={app} expenses={expenses} suppliers={suppliers} onChanged={reloadExpenses} />
       ) : tab === "צ'קים" ? (
@@ -122,21 +119,23 @@ export default function FinancePage() {
 }
 
 // ---------- סקירה ----------
-function Overview({ weekly, expenses, forecast, checks, bruto, neto, expSum, profit }) {
+function Overview({ weekly, expenses, invoices, checks, bruto, neto, expSum, profit }) {
   const monthLabel = (k) => `${Number(k.slice(5, 7))}/${k.slice(0, 4)}`;
-  const lk = (v) => (Array.isArray(v) ? v[0] : v); // ערך Lookup מגיע כמערך
   const expDate = (e) => pick(e, ['תאריך חשבונית-AI', 'תאריך העלאת החשבונית', 'תאריך']);
+  // תאריך החשבונית — קודם התאריך שחולץ ע"י ה-AI מהמסמך עצמו, ואם עדיין
+  // לא נותחה: תאריך ההעלאה (אותו סדר עדיפות שכבר קיים למעלה עבור הוצאות)
+  const invDate = (inv) => pick(inv, ['תאריך-AI', 'העלאה אחרונה של החשבונית', 'תאריך העלאת קובץ']);
 
-  // הכנסות בפועל — ק"ג בפועל × מחיר לק"ג, מאותו מקור כמו הגיליון השנתי
+  // הכנסות בפועל — סכום נטו מטבלת החשבוניות (לא הערכה לפי ק"ג×מחיר)
   const chartData = useMemo(() => {
     const inc = {};
-    forecast.forEach((f) => {
-      const kg = Number(f['קג בפועל']);
-      if (!kg) return;
-      const k = String(f['תחילת שבוע'] || '').slice(0, 7);
-      if (!/^\d{4}-\d{2}$/.test(k)) return;
-      const price = Number(f['מחיר לקג מעודכן']) || Number(lk(f['מחיר משוער לקג (from מחירי גידול משוערים)'])) || 0;
-      inc[k] = (inc[k] || 0) + kg * price;
+    invoices.forEach((inv) => {
+      const net = Number(inv['סכום נטו']);
+      if (!net) return;
+      const d = new Date(invDate(inv));
+      if (Number.isNaN(d.getTime())) return;
+      const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      inc[k] = (inc[k] || 0) + net;
     });
     const exp = {};
     expenses.forEach((e) => {
@@ -151,7 +150,7 @@ function Overview({ weekly, expenses, forecast, checks, bruto, neto, expSum, pro
       'הכנסות בפועל': Math.round(inc[k] || 0),
       'הוצאות': Math.round(exp[k] || 0),
     }));
-  }, [forecast, expenses]);
+  }, [invoices, expenses]);
 
   // צפי הוצאות לפי חודש — צ'קים שטרם נפרעו, לפי תאריך הפירעון
   const expenseForecast = useMemo(() => {
