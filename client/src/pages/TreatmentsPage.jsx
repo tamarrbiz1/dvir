@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import { useAutoRefresh } from '../utils/live.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { exportCsv, fileStamp } from '../utils/table.js';
 import { formatMoney } from '../utils/format.js';
@@ -160,6 +161,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
   }, [app.api]);
 
   useEffect(() => { load(); }, [load]);
+  useAutoRefresh(load);
 
   // אפשרויות singleSelect — נטענות מהמטא כדי לא לכתוב ערך שאינו ברשימה
   useEffect(() => {

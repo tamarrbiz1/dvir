@@ -3,6 +3,7 @@ import { useApp } from '../App.jsx';
 import { formatDate } from '../utils/format.js';
 import { holidayInfo, jewishHolidaysOfYear, thaiHolidaysOfYear, kindOf, KIND_STYLE, toISO } from '../utils/holidays.js';
 import { confirmDialog, toast } from '../utils/ui.js';
+import { useAutoRefresh } from '../utils/live.js';
 import PageHeader from '../components/PageHeader.jsx';
 
 // ============================================================
@@ -58,6 +59,7 @@ export default function NonWorkDaysPage() {
   }, [app.api]);
 
   useEffect(() => { load(); }, [load]);
+  useAutoRefresh(load);
 
   useEffect(() => {
     let cancelled = false;

@@ -14,6 +14,7 @@ import { removeRecord } from '../components/RecordForm.jsx';
 import { toast } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
+import { useAutoRefresh } from '../utils/live.js';
 import { exportCsv, fileStamp, inDateRange } from '../utils/table.js';
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -45,6 +46,7 @@ export default function HarvestsPage() {
   }).catch(() => {}), [app.api]);
 
   useEffect(() => { load().finally(() => setLoading(false)); }, [load]);
+  useAutoRefresh(load);
 
   const structName = (h) => displayName(h['מבנה'], '');
   const types = useMemo(() => [...new Set(harvests.map((h) => h['סוג קטיף']).filter(Boolean))], [harvests]);

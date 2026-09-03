@@ -12,6 +12,7 @@ import { confirmDialog, toast } from '../utils/ui.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
+import { useAutoRefresh } from '../utils/live.js';
 import {
   CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE,
   xAxisProps, yAxisProps, yCategoryProps,
@@ -284,6 +285,8 @@ export default function PlantingPlanPage() {
   }, [app.api]);
 
   useEffect(() => { load(); }, [load]);
+  const silentLoad = useCallback(() => load({ silent: true }), [load]);
+  useAutoRefresh(silentLoad);
 
   // ============================================================
   // אינדקסים ונגזרות

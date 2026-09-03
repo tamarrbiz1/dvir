@@ -6,11 +6,12 @@
 // גרפים עם Drill-down, פעולות מהירות.
 // כל הנתונים מ-Airtable; ה-JSONים של "סיכום שבועי" הם המקור לתפוקה.
 // ============================================================
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
+import { useAutoRefresh } from '../utils/live.js';
 import { expenseCategory , workHours } from '../utils/field.js';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -78,42 +79,42 @@ export default function DashboardPage() {
   const [to, setTo] = useState('');
   const [metric, setMetric] = useState('ק"ג');
 
-  useEffect(() => {
+  const loadFast = useCallback(async () => {
     const enc = encodeURIComponent;
     const weekFields = [
       'קוד שבוע', 'תאריך התחלה', 'תאריך סיום', 'סטטוס התאמה', 'סטטוס התאמת קטיף',
       'שגיאת חישוב קג לפי מבנים', 'JSON לפי ימים מאוחד', 'JSON הכנסה לפי מבנים',
     ].map(enc).join(',');
     const arr = (v) => (Array.isArray(v) ? v : []);
-
-    const loadFast = async () => {
-      try {
-        const [i, e, s, wk] = await Promise.all([
-          app.api.get('חשבוניות', '?maxRecords=1000&raw=1'),
-          app.api.get('הוצאות', '?maxRecords=1000'),
-          app.api.get('מבנים', '?maxRecords=200'),
-          app.api.get('סיכום שבועי', `?maxRecords=300&raw=1&fields=${weekFields}`).catch(() => []),
-        ]);
-        setData((cur) => ({ ...cur, invoices: arr(i), expenses: arr(e), structures: arr(s), weeks: arr(wk) }));
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    const loadWorks = async () => {
-      try {
-        const w = await app.api.get('עבודות עובדים', '?maxRecords=3000');
-        setData((cur) => ({ ...cur, works: arr(w) }));
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoadingWorks(false);
-      }
-    };
-    loadFast();
-    loadWorks();
+    try {
+      const [i, e, s, wk] = await Promise.all([
+        app.api.get('חשבוניות', '?maxRecords=1000&raw=1'),
+        app.api.get('הוצאות', '?maxRecords=1000'),
+        app.api.get('מבנים', '?maxRecords=200'),
+        app.api.get('סיכום שבועי', `?maxRecords=300&raw=1&fields=${weekFields}`).catch(() => []),
+      ]);
+      setData((cur) => ({ ...cur, invoices: arr(i), expenses: arr(e), structures: arr(s), weeks: arr(wk) }));
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
   }, [app.api]);
+
+  const loadWorks = useCallback(async () => {
+    try {
+      const w = await app.api.get('עבודות עובדים', '?maxRecords=3000');
+      setData((cur) => ({ ...cur, works: Array.isArray(w) ? w : [] }));
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingWorks(false);
+    }
+  }, [app.api]);
+
+  useEffect(() => { loadFast(); loadWorks(); }, [loadFast, loadWorks]);
+  useAutoRefresh(loadFast);
+  useAutoRefresh(loadWorks);
 
   const range = useMemo(() => periodRange(preset, from, to), [preset, from, to]);
   const inRange = (dateStr) => {

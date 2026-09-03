@@ -11,9 +11,10 @@
 // פרמטרי URL נתמכים (למעבר ממסכים אחרים):
 //   ?open=<recId>  ?marketer=<recId>  ?structure=<recId>  ?week=<קוד שבוע>
 // ============================================================
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import { useAutoRefresh } from '../utils/live.js';
 import { formatNumber, formatDate, formatWeight, formatPercent } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
@@ -77,11 +78,18 @@ export default function DeliveryNotesPage() {
   const [drawer, setDrawer] = useState(null); // { note, initial? }
   const [form, setForm] = useState(null);
 
-  const load = () => app.api.get(DELIVERY_TABLE, '?maxRecords=1000')
-    .then((d) => { setItems(Array.isArray(d) ? d : []); setError(''); })
-    .catch((e) => setError(e.message || 'שגיאה בטעינת תעודות המשלוח'));
+  const load = useCallback(() => app.api.get(DELIVERY_TABLE, '?maxRecords=1000')
+    .then((d) => {
+      const arr = Array.isArray(d) ? d : [];
+      setItems(arr);
+      setError('');
+      // תעודה פתוחה ברענון ברקע מסונכרנת לרשומה העדכנית
+      setDrawer((cur) => (cur?.note ? { ...cur, note: arr.find((x) => x.id === cur.note.id) || cur.note } : cur));
+    })
+    .catch((e) => setError(e.message || 'שגיאה בטעינת תעודות המשלוח')), [app.api]);
 
-  useEffect(() => { load().finally(() => setLoading(false)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { load().finally(() => setLoading(false)); }, [load]);
+  useAutoRefresh(load);
 
   // פתיחה ישירה של תעודה מתוך URL (?open=recId) — פעם אחת אחרי הטעינה
   useEffect(() => {

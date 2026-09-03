@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { formatNumber, safeValue } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { toast } from '../utils/ui.js';
+import { useAutoRefresh } from '../utils/live.js';
 
 const PRICING_FORM_FIELDS = [
   { name: 'זן', label: 'זן', type: 'text' },
@@ -33,28 +34,18 @@ export default function PricingPage() {
   const [fWorkType, setFWorkType] = useState('');
   const [fUnit, setFUnit] = useState('');
 
-  const reload = () => Promise.all([
+  const reload = useCallback(() => Promise.all([
     app.api.get('תמחור עבודות', '?maxRecords=800'),
     app.api.get('תמחור עבודות לפי מבנים', '?maxRecords=800'),
-  ]).then(([p, ps]) => {
+    app.api.get('מבנים', '?maxRecords=200'),
+  ]).then(([p, ps, st]) => {
     setPricing(Array.isArray(p) ? p : []);
     setPricingByStruct(Array.isArray(ps) ? ps : []);
-  }).catch(() => {});
+    setStructures(Array.isArray(st) ? st : []);
+  }).catch(() => {}), [app.api]);
 
-  useEffect(() => {
-    Promise.all([
-      app.api.get('תמחור עבודות', '?maxRecords=800'),
-      app.api.get('תמחור עבודות לפי מבנים', '?maxRecords=800'),
-      app.api.get('מבנים', '?maxRecords=200'),
-    ])
-      .then(([p, ps, st]) => {
-        setPricing(Array.isArray(p) ? p : []);
-        setPricingByStruct(Array.isArray(ps) ? ps : []);
-        setStructures(Array.isArray(st) ? st : []);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  useEffect(() => { reload().finally(() => setLoading(false)); }, [reload]);
+  useAutoRefresh(reload);
 
   const zanim = useMemo(() => [...new Set(pricing.map((p) => p['זן']).filter(Boolean))], [pricing]);
   const workTypes = useMemo(() => [...new Set(pricing.map((p) => p['סוג עבודה']).filter(Boolean))], [pricing]);

@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import { useAutoRefresh } from '../utils/live.js';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
@@ -34,20 +35,23 @@ export default function AlertsPage() {
   const [loading, setLoading] = useState(true);
   const [week, setWeek] = useState(null);
 
-  useEffect(() => {
-    Promise.all([
-      app.api.get('סיכום שבועי', '?maxRecords=200'),
-      app.api.get('מלאי בסיסי', '?maxRecords=200'),
-      app.api.get(INVOICES_TABLE, '?maxRecords=1000').catch(() => []),
-    ])
-      .then(([w, inv, invs]) => {
-        setWeeks(Array.isArray(w) ? w : []);
-        setInventory(Array.isArray(inv) ? inv : []);
-        setInvoices(Array.isArray(invs) ? invs : []);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  const load = useCallback(() => Promise.all([
+    app.api.get('סיכום שבועי', '?maxRecords=200'),
+    app.api.get('מלאי בסיסי', '?maxRecords=200'),
+    app.api.get(INVOICES_TABLE, '?maxRecords=1000').catch(() => []),
+  ])
+    .then(([w, inv, invs]) => {
+      const arr = Array.isArray(w) ? w : [];
+      setWeeks(arr);
+      setInventory(Array.isArray(inv) ? inv : []);
+      setInvoices(Array.isArray(invs) ? invs : []);
+      // כרטיס שבוע פתוח ברענון ברקע מסונכרן לרשומה העדכנית
+      setWeek((cur) => (cur ? (arr.find((x) => x['קוד שבוע'] === cur['קוד שבוע']) || cur) : cur));
+    })
+    .catch(() => {}), [app.api]);
+
+  useEffect(() => { load().finally(() => setLoading(false)); }, [load]);
+  useAutoRefresh(load);
 
   // ניתוח חריגות מכל שבוע
   const anomalies = useMemo(() => {

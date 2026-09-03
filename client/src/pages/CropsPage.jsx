@@ -15,6 +15,7 @@ import { displayName, firstId } from '../utils/resolve.js';
 import { toast } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
+import { useAutoRefresh } from '../utils/live.js';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 
@@ -66,6 +67,7 @@ export default function CropsPage() {
   }).catch(() => {}), [app.api]);
 
   useEffect(() => { load().finally(() => setLoading(false)); }, [load]);
+  useAutoRefresh(load); // עדכון ממקום אחר (מסך/משתמש אחר) מופיע בלי רענון ידני
 
   // תחזית שתילה שבועית — שורות מנורמלות
   const forecastRows = useMemo(() => forecast.map((f) => ({

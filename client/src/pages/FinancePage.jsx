@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
+import { useAutoRefresh } from '../utils/live.js';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { pick, num, expenseCategory } from '../utils/field.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
@@ -67,28 +68,28 @@ export default function FinancePage() {
     setMarketers(Array.isArray(s) ? s : []);
   };
 
-  useEffect(() => {
-    Promise.all([
-      app.api.get('סיכום שבועי', '?maxRecords=200'),
-      app.api.get('הוצאות', '?maxRecords=400'),
-      app.api.get('משווקים', '?maxRecords=100'),
-      app.api.get(CHECKS_TABLE, '?maxRecords=300'),
-      app.api.get('חשבוניות', '?maxRecords=400'),
-      app.api.get(DELIVERY_TABLE, '?maxRecords=1000').catch(() => []),
-      app.api.get('ספקים', '?maxRecords=200').catch(() => []),
-    ])
-      .then(([w, e, s, c, inv, dn, sup]) => {
-        setSuppliers(Array.isArray(sup) ? sup : []);
-        setWeekly(Array.isArray(w) ? w : []);
-        setExpenses(Array.isArray(e) ? e : []);
-        setMarketers(Array.isArray(s) ? s : []);
-        setChecks(Array.isArray(c) ? c : []);
-        setInvoices(Array.isArray(inv) ? inv : []);
-        setDeliveries(Array.isArray(dn) ? dn : []);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  const loadAll = useCallback(() => Promise.all([
+    app.api.get('סיכום שבועי', '?maxRecords=200'),
+    app.api.get('הוצאות', '?maxRecords=400'),
+    app.api.get('משווקים', '?maxRecords=100'),
+    app.api.get(CHECKS_TABLE, '?maxRecords=300'),
+    app.api.get('חשבוניות', '?maxRecords=400'),
+    app.api.get(DELIVERY_TABLE, '?maxRecords=1000').catch(() => []),
+    app.api.get('ספקים', '?maxRecords=200').catch(() => []),
+  ])
+    .then(([w, e, s, c, inv, dn, sup]) => {
+      setSuppliers(Array.isArray(sup) ? sup : []);
+      setWeekly(Array.isArray(w) ? w : []);
+      setExpenses(Array.isArray(e) ? e : []);
+      setMarketers(Array.isArray(s) ? s : []);
+      setChecks(Array.isArray(c) ? c : []);
+      setInvoices(Array.isArray(inv) ? inv : []);
+      setDeliveries(Array.isArray(dn) ? dn : []);
+    })
+    .catch(() => {}), [app.api]);
+
+  useEffect(() => { loadAll().finally(() => setLoading(false)); }, [loadAll]);
+  useAutoRefresh(loadAll);
 
   const bruto = weekly.reduce((s, w) => s + (Number(w['סכום ברוטו Rollup (from חשבוניות)']) || 0), 0);
   const neto = weekly.reduce((s, w) => s + (Number(w['סכום נטוRollup (from חשבוניות)']) || 0), 0);

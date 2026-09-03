@@ -95,6 +95,11 @@ export default function WorkerRequestsPage() {
     expiry: approvalExpiry(r),
   })).sort((a, b) => String(b.created).localeCompare(String(a.created))), [items]);
 
+  // בקשה פתוחה ברענון אוטומטי (כל 20 שניות) מסונכרנת לרשומה העדכנית
+  useEffect(() => {
+    setDrawer((cur) => (cur ? (enriched.find((x) => x.id === cur.id) || cur) : cur));
+  }, [enriched]);
+
   const counts = useMemo(() => ({
     [REQUEST_STATUS.pending]: enriched.filter((r) => r.status === REQUEST_STATUS.pending).length,
     [REQUEST_STATUS.approved]: enriched.filter((r) => r.status === REQUEST_STATUS.approved).length,

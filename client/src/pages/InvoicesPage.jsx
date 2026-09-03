@@ -13,9 +13,10 @@
 // פרמטרי URL נתמכים (למעבר ממסכים אחרים):
 //   ?open=<recId>  ?marketer=<recId>  ?week=<קוד שבוע>  ?status=<סטטוס>
 // ============================================================
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import { useAutoRefresh } from '../utils/live.js';
 import { formatNumber, formatDate, formatWeight, formatPercent, formatMoney } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import RecordForm from '../components/RecordForm.jsx';
@@ -99,11 +100,18 @@ export default function InvoicesPage() {
   const [confirmDel, setConfirmDel] = useState(null); // רשומה למחיקה
   const [toast, setToast] = useState('');
 
-  const load = () => app.api.get(INVOICES_TABLE, '?maxRecords=1000')
-    .then((d) => { setItems(Array.isArray(d) ? d : []); setError(''); })
-    .catch((e) => setError(e.message || 'שגיאה בטעינת החשבוניות'));
+  const load = useCallback(() => app.api.get(INVOICES_TABLE, '?maxRecords=1000')
+    .then((d) => {
+      const arr = Array.isArray(d) ? d : [];
+      setItems(arr);
+      setError('');
+      // חשבונית פתוחה ברענון ברקע מסונכרנת לרשומה העדכנית
+      setDrawer((cur) => (cur?.inv ? { ...cur, inv: arr.find((x) => x.id === cur.inv.id) || cur.inv } : cur));
+    })
+    .catch((e) => setError(e.message || 'שגיאה בטעינת החשבוניות')), [app.api]);
 
-  useEffect(() => { load().finally(() => setLoading(false)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => { load().finally(() => setLoading(false)); }, [load]);
+  useAutoRefresh(load);
 
   // פתיחה ישירה של חשבונית מתוך URL (?open=recId) — פעם אחת אחרי הטעינה
   useEffect(() => {

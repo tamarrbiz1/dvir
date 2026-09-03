@@ -65,9 +65,13 @@ export default function WorkersPage() {
     app.api.get(WORKS_TABLE, '?maxRecords=3000'),
   ])
     .then(([w, wr]) => {
-      setWorkers(Array.isArray(w) ? w : []);
+      const arr = Array.isArray(w) ? w : [];
+      setWorkers(arr);
       setWorkRecords(Array.isArray(wr) ? wr : []);
-      return Array.isArray(w) ? w : [];
+      // אם כרטיס עובד פתוח ברענון ברקע — מסנכרנים אותו לרשומה העדכנית
+      // (במקום תמונת-מצב ישנה), כדי שגם המסך הפתוח ישקף שינוי ממקום אחר
+      setDrawer((cur) => (cur ? (arr.find((x) => x.id === cur.id) || cur) : cur));
+      return arr;
     })
     .catch(() => []), [app.api]);
 

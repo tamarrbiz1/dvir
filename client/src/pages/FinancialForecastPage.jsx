@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
+import { useAutoRefresh } from '../utils/live.js';
 import { formatMoney, formatNumber } from '../utils/format.js';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -42,12 +43,12 @@ export default function FinancialForecastPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
-  useEffect(() => {
-    app.api.get('סיכום שבועי', '?maxRecords=200&raw=1')
-      .then((d) => setWeeks(Array.isArray(d) ? d : []))
-      .catch((e) => setLoadError(e.message || 'לא ניתן לטעון את הנתונים.'))
-      .finally(() => setLoading(false));
-  }, [app.api]);
+  const load = useCallback(() => app.api.get('סיכום שבועי', '?maxRecords=200&raw=1')
+    .then((d) => setWeeks(Array.isArray(d) ? d : []))
+    .catch((e) => setLoadError(e.message || 'לא ניתן לטעון את הנתונים.')), [app.api]);
+
+  useEffect(() => { load().finally(() => setLoading(false)); }, [load]);
+  useAutoRefresh(load);
 
   // ---- נרמול כל רשומת סיכום שבועי ליחידת תצוגה ----
   const rows = useMemo(() => {

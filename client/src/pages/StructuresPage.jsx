@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import { useAutoRefresh } from '../utils/live.js';
 import { formatNumber, formatMoney, formatDate, safeValue } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
@@ -24,13 +25,16 @@ export default function StructuresPage() {
   const [form, setForm] = useState(null); // {} = חדש, רשומה = עריכה
   const canEdit = (app.user?.role || 'owner') === 'owner'; // CRUD למנהל ראשי בלבד
 
-  const load = () => app.api.get('מבנים', '?maxRecords=200')
+  const load = useCallback(() => app.api.get('מבנים', '?maxRecords=200')
     .then((d) => {
       const arr = Array.isArray(d) ? d : [];
       setStructures(arr);
+      // כרטיס פתוח ברענון ברקע מסונכרן לרשומה העדכנית, לא לתמונת-מצב ישנה
+      setDrawer((cur) => (cur ? (arr.find((x) => x.id === cur.id) || cur) : cur));
       return arr;
     })
-    .catch(() => []);
+    .catch(() => []), [app.api]);
+  useAutoRefresh(load);
 
   useEffect(() => {
     load().then((arr) => {

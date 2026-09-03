@@ -6,7 +6,7 @@
 // כאשר קיים זיהוי AI בלי Linked Record — מוצג "ספק שזוהה" עם
 // פעולת [קשר לספק] שכותבת את הקישור האמיתי ל-Airtable.
 // ============================================================
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatMoney, formatDate } from '../utils/format.js';
 import { pick, num, expenseCategory } from '../utils/field.js';
@@ -55,6 +55,11 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
   const [drawer, setDrawer] = useState(null);
   const [linkFor, setLinkFor] = useState(null); // הוצאה שמקשרים לה ספק
   const [form, setForm] = useState(null);
+
+  // כרטיס הוצאה פתוח ברענון ברקע של המסך ההורה מסונכרן לרשומה העדכנית
+  useEffect(() => {
+    setDrawer((cur) => (cur ? (expenses.find((x) => x.id === cur.id) || cur) : cur));
+  }, [expenses]);
 
   const categories = useMemo(() => [...new Set(expenses.map(expCategory).filter(Boolean))], [expenses]);
   const supplierNames = useMemo(() => [...new Set(expenses.map(supplierName).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'he')), [expenses]);

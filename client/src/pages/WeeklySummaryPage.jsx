@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import { useAutoRefresh } from '../utils/live.js';
 import DeliveryNoteDrawer from '../components/DeliveryNoteDrawer.jsx';
 import { formatNumber, formatMoney, formatDate } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
@@ -62,6 +63,8 @@ export default function WeeklySummaryPage() {
     list.sort((a, b) => String(b[F.code] || '').localeCompare(String(a[F.code] || '')));
     setWeeks(list);
     setExpenses(Array.isArray(e) ? e : []);
+    // כרטיס שבוע פתוח ברענון ברקע מסונכרן לרשומה העדכנית
+    setDrawer((cur) => (cur ? (list.find((x) => x.id === cur.id) || cur) : cur));
     if (handleParam) {
       // קישור עמוק: /weekly?week=<קוד שבוע> פותח את כרטיס השבוע
       const wanted = params.get('week');
@@ -74,6 +77,8 @@ export default function WeeklySummaryPage() {
   }, [app.api, params]);
 
   useEffect(() => { load(true).catch(() => {}).finally(() => setLoading(false)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  const silentLoad = useCallback(() => load(false).catch(() => {}), [load]);
+  useAutoRefresh(silentLoad);
 
   // ------ סינון לפי שנה / חודש / שבוע (מקוד השבוע) ------
   const validCode = (w) => /^\d{8}-\d{8}$/.test(String(w[F.code] || ''));

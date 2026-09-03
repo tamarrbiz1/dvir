@@ -13,6 +13,7 @@ import PageHeader from '../components/PageHeader.jsx';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
+import { useAutoRefresh } from '../utils/live.js';
 import { exportCsv, fileStamp } from '../utils/table.js';
 import { CHECKS_TABLE, CHECK_FIELDS, checkBelongsToSupplier, checkNumber, checkPayee, sortByDue } from '../utils/checks.js';
 import { StatusBadge } from '../components/ChecksTab.jsx';
@@ -57,6 +58,8 @@ export default function SuppliersPage() {
     setExpenses(Array.isArray(e) ? e : []);
     setChecks(Array.isArray(c) ? c : []);
     setInventory(Array.isArray(inv) ? inv : []);
+    // כרטיס ספק פתוח ברענון ברקע מסונכרן לרשומה העדכנית
+    setDrawer((cur) => (cur ? (arr.find((x) => x.id === cur.id) || cur) : cur));
     return arr;
   }).catch(() => []), [app.api]);
 
@@ -78,6 +81,7 @@ export default function SuppliersPage() {
   };
 
   useEffect(() => { load().finally(() => setLoading(false)); }, [load]);
+  useAutoRefresh(load);
 
   const filtered = items.filter((s) => {
     if (!search) return true;

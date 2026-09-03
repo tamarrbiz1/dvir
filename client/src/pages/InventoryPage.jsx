@@ -16,6 +16,7 @@ import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { toast, confirmDialog } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
+import { useAutoRefresh } from '../utils/live.js';
 import { exportCsv, fileStamp } from '../utils/table.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
@@ -60,7 +61,12 @@ export default function InventoryPage() {
   const [lastWeek, setLastWeek] = useState(null); // {code, cartons, pallets}
 
   const load = useCallback(() => app.api.get(TABLE, '?maxRecords=200')
-    .then((d) => { const arr = Array.isArray(d) ? d : []; setItems(arr); return arr; })
+    .then((d) => {
+      const arr = Array.isArray(d) ? d : [];
+      setItems(arr);
+      setDrawer((cur) => (cur ? (arr.find((x) => x.id === cur.id) || cur) : cur));
+      return arr;
+    })
     .catch(() => []), [app.api]);
 
   useEffect(() => {
@@ -76,6 +82,7 @@ export default function InventoryPage() {
     }).finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useAutoRefresh(load);
 
   // השבוע האחרון מ"סיכום שבועי" — לחישוב "מלאי להורדה"
   useEffect(() => {
