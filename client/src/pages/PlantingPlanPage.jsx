@@ -552,6 +552,18 @@ export default function PlantingPlanPage() {
     if (idx >= 0 && idx < weeks.length) setExecWeekKey(weeks[idx].key);
   };
 
+  // מפעיל תיבת-סימון-טריגר של אוטומציה (חשב תוכנית / הזז תוכנית) בביטחון:
+  // Airtable מפעיל אוטומציית "כששדה מתעדכן" רק על מעבר ערך אמיתי
+  // (false→true). אם הריצה הקודמת נכשלה לפני שהאוטומציה איפסה את
+  // הדגל בעצמה (למשל תוכנית עם נתונים חסרים) — הוא נשאר תקוע על true,
+  // וכתיבת true נוספת היא no-op שקט: הכפתור "עובד" בעיני המשתמש בלי
+  // שום שגיאה, אבל האוטומציה לא רצה בפועל. false→true מכריח מעבר אמיתי
+  // בכל מקרה, גם אם התחלנו מ-true תקוע. (אומת ותוקן ידנית ב-8 תוכניות
+  // אמיתיות ב-2026-09-03 — התיקון הזה מונע את זה מלקרות שוב.)
+  const forceTrigger = (table, id, field) => app.api
+    .update(table, id, { [field]: false })
+    .then(() => app.api.update(table, id, { [field]: true }));
+
   // ============================================================
   // כתיבה ל-Airtable (סעיף 44 — Loading, נטרול כפתור, רענון)
   // ============================================================
@@ -584,7 +596,7 @@ export default function PlantingPlanPage() {
     });
     if (!yes) return;
     const ok = await runAction(async () => {
-      for (const pl of list) await app.api.update('תוכניות שתילה', pl.id, { 'חשב תוכנית': true });
+      for (const pl of list) await forceTrigger('תוכניות שתילה', pl.id, 'חשב תוכנית');
     });
     if (ok) toast('החישוב הופעל — התוכנית תתעדכן בעוד רגע');
   };
@@ -603,11 +615,11 @@ export default function PlantingPlanPage() {
     const ok = await runAction(async () => {
       if (form.mode === 'edit') {
         await app.api.update('תוכניות שתילה', form.id, fields);
-        await app.api.update('תוכניות שתילה', form.id, { 'חשב תוכנית': true });
+        await forceTrigger('תוכניות שתילה', form.id, 'חשב תוכנית');
       } else {
         const created = await app.api.create('תוכניות שתילה', fields);
         // הפעלת מנגנון החישוב הקיים ב-Airtable — Zite אינו מחשב תאריכים
-        if (created?.id) await app.api.update('תוכניות שתילה', created.id, { 'חשב תוכנית': true });
+        if (created?.id) await forceTrigger('תוכניות שתילה', created.id, 'חשב תוכנית');
       }
     });
     if (ok) { setPlanForm(null); setPlanDrawer(null); }
@@ -618,7 +630,7 @@ export default function PlantingPlanPage() {
       await app.api.update('תוכניות שתילה', shiftForm.planId, {
         'מספר ימי הזזה': Number(shiftForm.days) || 0,
       });
-      await app.api.update('תוכניות שתילה', shiftForm.planId, { 'הזז תוכנית': true });
+      await forceTrigger('תוכניות שתילה', shiftForm.planId, 'הזז תוכנית');
     });
     if (ok) { setShiftForm(null); setPlanDrawer(null); }
   };
