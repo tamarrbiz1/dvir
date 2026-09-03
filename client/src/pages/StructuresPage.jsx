@@ -62,10 +62,7 @@ export default function StructuresPage() {
         <div className="grid">
           {filtered.map((s) => (
             <div key={s.id} className="card clickable" {...activatable(() => setDrawer(s), `פתיחת כרטיס מבנה ${s['מספר מבנה'] || s['סוג מבנה'] || ''}`)}>
-              {sketchUrl(s) && (
-                <img src={sketchUrl(s)} alt={`סקיצת מבנה ${s['מספר מבנה'] || ''}`} loading="lazy"
-                  style={{ width: 'calc(100% + 48px)', margin: '-20px -24px 12px', height: 120, objectFit: 'cover', borderRadius: '14px 14px 0 0', display: 'block' }} />
-              )}
+              {sketchUrl(s) && <StructureThumb s={s} alt={`סקיצת מבנה ${s['מספר מבנה'] || ''}`} />}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                 <b style={{ fontSize: 18 }}>🏗️ {s['מספר מבנה'] || s['סוג מבנה'] || 'מבנה'}</b>
                 <span className={`badge ${s['סטטוס המבנה'] === 'פעיל' ? 'badge-ok' : 'badge-warn'}`}>
@@ -217,6 +214,31 @@ function sketchUrl(s, full = false) {
   if (!a) return null;
   return full ? (a.url || a.thumbnails?.full?.url || null)
     : (a.thumbnails?.large?.url || a.url || null);
+}
+
+// תמונת סקיצה ברשת המבנים — "blur-up": ה-thumbnail הזעיר (כמה KB, נטען
+// כמעט מיידית) מוצג טשוש מייד, והתמונה האמיתית (thumbnails.large —
+// נמדדה כ-900KB בממוצע; 12 מבנים ביחד ≈ 11MB, זו הסיבה שהטעינה
+// הראשונה איטית) מוצגת מעליה ברגע שסיימה לטעון, במעבר חלק. כך יש
+// תוכן ויזואלי מיידי במקום ריק, בלי לשנות את כמות הנתונים שיורדת בפועל.
+function StructureThumb({ s, alt }) {
+  const [loaded, setLoaded] = useState(false);
+  const a = Array.isArray(s?.['סקיצה']) ? s['סקיצה'][0] : null;
+  if (!a) return null;
+  const tiny = a.thumbnails?.small?.url;
+  const full = a.thumbnails?.large?.url || a.url;
+  const wrapStyle = { position: 'relative', width: 'calc(100% + 48px)', margin: '-20px -24px 12px', height: 120, borderRadius: '14px 14px 0 0', overflow: 'hidden', background: 'var(--bg-secondary)' };
+  const layerStyle = { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' };
+  return (
+    <div style={wrapStyle}>
+      {tiny && (
+        <img src={tiny} alt="" aria-hidden="true"
+          style={{ ...layerStyle, filter: 'blur(10px)', transform: 'scale(1.15)', opacity: loaded ? 0 : 1, transition: 'opacity .25s' }} />
+      )}
+      <img src={full} alt={alt} loading="lazy" onLoad={() => setLoaded(true)}
+        style={{ ...layerStyle, opacity: loaded ? 1 : 0, transition: 'opacity .25s' }} />
+    </div>
+  );
 }
 
 function Overview({ s }) {
