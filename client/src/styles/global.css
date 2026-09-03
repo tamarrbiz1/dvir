@@ -842,10 +842,14 @@ button.nav-item {
   .grid-2 { grid-template-columns: 1fr; }
   .topbar { flex-wrap: wrap; }
 
-  /* הסרגל הופך למגירה נגררת מהצד (RTL — מהימין), במקום להיעלם לגמרי */
+  /* הסרגל הופך למגירה נגררת מהצד (RTL — מהימין), במקום להיעלם לגמרי.
+     inset-inline-start ב-RTL = ימין (לא inset-inline-end — זו הייתה
+     הטעות: מיקמה את המגירה בצד שמאל, מנוגד לסרגל הצד בדסקטופ ולכפתור
+     ההמבורגר שיושב מימין בסרגל העליון הנייד — משאירה פס נראה מהמגירה
+     "הסגורה" בולט מקצה המסך וגורמת לתחושת חפיפה/אי-סדר על התוכן). */
   .sidebar {
     position: fixed;
-    inset-inline-end: 0;
+    inset-inline-start: 0;
     top: 0;
     width: 280px;
     max-width: 84vw;
@@ -873,6 +877,37 @@ button.nav-item {
   .app-shell {
     display: block;
   }
+
+  /* --- מנהל עבודה בנייד: ניווט תחתון בסגנון אפליקציית העובד, בלי תפריט-צד/המבורגר --- */
+  .role-manager .sidebar,
+  .role-manager .sidebar-overlay {
+    display: none;
+  }
+  .manager-tabs {
+    display: flex;
+  }
+  .role-manager .main-area {
+    padding-bottom: calc(78px + env(safe-area-inset-bottom));
+  }
+}
+
+.manager-tabs {
+  display: none;
+  /* דורס במפורש את מיקום/רוחב .worker-tabs (שני המחלקות יחד על אותו
+     אלמנט) — כדי לא להסתמך על סדר-דריסה עדין בין left הפיזי ל-
+     inset-inline הלוגי, שהיה מזיז את הסרגל חצי-מסך שמאלה בטעות. */
+  position: fixed !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  transform: none !important;
+  width: auto !important;
+  max-width: none !important;
+  height: 64px;
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--card-bg);
+  border-top: 1px solid var(--border);
+  z-index: 30;
 }
 
 /* --- רשת 2 עמודות משותפת (טפסים/כרטיסי-סטטיסטיקה) — משמשת בכמה מסכים
@@ -1052,9 +1087,11 @@ button.nav-item {
 }
 
 .worker-tab {
+  position: relative;
   flex: 1;
   border: none;
   background: transparent;
+  text-decoration: none;
   display: flex;
   flex-direction: column;
   align-items: center;

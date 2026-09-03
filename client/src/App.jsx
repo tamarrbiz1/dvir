@@ -137,26 +137,62 @@ function Sidebar({ mobileOpen, onClose }) {
   );
 }
 
-// סרגל עליון מובייל בלבד — כפתור המבורגר לפתיחת הניווט
-function MobileTopbar({ onOpenMenu }) {
+// סרגל עליון מובייל בלבד — כפתור המבורגר לפתיחת הניווט.
+// למנהל עבודה אין תפריט צד נייד בכלל (ר' ManagerMobileTabs) — כאן
+// מוצג במקום כפתור ההמבורגר מתג השפה (בדיוק כמו בכותרת אפליקציית העובד).
+function MobileTopbar({ onOpenMenu, role, lang, onLang }) {
   const { badges } = useApp();
   const alertsAndRequests = (badges?.alerts || 0) + (badges?.requests || 0);
   return (
     <div className="mobile-topbar no-print">
-      <button
-        type="button"
-        className="mobile-menu-btn"
-        onClick={onOpenMenu}
-        aria-label={t('nav_openMenu')}
-      >
-        <span aria-hidden="true">☰</span>
-        {alertsAndRequests > 0 && <span className="nav-badge mobile-menu-badge">{alertsAndRequests}</span>}
-      </button>
+      {role === 'manager' ? (
+        <LanguageSwitcher lang={lang} onLang={onLang} compact />
+      ) : (
+        <button
+          type="button"
+          className="mobile-menu-btn"
+          onClick={onOpenMenu}
+          aria-label={t('nav_openMenu')}
+        >
+          <span aria-hidden="true">☰</span>
+          {alertsAndRequests > 0 && <span className="nav-badge mobile-menu-badge">{alertsAndRequests}</span>}
+        </button>
+      )}
       <div className="mobile-topbar-brand">
         <img src="/assets/logo.png" alt="" style={{ width: 26, height: 26, borderRadius: 6, objectFit: 'cover' }} />
         <span>משק חקלאי</span>
       </div>
     </div>
+  );
+}
+
+// ============================================================
+// ניווט תחתון למנהל עבודה במובייל — באותו סגנון בדיוק כמו אפליקציית
+// העובד (worker-tabs/worker-tab), במקום תפריט-צד נגרר. למנהל עבודה יש
+// רק 3 מסכים (כוח אדם) — טאב תחתון קבוע מתאים להם הרבה יותר מתפריט צד.
+// מוצג רק במובייל (ר' .manager-tabs ב-CSS); בדסקטופ נשאר סרגל הצד הרגיל.
+// ============================================================
+function ManagerMobileTabs() {
+  const { user, logout, badges } = useApp();
+  const role = user?.role || 'owner';
+  const items = NAV_GROUPS.flatMap((g) => g.items).filter((item) => canSee(role, item.to));
+  return (
+    <nav className="worker-tabs manager-tabs no-print" aria-label={t('nav_mainNav')}>
+      {items.map((item) => (
+        <NavLink key={item.to} to={item.to} end
+          className={({ isActive }) => `worker-tab${isActive ? ' active' : ''}`}>
+          <span className="worker-tab-icon" aria-hidden="true">{item.icon}</span>
+          <span>{t(item.labelKey)}</span>
+          {item.to === '/requests' && badges.requests > 0 && (
+            <span className="nav-badge glow" style={{ position: 'absolute', top: 2, insetInlineEnd: '18%' }}>{badges.requests}</span>
+          )}
+        </NavLink>
+      ))}
+      <button type="button" className="worker-tab" onClick={logout}>
+        <span className="worker-tab-icon" aria-hidden="true">🚪</span>
+        <span>{t('logout')}</span>
+      </button>
+    </nav>
   );
 }
 
@@ -366,7 +402,8 @@ export default function App() {
 // מכיל את מבנה העמוד עצמו — נפרד מ-App כדי שיוכל להשתמש ב-useLocation
 // (הזמין רק בתוך NavigationProvider/Router) לסגירת התפריט הנייד במעבר מסך.
 function AppShell() {
-  const { user } = useApp();
+  const { user, lang, setAppLang } = useApp();
+  const role = user.role || 'owner';
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const location = useLocation();
 
@@ -380,9 +417,9 @@ function AppShell() {
   }, [mobileNavOpen]);
 
   return (
-    <>
+    <div className={`role-${role}`}>
       <a className="skip-link" href="#main-content">{t('nav_skipToContent')}</a>
-      <MobileTopbar onOpenMenu={() => setMobileNavOpen(true)} />
+      <MobileTopbar onOpenMenu={() => setMobileNavOpen(true)} role={role} lang={lang} onLang={setAppLang} />
       <div className="app-shell">
         <Sidebar mobileOpen={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
         <main className="main-area" id="main-content" tabIndex={-1}>
@@ -418,6 +455,7 @@ function AppShell() {
           </RoleGate>
         </main>
       </div>
-    </>
+      {role === 'manager' && <ManagerMobileTabs />}
+    </div>
   );
 }
