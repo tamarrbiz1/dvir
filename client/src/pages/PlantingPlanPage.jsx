@@ -230,11 +230,11 @@ export default function PlantingPlanPage() {
   const [structureFilter, setStructureFilter] = useState('');
   const [cropFilter, setCropFilter] = useState('');
   const [quarterFilter, setQuarterFilter] = useState('');
-  const [tab, setTab] = useState('build');
 
-  // לוח שנה
-  // 'sheet' = הגיליון השנתי (סרגל מבנים × סרגל שבועות) כפי שהלקוח רגיל; 'month'/'week' = לוח שנה
-  const [view, setView] = useState('sheet');
+  // מסך אחד, שורת ניווט שטוחה אחת — בלי כפילות של אותה תצוגה תחת שני שמות:
+  // 'sheet' = גיליון שבועי (סרגל מבנים × סרגל שבועות) · 'daily' = לוח שנה יומי ·
+  // 'dash' = דשבורד · 'month'/'week' = לוח שנה רגיל (אירועי שתילה/קטיף)
+  const [screen, setScreen] = useState('sheet');
   const [cursor, setCursor] = useState(() => {
     const now = new Date();
     return { year: now.getFullYear(), month: now.getMonth(), day: now.getDate() };
@@ -845,20 +845,24 @@ export default function PlantingPlanPage() {
         )}
       </div>
 
+      {/* שורת ניווט שטוחה אחת — כל התצוגות זו לצד זו, בלי כפילות (גיליון
+          שבועי = תצוגת ה"גיליון שנתי" הקודמת, אוחדו לאותו שם/תצוגה אחת) */}
       <div className="tabs" style={{ marginBottom: 18 }}>
         {[
-          { key: 'build', label: 'א. גיליון שבועי' },
-          { key: 'exec', label: 'ב. לוח שנה יומי' },
+          { key: 'sheet', label: 'גיליון שבועי' },
+          { key: 'daily', label: 'לוח שנה יומי' },
           { key: 'dash', label: 'דשבורד' },
-        ].map((t) => (
-          <button key={t.key} className={`tab ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
-            {t.label}
+          { key: 'month', label: 'חודש' },
+          { key: 'week', label: 'שבוע' },
+        ].map((s) => (
+          <button key={s.key} className={`tab ${screen === s.key ? 'active' : ''}`} onClick={() => setScreen(s.key)}>
+            {s.label}
           </button>
         ))}
       </div>
 
-      {/* ================= בניית תוכנית ================= */}
-      {tab === 'build' && view === 'sheet' && (
+      {/* ================= גיליון שבועי (א) ================= */}
+      {screen === 'sheet' && (
         <PlanSheet
           year={year}
           plans={plansOfYear.filter((p) => {
@@ -873,14 +877,12 @@ export default function PlantingPlanPage() {
           nonWorkByKey={nonWorkByKey}
           quarterFilter={quarterFilter}
           planInfo={planInfo}
-          view={view}
-          onView={setView}
           onPlan={openPlanCard}
           onWeek={(w) => setWeekDrawer(w)}
         />
       )}
 
-      {tab === 'build' && view !== 'sheet' && (
+      {(screen === 'month' || screen === 'week') && (
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
           <div style={{
             padding: '12px 20px', background: activeQuarter ? `${activeQuarter.color}66` : '#fff',
@@ -905,11 +907,9 @@ export default function PlantingPlanPage() {
           </div>
 
           <div style={{ display: 'flex', gap: 8, padding: '10px 20px', alignItems: 'center', flexWrap: 'wrap' }}>
-            <button className="btn btn-sm btn-ghost" onClick={() => (view === 'month' ? stepMonth(-1) : stepWeek(-1))}>‹ קודם</button>
+            <button className="btn btn-sm btn-ghost" onClick={() => (screen === 'month' ? stepMonth(-1) : stepWeek(-1))}>‹ קודם</button>
             <button className="btn btn-sm btn-ghost" onClick={goToday}>היום</button>
-            <button className="btn btn-sm btn-ghost" onClick={() => (view === 'month' ? stepMonth(1) : stepWeek(1))}>הבא ›</button>
-            <div style={{ flex: 1 }} />
-            <ViewSwitch view={view} onView={setView} />
+            <button className="btn btn-sm btn-ghost" onClick={() => (screen === 'month' ? stepMonth(1) : stepWeek(1))}>הבא ›</button>
           </div>
 
           {crossesYear && (
@@ -922,9 +922,9 @@ export default function PlantingPlanPage() {
           )}
 
           <CalendarGrid
-            days={view === 'month' ? monthDays : weekDays}
-            leadingBlanks={view === 'month' ? monthDays[0].getDay() : 0}
-            tall={view === 'week'}
+            days={screen === 'month' ? monthDays : weekDays}
+            leadingBlanks={screen === 'month' ? monthDays[0].getDay() : 0}
+            tall={screen === 'week'}
             eventsOnDate={eventsOnDate}
             nonWorkByKey={nonWorkByKey}
             onEvent={(e) => openPlanCard(e.info.id)}
@@ -942,8 +942,8 @@ export default function PlantingPlanPage() {
         </div>
       )}
 
-      {/* ================= לוח שנה יומי (וריאציה ב) ================= */}
-      {tab === 'exec' && (
+      {/* ================= לוח שנה יומי (ב) ================= */}
+      {screen === 'daily' && (
         weeks.length === 0 ? (
           <div className="card empty-state">אין נתוני תחזית לשנה או לפילטרים שנבחרו.</div>
         ) : (
@@ -959,7 +959,7 @@ export default function PlantingPlanPage() {
       )}
 
       {/* ================= דשבורד ================= */}
-      {tab === 'dash' && (
+      {screen === 'dash' && (
         <Dashboard data={dashboard} year={year} onWeek={(key) => {
           const w = weeks.find((x) => x.key === key);
           if (w) setWeekDrawer(w);
@@ -973,7 +973,7 @@ export default function PlantingPlanPage() {
       )}
 
       {/* ================= טבלת אקסל — תכנון מול ביצוע (סעיף 4.3) ================= */}
-      {tab === 'dash' && weeks.length > 0 && (
+      {screen === 'dash' && weeks.length > 0 && (
         <ExcelTable weeks={weeks} weekTotals={weekTotals} />
       )}
 
@@ -2054,24 +2054,7 @@ function DonutCard({ title, rows, total, withIcon, onSlice }) {
 }
 
 // ============================================================
-// מתג תצוגה — גיליון שנתי / חודש / שבוע
-// ============================================================
-const VIEW_OPTIONS = [['sheet', 'גיליון שנתי'], ['month', 'חודש'], ['week', 'שבוע']];
-
-function ViewSwitch({ view, onView }) {
-  return (
-    <div className="tabs" style={{ width: 'fit-content' }}>
-      {VIEW_OPTIONS.map(([key, label]) => (
-        <button key={key} type="button" className={`tab ${view === key ? 'active' : ''}`} onClick={() => onView(key)}>
-          {label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-// ============================================================
-// הגיליון השנתי — כמו קובץ האקסל של הלקוח
+// הגיליון השבועי — כמו קובץ האקסל של הלקוח
 //
 // סרגל רוחבי (למעלה): שנה → חודשים → שבועות, ומתחתיו זנים / חגים / הערות.
 // סרגל אנכי (מימין): המבנים עם השטח בדונם.
@@ -2139,7 +2122,7 @@ const structureNumber = (name) => {
 
 function PlanSheet({
   year, plans, forecasts, structures, nonWorkByKey, quarterFilter,
-  planInfo, view, onView, onPlan, onWeek,
+  planInfo, onPlan, onWeek,
 }) {
   const fmt = (v) => formatNumber(v, 0);
   const today = startOfToday();
@@ -2348,7 +2331,7 @@ function PlanSheet({
   return (
     <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
       <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <b style={{ fontSize: 16 }}>גיליון שנתי — {year}</b>
+        <b style={{ fontSize: 16 }}>גיליון שבועי — {year}</b>
         <div className="tabs" style={{ padding: 3 }}>
           {[['combined', 'משולב'], ['plan', 'תכנון'], ['actual', 'בפועל']].map(([k, l]) => (
             <button key={k} type="button" className={`tab ${mode === k ? 'active' : ''}`}
@@ -2358,8 +2341,6 @@ function PlanSheet({
         <span className="badge" style={{ background: MODE_META[mode].soft, color: MODE_META[mode].color, fontWeight: 700 }}>
           {MODE_META[mode].icon} {MODE_META[mode].explain}
         </span>
-        <div style={{ flex: 1 }} />
-        <ViewSwitch view={view} onView={onView} />
       </div>
 
       {planRows.length === 0 && (
