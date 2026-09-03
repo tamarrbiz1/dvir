@@ -8,7 +8,7 @@
 // ============================================================
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
-import { t, monthShort } from '../i18n.js';
+import { t, monthShort, workerStatusDisplay, workerTypeDisplay, translateStructureName, translateVariety } from '../i18n.js';
 import { useApp } from '../App.jsx';
 import { workHours , workTypeName } from '../utils/field.js';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
@@ -119,9 +119,9 @@ export default function WorkersPage() {
 
   return (
     <div>
-      <PageHeader icon="👥" title="עובדים ועבודות">
+      <PageHeader icon="👥" title={t('workersAndJobs')}>
         {tab === 'workers' && (
-          <input className="input no-print" aria-label="חיפוש עובד" placeholder={t('c_search')} value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input className="input no-print" aria-label={t('m_searchWorker')} placeholder={t('c_search')} value={search} onChange={(e) => setSearch(e.target.value)} />
         )}
         {tab === 'workers' && canEdit && <button className="btn btn-primary no-print" onClick={() => setForm({})}>{t('m_newWorker')}</button>}
       </PageHeader>
@@ -153,7 +153,7 @@ export default function WorkersPage() {
         <div className="grid">
           {filteredWorkers.length === 0 && <div className="empty-state" style={{ gridColumn: '1 / -1' }}>{t('c_noData')}</div>}
           {filteredWorkers.map((w) => {
-            const name = `${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || 'עובד';
+            const name = `${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || t('m_workerFallback');
             const recs = recordsFor(w);
             const cur = recs.filter((r) => inMonth(r, 0));
             const prev = recs.filter((r) => inMonth(r, -1));
@@ -165,9 +165,9 @@ export default function WorkersPage() {
                   </div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 700 }}>{name}</div>
-                    <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{w['סוג עובד'] ?? t('c_notAvailable')}</div>
+                    <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{workerTypeDisplay(w['סוג עובד']) || t('c_notAvailable')}</div>
                   </div>
-                  <span className={`badge ${w['סטטוס'] === 'פעיל' ? 'badge-ok' : 'badge-warn'}`}>{w['סטטוס'] || t('c_notAvailable')}</span>
+                  <span className={`badge ${w['סטטוס'] === 'פעיל' ? 'badge-ok' : 'badge-warn'}`}>{workerStatusDisplay(w['סטטוס']) || t('c_notAvailable')}</span>
                 </div>
                 <div className="form-grid-2" style={{ gap: 6, fontSize: 13 }}>
                   <div><span style={{ color: 'var(--text-muted)' }}>{t('m_hoursMonth')}: </span><b>{formatNumber(hoursOf(cur))}</b></div>
@@ -176,7 +176,7 @@ export default function WorkersPage() {
                   <div><span style={{ color: 'var(--text-muted)' }}>{t('m_prevMonth')}: </span><b style={{ color: 'var(--workers)' }}>{formatMoney(paidOf(prev))}</b></div>
                 </div>
                 <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
-                  <button className="btn btn-sm btn-ghost" aria-label="פתח פרטים" title="פתח פרטים" onClick={(e) => { e.stopPropagation(); setDrawer(w); }}>👁</button>
+                  <button className="btn btn-sm btn-ghost" aria-label={t('m_openDetails')} title={t('m_openDetails')} onClick={(e) => { e.stopPropagation(); setDrawer(w); }}>👁</button>
                   {canEdit && (
                     <>
                     <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={(e) => { e.stopPropagation(); setForm(w); }}>✎</button>
@@ -236,12 +236,14 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
   const [form, setForm] = useState(null);
 
   useEffect(() => {
-    if (openNew) { setForm({}); clearNew(); }
+    // מנהל עבודה — צפייה בלבד: פרמטר ?new=1 לא יפתח את טופס היצירה עבורו
+    if (openNew && canEdit) { setForm({}); }
+    if (openNew) clearNew();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openNew]);
 
   const workerName = (r) => displayName(r['עובד'], '');
-  const structName = (r) => displayName(r['מבנה'], '');
+  const structName = (r) => translateStructureName(displayName(r['מבנה'], ''));
   const workType = (r) => workTypeName(r);
   const unit = (r) => r['יחידת תמחור (from תמחור עבודות)'];
 
@@ -283,7 +285,7 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
     { label: 'עובד', get: workerName },
     { label: 'מבנה', get: structName },
     { label: 'סוג עבודה', get: workType },
-    { label: 'זן', get: (r) => r['זן (from תמחור עבודות)'] || '' },
+    { label: 'זן', get: (r) => translateVariety(r['זן (from תמחור עבודות)']) || '' },
     { label: 'כמות', get: (r) => r['כמות'] ?? '' },
     { label: 'יחידת תמחור', get: (r) => unit(r) || '' },
     { label: 'שעות', get: (r) => r['סכום שעות'] ?? '' },
@@ -302,8 +304,8 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
       </div>
 
       <div className="filter-bar no-print">
-        <input className="input" aria-label="חיפוש עבודה" placeholder={t('c_search')} value={search} onChange={(e) => setSearch(e.target.value)} />
-        <select className="select" aria-label="סינון לפי עובד" value={fWorker} onChange={(e) => setFWorker(e.target.value)}>
+        <input className="input" aria-label={t('m_searchJob')} placeholder={t('c_search')} value={search} onChange={(e) => setSearch(e.target.value)} />
+        <select className="select" aria-label={t('m_filterByWorker')} value={fWorker} onChange={(e) => setFWorker(e.target.value)}>
           <option value="">{t('m_allWorkers')}</option>
           {workers.map((w) => <option key={w.id} value={w.id}>{`${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || w.id}</option>)}
         </select>
@@ -332,10 +334,10 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
                 {filtered.slice(0, limit).map((r) => (
                   <tr key={r.id}>
                     <td>{formatDate(r['תאריך'])}</td>
-                    <td>{workerName(r) ? <span className="obj-chip static">👤 {workerName(r)}</span> : 'לא זמין'}</td>
+                    <td>{workerName(r) ? <span className="obj-chip static">👤 {workerName(r)}</span> : t('c_notAvailable')}</td>
                     <td>{structName(r) ? <span className="obj-chip static">🏗️ {structName(r)}</span> : '—'}</td>
                     <td>{workType(r) || '—'}</td>
-                    <td>{r['זן (from תמחור עבודות)'] || '—'}</td>
+                    <td>{translateVariety(r['זן (from תמחור עבודות)']) || '—'}</td>
                     <td>
                       {r['כמות'] != null ? formatNumber(r['כמות']) : '—'}
                       {r['כמות'] != null && unit(r) && (
@@ -344,7 +346,7 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
                     </td>
                     <td>{r['סכום שעות'] != null ? formatNumber(r['סכום שעות']) : '—'}</td>
                     <td>{r['מחיר (from תמחור עבודות)'] != null ? formatMoney(r['מחיר (from תמחור עבודות)']) : '—'}</td>
-                    <td style={{ fontWeight: 700, color: 'var(--revenue)' }}>{r['סכום לתשלום'] != null ? formatMoney(r['סכום לתשלום']) : 'לא זמין'}</td>
+                    <td style={{ fontWeight: 700, color: 'var(--revenue)' }}>{r['סכום לתשלום'] != null ? formatMoney(r['סכום לתשלום']) : t('c_notAvailable')}</td>
                     {canEdit && (
                       <td className="no-print">
                         <div style={{ display: 'flex', gap: 4 }}>
@@ -514,7 +516,7 @@ function WorkerDetails({ worker, records, onClose }) {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
 
-  const name = `${worker['שם פרטי'] || ''} ${worker['שם משפחה'] || ''}`.trim() || 'עובד';
+  const name = `${worker['שם פרטי'] || ''} ${worker['שם משפחה'] || ''}`.trim() || t('m_workerFallback');
 
   // פילטרים
   const filtered = useMemo(() => records.filter((r) => {
@@ -574,7 +576,7 @@ function WorkerDetails({ worker, records, onClose }) {
   const byWorkType = (field) => {
     const b = {};
     filtered.forEach((r) => {
-      const k = workTypeName(r, 'אחר');
+      const k = workTypeName(r, t('c_other'));
       b[k] = (b[k] || 0) + (Number(r[field === 'hours' ? 'סכום שעות' : 'סכום לתשלום']) || 0);
     });
     return Object.entries(b).map(([k, v]) => ({ name: k, value: Math.round(v) }));
@@ -583,8 +585,9 @@ function WorkerDetails({ worker, records, onClose }) {
     const b = {};
     filtered.forEach((r) => {
       let nm = r['מבנה'];
-      if (Array.isArray(nm)) nm = displayName(nm);
-      b[nm || 'אחר'] = (b[nm || 'אחר'] || 0) + 1;
+      if (Array.isArray(nm)) nm = translateStructureName(displayName(nm));
+      nm = nm || t('c_other');
+      b[nm] = (b[nm] || 0) + 1;
     });
     return Object.entries(b).map(([k, v]) => ({ name: k, value: v }));
   };

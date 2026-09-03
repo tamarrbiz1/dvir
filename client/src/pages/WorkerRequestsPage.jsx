@@ -23,7 +23,7 @@ const typeDisplay = (type) => ({
   'מחלה': t('w_reqSick'),
   'חופש לחלק מהיום': t('w_reqPartial'),
   'עדכון תאריך עבודה': t('w_reqDateChange'),
-}[type] || type);
+}[type] || type || t('c_notAvailable'));
 const statusDisplay = (s) => ({
   [REQUEST_STATUS.pending]: t('w_stPending'),
   [REQUEST_STATUS.approved]: t('w_stApproved'),
@@ -81,8 +81,8 @@ export default function WorkerRequestsPage() {
     id: r.id,
     raw: r,
     workerId: firstId(r[REQUEST_FIELDS.worker]),
-    worker: displayName(r[REQUEST_FIELDS.worker], 'לא זמין'),
-    type: isDateChangeReq(r) ? 'עדכון תאריך עבודה' : (r[REQUEST_FIELDS.type] || 'לא זמין'),
+    worker: displayName(r[REQUEST_FIELDS.worker], t('c_notAvailable')),
+    type: isDateChangeReq(r) ? 'עדכון תאריך עבודה' : (r[REQUEST_FIELDS.type] || ''),
     isDateChange: isDateChangeReq(r),
     date: r[REQUEST_FIELDS.date] || '',
     time: requestTimeLabel(r),
@@ -297,7 +297,7 @@ function RequestDrawer({ req, busy, error, onClose, onAnswer, onDelete, canAct =
 }
 
 function fmtDateTime(v) {
-  if (!v) return 'לא זמין';
+  if (!v) return t('c_notAvailable');
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return String(v);
   return `${formatDate(d)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;

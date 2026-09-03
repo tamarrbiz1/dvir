@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { t, monthShort } from '../i18n.js';
+import { t, monthShort, translateStructureName } from '../i18n.js';
 import { useApp } from '../App.jsx';
 import { workHours , workTypeName } from '../utils/field.js';
 import { activatable } from '../utils/a11y.js';
@@ -66,7 +66,7 @@ export default function TeamCrewPage() {
       const recs = workerRecs(w);
       return {
         id: w.id,
-        name: `${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || 'עובד',
+        name: `${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || t('m_workerFallback'),
         hours: recs.reduce((s, r) => s + workHours(r), 0),
         paid: recs.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0),
         jobs: recs.length,
@@ -88,7 +88,7 @@ export default function TeamCrewPage() {
       const ref = r['עובד'];
       let wId = Array.isArray(ref) ? (ref[0]?.id ?? ref[0]) : ref;
       const w = workers.find((x) => String(x.id) === String(wId));
-      const wname = w ? (`${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim()) : 'אחר';
+      const wname = w ? (`${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim()) : t('c_other');
       if (!map[label]) map[label] = {};
       map[label][wname] = (map[label][wname] || 0) + (Number(r['סכום לתשלום']) || 0);
     });
@@ -107,7 +107,7 @@ export default function TeamCrewPage() {
   const costByType = useMemo(() => {
     const b = {};
     filtered.forEach((r) => {
-      const k = workTypeName(r, 'אחר');
+      const k = workTypeName(r, t('c_other'));
       b[k] = (b[k] || 0) + (Number(r['סכום לתשלום']) || 0);
     });
     return Object.entries(b).map(([k, v]) => ({ name: k, value: Math.round(v) }));
@@ -119,7 +119,8 @@ export default function TeamCrewPage() {
     filtered.forEach((r) => {
       let nm = r['מבנה'];
       if (Array.isArray(nm)) nm = nm.map((x) => (x?.name ?? x)).join(', ');
-      b[nm || 'אחר'] = (b[nm || 'אחר'] || 0) + (Number(r['סכום לתשלום']) || 0);
+      nm = translateStructureName(nm) || t('c_other');
+      b[nm] = (b[nm] || 0) + (Number(r['סכום לתשלום']) || 0);
     });
     return Object.entries(b).map(([k, v]) => ({ name: k, value: Math.round(v) }));
   }, [filtered]);

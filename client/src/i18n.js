@@ -241,6 +241,23 @@ export const translations = {
   m_decisionSaved: { he: 'ההחלטה נשמרת ומופיעה מיד באזור האישי של העובד.', th: 'คำตอบจะบันทึกและแสดงในหน้าของพนักงานทันที' },
   m_noRequests: { he: 'אין בקשות בסינון הנוכחי', th: 'ไม่มีคำขอตามตัวกรอง' },
 
+  // ---------- ערכי תוכן מ-Airtable שחוזרים במסכי כוח אדם ----------
+  // (סטטוס/סוג עובד — ערכי בחירה סגורים בטבלת "עובדים"; לא תוכן חופשי)
+  c_other: { he: 'אחר', th: 'อื่นๆ' },
+  m_workerFallback: { he: 'עובד', th: 'พนักงาน' },
+  ws_active: { he: 'פעיל', th: 'ทำงานอยู่' },
+  ws_inactive: { he: 'לא פעיל', th: 'ไม่ได้ทำงาน' },
+  ws_vacation: { he: 'בחופשה', th: 'ลาพักร้อน' },
+  ws_ended: { he: 'הסתיים', th: 'สิ้นสุดแล้ว' },
+  wt_permanent: { he: 'עובד קבוע', th: 'พนักงานประจำ' },
+  wt_temporary: { he: 'עובד זמני', th: 'พนักงานชั่วคราว' },
+  wt_seasonal: { he: 'עובד עונתי', th: 'พนักงานตามฤดูกาล' },
+  m_openDetails: { he: 'פתח פרטים', th: 'เปิดรายละเอียด' },
+  m_searchWorker: { he: 'חיפוש עובד', th: 'ค้นหาพนักงาน' },
+  m_searchJob: { he: 'חיפוש עבודה', th: 'ค้นหางาน' },
+  m_filterByWorker: { he: 'סינון לפי עובד', th: 'กรองตามพนักงาน' },
+  workersAndJobs: { he: 'עובדים ועבודות', th: 'พนักงานและงาน' },
+
 };
 
 let currentLang = 'he';
@@ -266,6 +283,38 @@ export function translateStructureName(name) {
   let out = String(name);
   for (const [he, th] of STRUCTURE_WORDS_TH) out = out.split(he).join(th);
   return out;
+}
+
+// ערכי בחירה סגורים בטבלת "עובדים" — סטטוס/סוג עובד (סעיף כוח אדם)
+const WORKER_STATUS_KEYS = {
+  'פעיל': 'ws_active', 'לא פעיל': 'ws_inactive', 'בחופשה': 'ws_vacation', 'הסתיים': 'ws_ended',
+};
+export function workerStatusDisplay(status) {
+  const key = WORKER_STATUS_KEYS[status];
+  return key ? t(key) : (status || '');
+}
+const WORKER_TYPE_KEYS = {
+  'עובד קבוע': 'wt_permanent', 'עובד זמני': 'wt_temporary', 'עובד עונתי': 'wt_seasonal', 'אחר': 'c_other',
+};
+export function workerTypeDisplay(type) {
+  const key = WORKER_TYPE_KEYS[type];
+  return key ? t(key) : (type || '');
+}
+
+// זני גידול נפוצים (סעיף "עבודות") — רשימה חלקית במכוון: מילים בסיסיות
+// וחד-משמעיות בלבד (לא מומצאות). אם יתווסף זן חדש שלא ברשימה, הוא
+// יוצג כפי שהוא בעברית — עדיף חוסר תרגום על תרגום שגוי. הרחבה עתידית
+// עדיפה כשדה "זן - תאילנדית" ב-Airtable (כמו "סוג עבודה-תאילנדית"),
+// לא כאן.
+const VARIETY_WORDS_TH = [
+  ['מלפפון', 'แตงกวา'],
+  ['חציל', 'มะเขือ'],
+  ['שרי', 'เชอร์รี่'],
+];
+export function translateVariety(name) {
+  if (!name || currentLang !== 'th') return name;
+  const hit = VARIETY_WORDS_TH.find(([he]) => he === String(name).trim());
+  return hit ? hit[1] : name;
 }
 
 // שם חודש מקוצר לפי השפה הפעילה (לצירי גרפים ולפילטרים)
