@@ -226,6 +226,9 @@ await test("צ'ק: זרימה מלאה — יצירה + סטטוס + עריכה 
     'מוטב': MARK + '-edited', 'שם בעל הצק': MARK, 'סכום צ׳ק': '789', 'תאריך פירעון': '15/11/2026', 'הערות': MARK,
   });
   await del('צ׳קים', rec.id);
+  // כבר נמחק בכוונה — מסירים מרשימת הניקוי הסופית כדי שלא יידווח כ"נכשל"
+  const idx = cleanup.findIndex((c) => c.table === 'צ׳קים' && c.id === rec.id);
+  if (idx >= 0) cleanup.splice(idx, 1);
   const stillThere = await api('GET', `${enc('צ׳קים')}/${rec.id}`).then(() => true).catch(() => false);
   if (stillThere) throw new Error('הצ׳ק לא נמחק בפועל');
 });
@@ -404,9 +407,20 @@ await test('טבלה גדולה: קריאת maxRecords גבוה לא נכשלת 
 }, 5000);
 
 // ============ 4. ניקוי מלא ============
-let cleaned = 0, cleanFailed = 0;
+// תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
+// שרדה את הניקוי בריצה קודמת ונשארה בטבלה החיה עד שאותרה ידנית למחרת —
+// כנראה קונפליקט זמני (Make מעבד את הרשומה באותו רגע). מנסים כל מחיקה
+// פעם שנייה אחרי השהיה קצרה לפני שמוותרים, ומדווחים בדיוק אילו רשומות
+// (טבלה+id) לא נמחקו בכלל — כדי שלא יישארו שם בלי שאף אחד ידע.
+let cleaned = 0, cleanFailed = [];
 for (const c of cleanup.reverse()) {
-  try { await del(c.table, c.id); cleaned++; } catch { cleanFailed++; }
+  try { await del(c.table, c.id); cleaned++; continue; } catch {}
+  await new Promise((r) => setTimeout(r, 1500));
+  try { await del(c.table, c.id); cleaned++; } catch { cleanFailed.push(c); }
+}
+if (cleanFailed.length) {
+  console.log('\n⚠️ רשומות שלא נמחקו אחרי 2 ניסיונות — יש להסיר ידנית:');
+  cleanFailed.forEach((c) => console.log(`   ${c.table} / ${c.id}`));
 }
 
 // ============ 5. דוח ============
@@ -421,7 +435,7 @@ const readTimes = reads.map(([, , ms]) => ms);
 const writes = results.filter(([, n]) => !n.startsWith('קריאה:'));
 console.log('----------------------------------------------------');
 console.log(`קריאות: ${reads.length} טבלאות · ממוצע ${Math.round(readTimes.reduce((a, b) => a + b, 0) / (readTimes.length || 1))}ms · מקס ${Math.max(...readTimes, 0)}ms`);
-console.log(`כתיבות/זרימות: ${writes.length} · ניקוי: ${cleaned} נמחקו${cleanFailed ? `, ${cleanFailed} נכשלו` : ''}`);
+console.log(`כתיבות/זרימות: ${writes.length} · ניקוי: ${cleaned} נמחקו${cleanFailed.length ? `, ${cleanFailed.length} נכשלו` : ''}`);
 const fails = results.filter(([s]) => s === 'FAIL').length;
 const slows = results.filter(([s]) => s === 'SLOW').length;
 console.log(fails ? `❌ ${fails} נכשלו` : slows ? `⚠️ הכל עבר, ${slows} איטיות` : '✅ כל הבדיקות עברו במהירות תקינה');
