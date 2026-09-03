@@ -51,3 +51,8 @@ client/node_modules/.vite/
 
 # Reference source files kept on the server only, not in git
 docs/baruch-planting-plan.xlsx
+
+# קבצי בדיקה עם תוכן עסקי אמיתי (למשל חשבונית אמיתית לבדיקות קצה-לקצה
+# מול Make) - נשארים בשרת בלבד, לא ב-git
+server/fixtures/*
+!server/fixtures/.gitkeep

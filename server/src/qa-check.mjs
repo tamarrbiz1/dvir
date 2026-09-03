@@ -5,7 +5,14 @@
 // הכתיבה שהמסכים מבצעים (יצירה/עדכון/מחיקה על רשומות זמניות),
 // כניסת עובד, העלאת מסמך ויצירה קבוצתית — עם ניקוי מלא בסוף.
 // כל שורה מדווחת PASS/FAIL + משך בביצוע. יציאה 1 אם משהו נכשל.
+//
+// בדיקות שנוגעות בטבלאות עם אוטומציית ניתוח מסמכים ב-Make (הוצאות/
+// חשבוניות/תעודות משלוח/צ׳קים) רצות רק עם RUN_UPLOAD_TESTS=1 —
+// כל יצירה כזו שורפת קרדיטים אמיתיים של הלקוחה ב-Make, גם כשהיא
+// מנוקה מיד אחר-כך. הרצה רגילה מדלגת עליהן. ר' פירוט למטה.
 // ============================================================
+import { readFile } from 'node:fs/promises';
+
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
 const enc = encodeURIComponent;
@@ -43,13 +50,27 @@ const del = (t, id) => api('DELETE', `${enc(t)}/${id}`);
 // הבדיקות) וקיבלה "Missing value of required parameter 'url'" — 3 שגיאות
 // רצופות והתרחיש הושבת אוטומטית. מאז ואילך: כל רשומת בדיקה בטבלה
 // שיש לה אוטומציית ניתוח מסמכים נוצרת עם קובץ אמיתי מצורף מהרגע הראשון,
-// דרך אותו /api/upload-document שהמסך עצמו משתמש בו (לא רשומה ריקה
-// שמקבלת קובץ בשלב מאוחר יותר, ולא רשומה בלי קובץ בכלל).
-const TEST_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+// דרך אותו /api/upload-document שהמסך עצמו משתמש בו.
+//
+// תקרית 2026-09-03: התיקון הקודם צירף קובץ תקין (PNG של 1x1 פיקסל) אבל
+// חסר תוכן לניתוח — שירות ה-AI ב-Make קרס עליו עם "500 RuntimeError:
+// AI Agent Service", שוב 3 שגיאות רצופות והשבתה אוטומטית. הקובץ לא
+// חייב להיות רק "קובץ תקין טכנית" — הוא חייב להיות מסמך אמיתי שה-AI
+// כבר ידע לנתח בהצלחה בעבר. לכן: קובץ הבדיקה הוא צילום חשבונית אמיתית
+// (server/fixtures/qa-real-invoice.pdf — חשבונית #21, כבר נותחה בהצלחה
+// בעבר). לעולם אין להחליף אותו בתוכן סינתטי/ריק/מזויף.
+//
+// בנוסף: כל יצירה כזו — גם עם קובץ תקין ואמיתי — שורפת קרדיטים אמיתיים
+// של הלקוחה ב-Make. לכן הבדיקות שמשתמשות ב-createWithFile רצות רק
+// כשמפעילים במפורש: RUN_UPLOAD_TESTS=1 node src/qa-check.mjs
+// בהרצה רגילה (ברירת המחדל) הן מדולגות.
+const RUN_UPLOAD_TESTS = process.env.RUN_UPLOAD_TESTS === '1';
+const REAL_FIXTURE_PATH = new URL('../fixtures/qa-real-invoice.pdf', import.meta.url);
+const REAL_FIXTURE_NAME = 'qa-real-invoice.pdf';
 const createWithFile = async (table, field, extraFields = {}) => {
-  const png = Buffer.from(TEST_PNG_B64, 'base64');
+  const fileBuf = await readFile(REAL_FIXTURE_PATH);
   const fd = new FormData();
-  fd.append('file', new Blob([png], { type: 'image/png' }), 'qa.png');
+  fd.append('file', new Blob([fileBuf], { type: 'application/pdf' }), REAL_FIXTURE_NAME);
   fd.append('table', table);
   fd.append('field', field);
   const j = await api('POST', 'upload-document', fd, true);
@@ -137,6 +158,7 @@ await test('ספק: יצירה + הוספת פרטים', async () => {
 });
 
 await test('הוצאה: יצירה עם קובץ מצורף + קשר לספק', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
   const rec = await createWithFile('הוצאות', 'חשבונית', { 'הערות': MARK, 'תאריך העלאת החשבונית': today });
   if (suppliersList[0]?.id) await patch('הוצאות', rec.id, { 'ספקים': [suppliersList[0].id] });
 });
@@ -182,23 +204,24 @@ await test('משווק: יצירה + עריכה', async () => {
 });
 
 await test('חשבונית: יצירה עם קובץ מצורף + סטטוס תשלום', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
   const opts = await api('GET', `select-options/${enc('חשבוניות')}/${enc('סטטוס תשלום')}`).catch(() => ({ choices: [] }));
   const rec = await createWithFile('חשבוניות', 'חשבונית', { 'קוד שבוע': MARK });
   if (opts.choices?.[0]) await patch('חשבוניות', rec.id, { 'סטטוס תשלום': opts.choices[0] });
 });
 
 await test('תעודת משלוח: יצירה עם קובץ מצורף + עדכון', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
   const rec = await createWithFile('תעודות משלוח', 'תעודת משלוח', { 'קוד שבוע': MARK });
   await patch('תעודות משלוח', rec.id, { 'קוד שבוע': MARK + 'b' });
 });
 
-await test("צ'ק: יצירה עם קובץ מצורף + סטטוס", async () => {
+// זרימה מלאה (יצירה+סטטוס+עריכה+מחיקה) על רשומת צ'ק *אחת* — במקום שתי
+// רשומות נפרדות, כדי לצמצם עוד יותר יצירות בטבלה המנוטרת ע"י Make.
+await test("צ'ק: זרימה מלאה — יצירה + סטטוס + עריכה + מחיקה", async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
   const rec = await createWithFile('צ׳קים', 'צילום צ׳ק', { 'מוטב': MARK, 'סכום צ׳ק': '123', 'תאריך פירעון': '01/10/2026' });
   await patch('צ׳קים', rec.id, { 'סטטוס': 'נפרע' });
-});
-
-await test("צ'ק: עריכת פרטים (מסך צ'קים החדש) + מחיקה", async () => {
-  const rec = await createWithFile('צ׳קים', 'צילום צ׳ק', { 'מוטב': MARK, 'סכום צ׳ק': '456', 'תאריך פירעון': '01/11/2026' });
   await patch('צ׳קים', rec.id, {
     'מוטב': MARK + '-edited', 'שם בעל הצק': MARK, 'סכום צ׳ק': '789', 'תאריך פירעון': '15/11/2026', 'הערות': MARK,
   });
