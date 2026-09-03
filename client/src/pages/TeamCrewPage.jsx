@@ -133,7 +133,7 @@ export default function TeamCrewPage() {
 
   return (
     <div>
-      <PageHeader icon="👷" title="צוות עובדים" />
+      <PageHeader icon="👷" title={t('crew')} />
 
       {/* פילטרים */}
       <div className="card" style={{ marginBottom: 18 }}>
@@ -233,7 +233,7 @@ export default function TeamCrewPage() {
                     <CartesianGrid {...GRID_PROPS} />
                     <XAxis dataKey="name" {...xAxisProps(hoursByWorker.length, { rotate: true })} />
                     <YAxis {...yAxisProps()} />
-                    <Tooltip {...TOOLTIP_STYLE} formatter={(v) => `${formatNumber(v)} שעות`} />
+                    <Tooltip {...TOOLTIP_STYLE} formatter={(v) => `${formatNumber(v)} ${t('w_hours')}`} />
                     <Bar dataKey="value" fill="#09A7B2" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>

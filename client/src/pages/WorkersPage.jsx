@@ -175,17 +175,19 @@ export default function WorkersPage() {
                   <div><span style={{ color: 'var(--text-muted)' }}>{t('m_earnedMonth')}: </span><b style={{ color: 'var(--revenue)' }}>{formatMoney(paidOf(cur))}</b></div>
                   <div><span style={{ color: 'var(--text-muted)' }}>{t('m_prevMonth')}: </span><b style={{ color: 'var(--workers)' }}>{formatMoney(paidOf(prev))}</b></div>
                 </div>
-                {canEdit && (
-                  <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
-                    <button className="btn btn-sm btn-ghost" aria-label="פתח פרטים" title="פתח פרטים" onClick={(e) => { e.stopPropagation(); setDrawer(w); }}>👁</button>
+                <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+                  <button className="btn btn-sm btn-ghost" aria-label="פתח פרטים" title="פתח פרטים" onClick={(e) => { e.stopPropagation(); setDrawer(w); }}>👁</button>
+                  {canEdit && (
+                    <>
                     <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={(e) => { e.stopPropagation(); setForm(w); }}>✎</button>
                     <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
                       onClick={async (e) => {
                         e.stopPropagation();
                         if (await removeRecord(app.api, 'עובדים', w.id, name)) await load();
                       }}>🗑</button>
-                  </div>
-                )}
+                    </>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -608,7 +610,7 @@ function WorkerDetails({ worker, records, onClose }) {
       <div className="drawer worker-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
           <span>👤 {name}</span>
-          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label={t('nav_close')} title={t('nav_close')}>✕</button>
         </div>
         <div className="drawer-body">
 

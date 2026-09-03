@@ -66,12 +66,9 @@ export const NAV_GROUPS = [
 // הרשאות לפי תפקיד (סעיף 7 באיפיון)
 // ============================================================
 
-// כתובות שמותרות למנהל עבודה — כל התפעול בצפייה בלבד (עדכונים רק למנהל הראשי)
-export const OPERATIONS = [
-  '/workers', '/crew', '/requests',
-  '/structures', '/planting', '/harvests',
-  '/spraying', '/materials', '/treatments', '/spray-reports',
-];
+// כתובות שמותרות למנהל עבודה — אך ורק קטגוריית "כוח אדם" (בדיוק כמו
+// קבוצת הניווט 'human' למעלה), בצפייה בלבד. לא תפעול/מבנים/גידולים וכו'.
+export const OPERATIONS = ['/crew', '/workers', '/requests'];
 
 /** הרשאת עדכון/מחיקה — למנהל הראשי בלבד; מנהל עבודה צופה בלבד */
 export const canWrite = (role) => role === 'owner';
