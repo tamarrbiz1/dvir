@@ -452,16 +452,8 @@ function CheckDrawer({ check, statusChoices, escapeEnabled, canEdit, onClose, on
     <div className="drawer-overlay" onClick={onClose}>
       <div className="drawer" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={checkTitle(check)}>
         <div className="drawer-header">
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>🏦 {checkTitle(check)} <StatusBadge check={check} /></span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            {canEdit && (
-              <>
-                <button type="button" className="btn btn-ghost btn-sm" onClick={onEdit} title="עריכת פרטי הצ׳ק">✏️ עריכה</button>
-                <button type="button" className="btn btn-ghost btn-sm" onClick={onDelete} title="מחיקת הצ׳ק לצמיתות">🗑 מחיקה</button>
-              </>
-            )}
-            <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
-          </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>🏦 {checkTitle(check)} <StatusBadge check={check} /></span>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
         </div>
 
         <div className="drawer-body">
@@ -558,6 +550,16 @@ function CheckDrawer({ check, statusChoices, escapeEnabled, canEdit, onClose, on
               לביטול זמני (עם אפשרות הצגה חוזרת) עדיף "בטל צ׳ק" על פני מחיקה. מחיקה היא לצמיתות ואינה ניתנת לשחזור.
             </div>
           </div>
+
+          {canEdit && (
+            <div className="card" style={{ marginTop: 14 }}>
+              <div className="section-title" style={{ marginTop: 0 }}>עריכה ומחיקה</div>
+              <div className="check-actions">
+                <button type="button" className="btn btn-ghost" onClick={onEdit}>✏️ עריכת פרטי הצ׳ק</button>
+                <button type="button" className="btn btn-danger" onClick={onDelete}>🗑 מחיקת הצ׳ק</button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
