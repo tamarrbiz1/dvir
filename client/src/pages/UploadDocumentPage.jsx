@@ -233,14 +233,39 @@ export default function UploadDocumentPage() {
   // מחיקת מסמך מההיסטוריה — כשהמסמך עדיין לא נותח, ייתכן שהוא בעיבוד פעיל
   // אצל Make ברגע זה; מחיקה עלולה לגרום לשגיאה שם (הרשומה נעלמת תוך כדי
   // עדכון). אזהרה ייעודית מוצגת רק במקרה הזה, ולא בכל מחיקה.
+  // מחיקה מדורגת: המסמך שהועלה *הוא* הרשומה עצמה (חשבונית/הוצאה/תעודה
+  // עם הקובץ ונתוני הניתוח יחד, לא רשומה נפרדת שנוצרה "בעקבותיו") — אז
+  // אין "רשומות נגזרות" יתומות שנשארות. אבל יש השפעת-שרשרת אמיתית:
+  // המסמך עשוי להיות מקושר לצ'ק (יאבד את הקישור) ולסיכום שבועי (סכומי
+  // Rollup שם יתעדכנו אוטומטית וישתנו בלי אזהרה נפרדת) — לכן בודקים
+  // ומציגים את זה במפורש בדיאלוג האישור לפני מחיקה.
   const deleteHistoryRow = async (h) => {
-    const ok = await confirmDialog({
-      title: `מחיקת ${h.label}`,
-      message: h.analyzed
-        ? 'הפריט ימחק ולא יינתן לשחזור.\nהאם אתה בטוח שברצונך לבצע פעולה זו?'
-        : 'המסמך עדיין מסומן כ"ממתין לעיבוד" — ייתכן שהוא בעיבוד פעיל כרגע. מחיקה עכשיו עלולה להתנגש עם הניתוח ולגרום לשגיאה בצד המערכת המנתחת.\nהפריט ימחק ולא יינתן לשחזור. להמשיך במחיקה?',
-      confirmLabel: 'מחק', danger: true,
-    });
+    let linkedChecks = [];
+    let linkedWeek = null;
+    try {
+      const raw = await app.api.get(h.table, `/${h.id}?raw=1`);
+      const checks = raw?.['צ׳קים'];
+      if (Array.isArray(checks)) linkedChecks = checks;
+      const week = raw?.['סיכום שבועי'];
+      if (Array.isArray(week) && week.length) linkedWeek = week[0];
+    } catch { /* אם הבדיקה נכשלת — ממשיכים לאישור הרגיל בלי הפרטים הנוספים */ }
+
+    const impactLines = [];
+    if (linkedChecks.length) {
+      impactLines.push(`מקושר ל-${linkedChecks.length === 1 ? 'צ\'ק אחד' : `${linkedChecks.length} צ'קים`} — הקישור יוסר מהם.`);
+    }
+    if (linkedWeek) {
+      impactLines.push('נכלל בסיכום השבועי — הסכומים המצטברים שם יתעדכנו אוטומטית (יקטנו) אחרי המחיקה.');
+    }
+
+    const baseMsg = h.analyzed
+      ? 'הפריט ימחק ולא יינתן לשחזור.'
+      : 'המסמך עדיין מסומן כ"ממתין לעיבוד" — ייתכן שהוא בעיבוד פעיל כרגע. מחיקה עכשיו עלולה להתנגש עם הניתוח ולגרום לשגיאה בצד המערכת המנתחת.\nהפריט ימחק ולא יינתן לשחזור.';
+    const message = impactLines.length
+      ? `${baseMsg}\n\nמה עוד יושפע:\n${impactLines.map((l) => `• ${l}`).join('\n')}\n\nלהמשיך במחיקה?`
+      : `${baseMsg} אין רשומות אחרות שיושפעו.\nהאם אתה בטוח שברצונך לבצע פעולה זו?`;
+
+    const ok = await confirmDialog({ title: `מחיקת ${h.label}`, message, confirmLabel: 'מחק', danger: true });
     if (!ok) return;
     try {
       await app.api.remove(h.table, h.id);

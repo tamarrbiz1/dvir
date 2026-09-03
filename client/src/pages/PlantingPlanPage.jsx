@@ -2457,7 +2457,7 @@ function PlanSheet({
                       {main.phase === 'harvest' ? (
                         <div className="ps-status" style={{ color: status.color, fontWeight: status.strong ? 700 : 500 }}>{status.text}</div>
                       ) : (
-                        <div className="ps-plant-label">{main.label || 'בגידול'}</div>
+                        <div className="ps-plant-label">{main.label || 'בגידול — טרם קטיף'}</div>
                       )}
                       {items.length > 1 && (
                         <div className="ps-more" role="button" tabIndex={0} title="פתיחת התוכנית הנוספת בתא"
