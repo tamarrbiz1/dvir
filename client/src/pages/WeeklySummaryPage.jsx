@@ -100,7 +100,12 @@ export default function WeeklySummaryPage() {
     .map((w) => String(w[F.code])).sort().reverse(), [weeks, fYear, fMonth]);
 
   // ------ חישובים ------
-  // ערכי שבוע: ה-Rollup, ואם הוא ריק — סכימה מ"JSON לפי ימים מאוחד"
+  // ערכי שבוע: ה-Rollup (מ-חשבוניות עצמן — המקור המהימן), ואם הוא ריק —
+  // סכימה מ"JSON לפי ימים מאוחד" (לברוטו/משקל, שקיימים שם בפועל).
+  // "נטו" *אין לו* נפילה לברוטו היומי: ל-JSON היומי אין פירוט ניכויים,
+  // ונטו תמיד ≤ ברוטו — נפילה כזו הייתה מציגה נטו מנופח (=ברוטו) בכל
+  // שבוע שטרם קיבל Rollup, בלי שום סימון שזו הערכה. עדיף 0 אמיתי (="טרם
+  // נקלטה חשבונית לשבוע זה") על נתון שגוי שנראה מדויק.
   const statsOf = useCallback((w) => {
     const days = parseDays(w[F.jDays]);
     const dWeight = days.reduce((s, d) => s + (d.weight || 0), 0);
@@ -108,7 +113,7 @@ export default function WeeklySummaryPage() {
     return {
       weight: num(w[F.weight]) || dWeight,
       gross: num(w[F.gross]) || dGross,
-      net: num(w[F.net]) || dGross,
+      net: num(w[F.net]),
     };
   }, []);
   const totalNeto = shown.reduce((s, w) => s + statsOf(w).net, 0);

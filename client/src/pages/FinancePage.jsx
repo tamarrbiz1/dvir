@@ -120,6 +120,12 @@ export default function FinancePage() {
 }
 
 // ---------- סקירה ----------
+// מקורות (אומת 2026-09): bruto/neto = "סכום ברוטו/נטוRollup (from
+// חשבוניות)" בטבלת "סיכום שבועי" — Rollup אמיתי מהחשבוניות עצמן, לא
+// הערכה. "הכנסות בפועל" בגרף החודשי = "סכום נטו" ישירות מטבלת
+// חשבוניות (תוקן — קודם חושב מ-קג בפועל × מחיר, הערכה נגזרת). expSum
+// = "סכום כולל-AI" מהוצאות. checks/expSum בגרף "צפי הוצאות" = צ'קים
+// שטרם נפרעו, לפי תאריך הפירעון.
 function Overview({ weekly, expenses, invoices, checks, bruto, neto, expSum, profit }) {
   const monthLabel = (k) => `${Number(k.slice(5, 7))}/${k.slice(0, 4)}`;
   const expDate = (e) => pick(e, ['תאריך חשבונית-AI', 'תאריך העלאת החשבונית', 'תאריך']);
