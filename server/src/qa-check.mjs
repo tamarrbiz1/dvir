@@ -197,6 +197,16 @@ await test("צ'ק: יצירה עם קובץ מצורף + סטטוס", async () =
   await patch('צ׳קים', rec.id, { 'סטטוס': 'נפרע' });
 });
 
+await test("צ'ק: עריכת פרטים (מסך צ'קים החדש) + מחיקה", async () => {
+  const rec = await createWithFile('צ׳קים', 'צילום צ׳ק', { 'מוטב': MARK, 'סכום צ׳ק': '456', 'תאריך פירעון': '01/11/2026' });
+  await patch('צ׳קים', rec.id, {
+    'מוטב': MARK + '-edited', 'שם בעל הצק': MARK, 'סכום צ׳ק': '789', 'תאריך פירעון': '15/11/2026', 'הערות': MARK,
+  });
+  await del('צ׳קים', rec.id);
+  const stillThere = await api('GET', `${enc('צ׳קים')}/${rec.id}`).then(() => true).catch(() => false);
+  if (stillThere) throw new Error('הצ׳ק לא נמחק בפועל');
+});
+
 await test('כניסת עובד: אימייל+דרכון נכונים', async () => {
   const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
   if (!w) return 'דולג — אין עובד עם מייל+דרכון';

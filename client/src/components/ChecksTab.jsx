@@ -1,20 +1,22 @@
 // ============================================================
 // צ'קים (סעיף 26 באיפיון) — טאב מלא במסך "כספים"
 // ------------------------------------------------------------
-// כולל: KPI (לפירעון השבוע / החודש / סכום לפירעון / מבוטלים),
-// פילטרים (חודש, שנה, טווח תאריך פירעון, ספק, סטטוס) שעובדים יחד עם
-// חיפוש חופשי (מוטב / ספק / סטטוס), מתג "הצג מבוטלים", טבלה עם כל
-// העמודות שבאיפיון (צילום, הערות, סכום, פירעון, מוטב, בעל הצ'ק, ספק,
-// חשבוניות, סטטוס), מגירת פרטים עם קישור לספק ולחשבוניות, וסימון
-// סטטוס (נפרע / לא נפרע / מבוטל). אין מחיקה — לפי האיפיון.
+// כולל: סיכום חודשי (גרף נפרע/ממתין), פילטרים (חודש, שנה, תאריך
+// מדויק, טווח תאריך פירעון, ספק, סטטוס) שעובדים יחד עם חיפוש חופשי
+// (מוטב / ספק / סטטוס), מתג "הצג מבוטלים", טבלה עם כל העמודות
+// שבאיפיון (צילום, הערות, סכום, פירעון, מוטב, בעל הצ'ק, ספק,
+// חשבוניות, סטטוס), מגירת פרטים עם קישור לספק ולחשבוניות, סימון
+// סטטוס (נפרע / לא נפרע / מבוטל), ועריכה/מחיקה מלאה של כל צ'ק
+// (בעלים בלבד — לפי בקשת הלקוחה, לא לפי האיפיון המקורי).
 // ============================================================
 import { useEffect, useMemo, useState } from 'react';
-import { confirmDialog } from '../utils/ui.js';
+import { confirmDialog, toast } from '../utils/ui.js';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatMoney, formatDate, formatNumber } from '../utils/format.js';
 import { pick } from '../utils/field.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
+import RecordForm, { removeRecord } from './RecordForm.jsx';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, xAxisProps, yAxisProps, TOOLTIP_STYLE, LEGEND_STYLE } from '../utils/chart.js';
 import { monthShort } from '../i18n.js';
@@ -37,11 +39,24 @@ const MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 
 const DAY_MS = 24 * 3600 * 1000;
 const startOfToday = () => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), n.getDate()); };
 const endOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+const dateKeyOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// שדות עריכה — רק השדות הפשוטים (לא צילום/קישורים, שנועדו להישאר
+// כפי שנקלטו מהמסמך המקורי)
+const CHECK_EDIT_FIELDS = [
+  { name: 'מוטב', label: 'מוטב', type: 'text' },
+  { name: 'שם בעל הצק', label: 'שם בעל הצ\'ק', type: 'text' },
+  { name: 'סכום צ׳ק', label: 'סכום (₪)', type: 'text', required: true }, // שדה טקסט ב-Airtable (לא מספרי) — ר' qa-check.mjs
+  { name: 'תאריך פירעון', label: 'תאריך פירעון', type: 'date' },
+  { name: 'הערות', label: 'הערות', type: 'textarea' },
+];
 
 export default function ChecksTab({ checks, onRefresh }) {
   const app = useApp();
+  const canEdit = (app.user?.role || 'owner') === 'owner'; // עריכה/מחיקה למנהל הראשי בלבד
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const [editCheck, setEditCheck] = useState(null); // null = סגור; {} או רשומה = פתוח
 
   // ---- פילטרים וחיפוש (עובדים יחד, לא במקום זה את זה) ----
   const [search, setSearch] = useState('');
@@ -49,6 +64,7 @@ export default function ChecksTab({ checks, onRefresh }) {
   const [month, setMonth] = useState('');
   const [dueFrom, setDueFrom] = useState('');
   const [dueTo, setDueTo] = useState('');
+  const [exactDate, setExactDate] = useState('');
   const [supplier, setSupplier] = useState(searchParams.get('supplier') || '');
   const [status, setStatus] = useState('');
   const [showCancelled, setShowCancelled] = useState(false);
@@ -67,7 +83,7 @@ export default function ChecksTab({ checks, onRefresh }) {
   }, []);
 
   // איפוס העימוד בכל שינוי פילטר
-  useEffect(() => { setLimit(PAGE_SIZE); }, [search, year, month, dueFrom, dueTo, supplier, status, showCancelled]);
+  useEffect(() => { setLimit(PAGE_SIZE); }, [search, year, month, dueFrom, dueTo, exactDate, supplier, status, showCancelled]);
 
   // רשימות לבחירה — נגזרות מהנתונים עצמם
   const years = useMemo(() => {
@@ -97,6 +113,7 @@ export default function ChecksTab({ checks, onRefresh }) {
       const due = checkDueDate(c);
       if (year && (!due || String(due.getFullYear()) !== year)) return false;
       if (month && (!due || String(due.getMonth() + 1) !== month)) return false;
+      if (exactDate && (!due || dateKeyOf(due) !== exactDate)) return false;
       if (from && (!due || due < from)) return false;
       if (to && (!due || due > to)) return false;
       if (supplier && checkSupplierName(c) !== supplier) return false;
@@ -111,22 +128,11 @@ export default function ChecksTab({ checks, onRefresh }) {
       }
       return true;
     });
-  }, [checks, search, year, month, dueFrom, dueTo, supplier, status]);
+  }, [checks, search, year, month, exactDate, dueFrom, dueTo, supplier, status]);
 
-  // ---- KPI ----
+  // מספר המבוטלים בתוצאות המסוננות (לשורת "X מבוטלים מוסתרים" מתחת לטבלה)
   const kpi = useMemo(() => {
-    const pending = filtered.filter(isPending);
-    const today = startOfToday();
-    const weekEnd = new Date(today.getTime() + 7 * DAY_MS);
-    const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0, 23, 59, 59, 999);
-    const sumIn = (end) => pending
-      .filter((c) => { const d = checkDueDate(c); return d && d >= today && d <= end; })
-      .reduce((s, c) => s + checkAmount(c), 0);
     return {
-      dueWeek: sumIn(weekEnd),
-      dueMonth: sumIn(monthEnd),
-      totalPending: pending.reduce((s, c) => s + checkAmount(c), 0),
-      pendingCount: pending.length,
       cancelled: filtered.filter(isCancelled).length,
     };
   }, [filtered]);
@@ -159,8 +165,8 @@ export default function ChecksTab({ checks, onRefresh }) {
   );
   const shown = visible.slice(0, limit);
 
-  const hasFilters = Boolean(search || year || month || dueFrom || dueTo || supplier || status);
-  const clearFilters = () => { setSearch(''); setYear(''); setMonth(''); setDueFrom(''); setDueTo(''); setSupplier(''); setStatus(''); };
+  const hasFilters = Boolean(search || year || month || exactDate || dueFrom || dueTo || supplier || status);
+  const clearFilters = () => { setSearch(''); setYear(''); setMonth(''); setExactDate(''); setDueFrom(''); setDueTo(''); setSupplier(''); setStatus(''); };
 
   const drawerCheck = drawerId ? checks.find((c) => c.id === drawerId) : null;
 
@@ -172,14 +178,6 @@ export default function ChecksTab({ checks, onRefresh }) {
       <div className="no-print" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
         <button type="button" className="btn btn-primary" onClick={() => navigate('/upload', { state: { docType: "צ'ק" } })}>⬆️ העלאת צ'ק</button>
       </div>
-      {/* ---- KPI ---- */}
-      <div className="kpi-grid">
-        <Kpi icon="📅" label="לפירעון השבוע" value={formatMoney(kpi.dueWeek)} color="var(--revenue)" soft="var(--revenue-soft)" />
-        <Kpi icon="🗓️" label="לפירעון החודש" value={formatMoney(kpi.dueMonth)} color="var(--revenue)" soft="var(--revenue-soft)" />
-        <Kpi icon="🏦" label="סכום לפירעון" value={formatMoney(kpi.totalPending)} sub={`${kpi.pendingCount} צ'קים ממתינים`} color="var(--revenue)" soft="var(--revenue-soft)" />
-        <Kpi icon="❌" label="מבוטלים" value={kpi.cancelled} color="var(--error)" soft="var(--error-soft)" />
-      </div>
-
       {/* ---- סיכום חודשי: כמה יצא (נפרע) וכמה עתיד לצאת (ממתין) בכל חודש ---- */}
       <div className="card" style={{ marginTop: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
@@ -236,6 +234,10 @@ export default function ChecksTab({ checks, onRefresh }) {
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
           עד
           <input className="input" type="date" aria-label="תאריך פירעון — עד תאריך" value={dueTo} onChange={(e) => setDueTo(e.target.value)} />
+        </label>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+          תאריך מדויק
+          <input className="input" type="date" aria-label="תאריך פירעון מדויק" value={exactDate} onChange={(e) => setExactDate(e.target.value)} />
         </label>
         <select className="select" aria-label="ספק" value={supplier} onChange={(e) => setSupplier(e.target.value)}>
           <option value="">כל הספקים</option>
@@ -336,6 +338,7 @@ export default function ChecksTab({ checks, onRefresh }) {
           check={drawerCheck}
           statusChoices={statusChoices}
           escapeEnabled={!lightbox}
+          canEdit={canEdit}
           onClose={() => setDrawerId(null)}
           onZoom={(p) => setLightbox(p)}
           onOpenSupplier={(id) => navigate(`/suppliers?supplier=${encodeURIComponent(id)}`)}
@@ -343,6 +346,30 @@ export default function ChecksTab({ checks, onRefresh }) {
           onSetStatus={async (next) => {
             await app.api.update(CHECKS_TABLE, drawerCheck.id, { 'סטטוס': next });
             if (typeof onRefresh === 'function') await onRefresh();
+          }}
+          onEdit={() => setEditCheck(drawerCheck)}
+          onDelete={async () => {
+            const ok = await removeRecord(app.api, CHECKS_TABLE, drawerCheck.id, checkTitle(drawerCheck));
+            if (ok) {
+              setDrawerId(null);
+              if (typeof onRefresh === 'function') await onRefresh();
+            }
+          }}
+        />
+      )}
+
+      {editCheck && (
+        <RecordForm
+          api={app.api}
+          table={CHECKS_TABLE}
+          title={`עריכת ${checkTitle(editCheck)}`}
+          record={editCheck}
+          fields={CHECK_EDIT_FIELDS}
+          onClose={() => setEditCheck(null)}
+          onSaved={async () => {
+            setEditCheck(null);
+            if (typeof onRefresh === 'function') await onRefresh();
+            toast('הצ׳ק עודכן בהצלחה');
           }}
         />
       )}
@@ -355,18 +382,6 @@ export default function ChecksTab({ checks, onRefresh }) {
 // ============================================================
 // רכיבי עזר
 // ============================================================
-function Kpi({ icon, label, value, sub, color, soft }) {
-  return (
-    <div className="kpi-card">
-      <div className="kpi-top">
-        <div className="kpi-icon" style={{ background: soft }}>{icon}</div>
-        <span className="kpi-label">{label}</span>
-      </div>
-      <div className="kpi-value" style={{ color }}>{value}</div>
-      {sub && <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>{sub}</div>}
-    </div>
-  );
-}
 
 export function StatusBadge({ check }) {
   const st = checkStatus(check);
@@ -395,7 +410,7 @@ function daysUntil(d) {
 // ============================================================
 // מגירת פרטי צ'ק — כולל קישורים לאובייקטים מקושרים וסימון סטטוס
 // ============================================================
-function CheckDrawer({ check, statusChoices, escapeEnabled, onClose, onZoom, onOpenSupplier, onOpenInvoice, onSetStatus }) {
+function CheckDrawer({ check, statusChoices, escapeEnabled, canEdit, onClose, onZoom, onOpenSupplier, onOpenInvoice, onSetStatus, onEdit, onDelete }) {
   useEscapeClose(onClose, escapeEnabled);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -438,7 +453,15 @@ function CheckDrawer({ check, statusChoices, escapeEnabled, onClose, onZoom, onO
       <div className="drawer" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={checkTitle(check)}>
         <div className="drawer-header">
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>🏦 {checkTitle(check)} <StatusBadge check={check} /></span>
-          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            {canEdit && (
+              <>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={onEdit} title="עריכת פרטי הצ׳ק">✏️ עריכה</button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={onDelete} title="מחיקת הצ׳ק לצמיתות">🗑 מחיקה</button>
+              </>
+            )}
+            <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
+          </span>
         </div>
 
         <div className="drawer-body">
@@ -532,7 +555,7 @@ function CheckDrawer({ check, statusChoices, escapeEnabled, onClose, onZoom, onO
             {saving && <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 8 }}>שומר...</div>}
             {error && <div style={{ fontSize: 13, color: 'var(--error)', marginTop: 8 }}>שגיאה: {error}</div>}
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>
-              צ׳קים אינם נמחקים מהמערכת. צ׳ק שאינו רלוונטי מסומן כמבוטל ומוסתר מהתצוגה.
+              לביטול זמני (עם אפשרות הצגה חוזרת) עדיף "בטל צ׳ק" על פני מחיקה. מחיקה היא לצמיתות ואינה ניתנת לשחזור.
             </div>
           </div>
         </div>
