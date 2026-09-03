@@ -67,6 +67,12 @@ export default function DashboardPage() {
   const navigate = useNavigate();
   const [data, setData] = useState({ invoices: [], expenses: [], structures: [], weeks: [], works: [] });
   const [loading, setLoading] = useState(true);
+  // "עבודות עובדים" (עד 3000 רשומות, עם קישורים לעובדים/מבנים/תמחור)
+  // נמדדה כפי רחוק הכי כבדה מבין קריאות לוח הבקרה — עד 1.3 שניות
+  // בקאש קר. נטענת בנפרד כדי שלא תחסום את שאר המסך: שורות ה-KPI
+  // הראשונות (כספים/תפוקה) והבקרה מוצגות מיד, ורק שורת "עובדים" +
+  // גרף העלות לפי עובד ממתינים לה בנפרד.
+  const [loadingWorks, setLoadingWorks] = useState(true);
   const [preset, setPreset] = useState('year');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -78,24 +84,35 @@ export default function DashboardPage() {
       'קוד שבוע', 'תאריך התחלה', 'תאריך סיום', 'סטטוס התאמה', 'סטטוס התאמת קטיף',
       'שגיאת חישוב קג לפי מבנים', 'JSON לפי ימים מאוחד', 'JSON הכנסה לפי מבנים',
     ].map(enc).join(',');
-    const load = async () => {
+    const arr = (v) => (Array.isArray(v) ? v : []);
+
+    const loadFast = async () => {
       try {
-        const [i, e, s, w, wk] = await Promise.all([
+        const [i, e, s, wk] = await Promise.all([
           app.api.get('חשבוניות', '?maxRecords=1000&raw=1'),
           app.api.get('הוצאות', '?maxRecords=1000'),
           app.api.get('מבנים', '?maxRecords=200'),
-          app.api.get('עבודות עובדים', '?maxRecords=3000'),
           app.api.get('סיכום שבועי', `?maxRecords=300&raw=1&fields=${weekFields}`).catch(() => []),
         ]);
-        const arr = (v) => (Array.isArray(v) ? v : []);
-        setData({ invoices: arr(i), expenses: arr(e), structures: arr(s), works: arr(w), weeks: arr(wk) });
+        setData((cur) => ({ ...cur, invoices: arr(i), expenses: arr(e), structures: arr(s), weeks: arr(wk) }));
       } catch (err) {
         console.error(err);
       } finally {
         setLoading(false);
       }
     };
-    load();
+    const loadWorks = async () => {
+      try {
+        const w = await app.api.get('עבודות עובדים', '?maxRecords=3000');
+        setData((cur) => ({ ...cur, works: arr(w) }));
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoadingWorks(false);
+      }
+    };
+    loadFast();
+    loadWorks();
   }, [app.api]);
 
   const range = useMemo(() => periodRange(preset, from, to), [preset, from, to]);
@@ -280,17 +297,23 @@ export default function DashboardPage() {
           color="var(--harvest)" soft="var(--harvest-soft)" onClick={() => navigate('/structures')} />
       </div>
 
-      {/* ===== שורה 3 — עובדים ===== */}
-      <div className="kpi-grid" style={{ marginTop: 14 }}>
-        <Kpi icon="👷" label="עלות עובדים" value={fWorks.length ? formatMoney(kLabor) : 'אין נתונים'} sub={`${fWorks.length} עבודות`}
-          color="var(--workers)" soft="var(--workers-soft)" footer="דוח עובדים" footerBg="linear-gradient(135deg,#7548ED,#9259F4)" onClick={() => navigate('/crew')} />
-        <Kpi icon="⏱️" label="שעות עבודה" value={fWorks.length ? formatNumber(Math.round(kHours * 10) / 10) : 'אין נתונים'}
-          color="var(--hours)" soft="var(--hours-soft)" onClick={() => navigate('/workers?tab=jobs')} />
-        <Kpi icon="👥" label="עובדים פעילים" value={formatNumber(kActiveWorkers)} sub={periodLabel}
-          color="var(--workers)" soft="var(--workers-soft)" onClick={() => navigate('/workers')} />
-        <Kpi icon="📋" label="עבודות שבוצעו" value={formatNumber(fWorks.length)}
-          color="var(--pallets)" soft="var(--pallets-soft)" onClick={() => navigate('/workers?tab=jobs')} />
-      </div>
+      {/* ===== שורה 3 — עובדים (נטענת בנפרד — הטבלה הכבדה ביותר) ===== */}
+      {loadingWorks ? (
+        <div className="kpi-grid" style={{ marginTop: 14 }}>
+          {[1, 2, 3, 4].map((i) => <div key={i} className="skeleton skeleton-card" />)}
+        </div>
+      ) : (
+        <div className="kpi-grid" style={{ marginTop: 14 }}>
+          <Kpi icon="👷" label="עלות עובדים" value={fWorks.length ? formatMoney(kLabor) : 'אין נתונים'} sub={`${fWorks.length} עבודות`}
+            color="var(--workers)" soft="var(--workers-soft)" footer="דוח עובדים" footerBg="linear-gradient(135deg,#7548ED,#9259F4)" onClick={() => navigate('/crew')} />
+          <Kpi icon="⏱️" label="שעות עבודה" value={fWorks.length ? formatNumber(Math.round(kHours * 10) / 10) : 'אין נתונים'}
+            color="var(--hours)" soft="var(--hours-soft)" onClick={() => navigate('/workers?tab=jobs')} />
+          <Kpi icon="👥" label="עובדים פעילים" value={formatNumber(kActiveWorkers)} sub={periodLabel}
+            color="var(--workers)" soft="var(--workers-soft)" onClick={() => navigate('/workers')} />
+          <Kpi icon="📋" label="עבודות שבוצעו" value={formatNumber(fWorks.length)}
+            color="var(--pallets)" soft="var(--pallets-soft)" onClick={() => navigate('/workers?tab=jobs')} />
+        </div>
+      )}
 
       {/* ===== בקרת מסמכים — מתוך "סיכום שבועי" ===== */}
       {data.weeks.length > 0 && (() => {
@@ -408,11 +431,13 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* ===== עלות עובדים לפי עובד ===== */}
+      {/* ===== עלות עובדים לפי עובד (נטען בנפרד — ר' loadingWorks) ===== */}
       <div className="grid-2" style={{ marginTop: 18 }}>
         <div className="card">
           <div className="section-title" style={{ marginTop: 0 }}>עלות עובדים</div>
-          {laborByWorker.length ? (
+          {loadingWorks ? (
+            <div className="skeleton skeleton-chart" />
+          ) : laborByWorker.length ? (
             <div style={{ direction: 'ltr' }}>
               <ResponsiveContainer width="100%" height={Math.max(200, laborByWorker.length * 38)}>
                 <BarChart data={laborByWorker} layout="vertical" margin={CHART_MARGIN}>
