@@ -10,6 +10,10 @@
  * כפתור פעולה אדום, אין ביצוע בלחיצה ראשונה, Escape/רקע = ביטול.
  * @returns {Promise<boolean>} true רק לאחר אישור מפורש
  */
+// שומר שרשומה כפולה (למשל לחיצה כפולה מהירה על 🗑) לא תפתח שני חלונות
+// אישור מוערמים זה על זה — קריאה שנייה בזמן שאחת כבר פתוחה מבוטלת מיד.
+let dialogOpen = false;
+
 export function confirmDialog({
   title = 'אישור פעולה',
   message = '',
@@ -17,6 +21,8 @@ export function confirmDialog({
   cancelLabel = 'ביטול',
   danger = false,
 } = {}) {
+  if (dialogOpen) return Promise.resolve(false);
+  dialogOpen = true;
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
@@ -51,7 +57,11 @@ export function confirmDialog({
     okBtn.className = `btn ${danger ? 'btn-danger' : 'btn-primary'}`;
     okBtn.textContent = confirmLabel;
 
+    let closed = false;
     const close = (result) => {
+      if (closed) return; // מגן גם מלחיצה כפולה מהירה על אותו כפתור
+      closed = true;
+      dialogOpen = false;
       document.removeEventListener('keydown', onKey);
       overlay.remove();
       resolve(result);
