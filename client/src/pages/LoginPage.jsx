@@ -84,7 +84,7 @@ export default function LoginPage() {
       <div className="card" style={{ width: 460, maxWidth: '92vw' }}>
         <div style={{ textAlign: 'center', marginBottom: 20 }}>
           <img src="/assets/logo.png" alt="לוגו" style={{ width: 88, height: 88, borderRadius: 18, objectFit: 'cover', marginBottom: 10 }} />
-          <h1 style={{ fontSize: 'var(--fs-page)', margin: '4px 0' }}>משק חקלאי</h1>
+          <h1 style={{ fontSize: 'var(--fs-page)', margin: '4px 0' }}>משק ספאיה</h1>
         </div>
 
         <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>

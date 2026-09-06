@@ -62,8 +62,11 @@ function Sidebar({ mobileOpen, onClose }) {
         aria-label={t('nav_mainNav')}
       >
         <div className="brand">
-          <img src="/assets/logo.png" alt="לוגו" style={{ width: 34, height: 34, borderRadius: 8, objectFit: 'cover' }} />
-          <span>משק חקלאי</span>
+          <img src="/assets/logo.png" alt="לוגו" style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+          <span className="brand-text">
+            <span className="brand-title">משק ספאיה</span>
+            <span className="brand-subtitle">מערכת גידול</span>
+          </span>
           <span style={{ marginInlineStart: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             {canSee(role, '/alerts') && (
               <NavLink
@@ -92,7 +95,7 @@ function Sidebar({ mobileOpen, onClose }) {
           </div>
         )}
         {role === 'manager' && (
-          <div style={{ marginBottom: 10, padding: '8px 12px', background: 'var(--workers-soft)', borderRadius: 10, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ marginBottom: 10, padding: '8px 12px', background: 'rgba(255,255,255,0.12)', borderRadius: 10, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, color: '#fff', position: 'relative', zIndex: 1 }}>
             <span>👷</span><span>מנהל עבודה</span>
           </div>
         )}
@@ -123,9 +126,9 @@ function Sidebar({ mobileOpen, onClose }) {
             </div>
           );
         })}
-        <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 16 }}>
-          <div style={{ padding: '0 12px 8px', fontSize: 12, color: 'var(--text-muted)' }}>
-            מחובר: <b style={{ color: 'var(--text-secondary)' }}>{user?.name || 'משתמש'}</b> · {role === 'owner' ? 'מנהל ראשי' : 'מנהל עבודה'}
+        <div style={{ marginTop: 16, borderTop: '1px solid rgba(255,255,255,0.16)', paddingTop: 16, position: 'relative', zIndex: 1 }}>
+          <div style={{ padding: '0 12px 8px', fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>
+            מחובר: <b style={{ color: '#fff' }}>{user?.name || 'משתמש'}</b> · {role === 'owner' ? 'מנהל ראשי' : 'מנהל עבודה'}
           </div>
           <button type="button" className="nav-item" onClick={logout}>
             <span className="nav-icon" aria-hidden="true">🚪</span>
@@ -160,7 +163,7 @@ function MobileTopbar({ onOpenMenu, role, lang, onLang }) {
       )}
       <div className="mobile-topbar-brand">
         <img src="/assets/logo.png" alt="" style={{ width: 26, height: 26, borderRadius: 6, objectFit: 'cover' }} />
-        <span>משק חקלאי</span>
+        <span>משק ספאיה</span>
       </div>
     </div>
   );

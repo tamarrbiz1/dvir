@@ -339,60 +339,94 @@ body {
   display: flex;
   min-height: 100vh;
 }
+/* עיצוב סרגל צד לפי תצלום השראה של הלקוחה (2026-09-06): נייבי כהה,
+   פריט פעיל כ"pill" בהיר, עיטור עלה שקוף בתחתית. רק הסרגל עצמו —
+   שאר הדף נשאר בעיצוב הבהיר הרגיל. */
 .sidebar {
   width: 250px;
-  background: var(--card-bg);
-  border-left: 1px solid var(--border);
-  padding: 20px 14px;
+  background: linear-gradient(180deg, #1e3a5f 0%, #24466e 100%);
+  border-left: none;
+  padding: 22px 14px;
   position: sticky;
   top: 0;
   height: 100vh;
   overflow-y: auto;
+  overflow-x: hidden;
   flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.92);
 }
 .sidebar .brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 10px 20px;
-  font-size: 20px;
-  font-weight: 800;
-  color: var(--text-main);
+  padding: 4px 10px 22px;
+  color: #fff;
+  position: relative;
+  z-index: 1;
 }
+.sidebar .brand-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.sidebar .brand-title { font-size: 18px; font-weight: 800; color: #fff; white-space: nowrap; }
+.sidebar .brand-subtitle { font-size: 11px; font-weight: 500; color: rgba(255, 255, 255, 0.6); }
 .sidebar .group-title {
   font-size: 11px;
   font-weight: 700;
-  color: var(--text-muted);
+  color: rgba(255, 255, 255, 0.5);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  padding: 14px 12px 4px;
+  padding: 16px 12px 6px;
+  position: relative;
+  z-index: 1;
 }
 .sidebar .nav-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  color: var(--text-secondary);
+  padding: 11px 14px;
+  border-radius: 12px;
+  color: rgba(255, 255, 255, 0.86);
   font-weight: 500;
   text-decoration: none;
   cursor: pointer;
   transition: background 180ms ease, color 180ms ease;
-  margin-bottom: 2px;
+  margin-bottom: 3px;
+  position: relative;
+  z-index: 1;
 }
 .sidebar .nav-item:hover {
-  background: var(--bg-secondary);
+  background: rgba(255, 255, 255, 0.1);
 }
 .sidebar .nav-item.active {
-  background: var(--bg-main);
-  color: var(--accent-top);
+  background: #fff;
+  color: #1e3a5f;
   font-weight: 700;
-  border-right: 3px solid var(--accent-top);
+  border-right: none;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.2);
 }
 .sidebar .nav-icon {
   width: 20px;
   text-align: center;
   font-size: 18px;
+}
+/* כפתור הסגירה (מובייל) היה מיועד לרקע בהיר — ניגודיות מפורשת על הרקע הכהה */
+.sidebar .sidebar-close {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+/* עיטור: צללית עלה גדולה ושקופה למחצה בתחתית הסרגל */
+.sidebar::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  inset-inline-end: -20px;
+  width: 190px;
+  height: 230px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 140'%3E%3Cpath fill='white' d='M50 2 C14 30 2 78 20 116 C29 135 71 135 80 116 C98 78 86 30 50 2 Z'/%3E%3Cpath stroke='white' stroke-width='2.5' fill='none' d='M50 16 L50 128 M50 55 C38 60 30 68 26 78 M50 80 C62 85 70 93 74 103'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: bottom;
+  background-size: contain;
+  opacity: 0.07;
+  pointer-events: none;
+  z-index: 0;
 }
 
 /* ============================ Main area ============================ */

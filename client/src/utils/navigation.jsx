@@ -17,12 +17,16 @@ export const NAV_GROUPS = [
   {
     group: 'operations',
     items: [
-      { to: '/structures', icon: '🏗️', labelKey: 'structures' },
       { to: '/planting', icon: '🌱', labelKey: 'planting' },
       { to: '/crops', icon: '🌾', labelKey: 'crops' },
       { to: '/harvests', icon: '🧺', labelKey: 'harvests' },
+      { to: '/structures', icon: '🏗️', labelKey: 'structures' },
+    ],
+  },
+  {
+    group: 'spraying',
+    items: [
       { to: '/spraying', icon: '🧴', labelKey: 'spraying' },
-      { to: '/materials', icon: '🧪', labelKey: 'sprayMaterials' },
       { to: '/spray-reports', icon: '📋', labelKey: 'sprayReports' },
     ],
   },
@@ -42,11 +46,17 @@ export const NAV_GROUPS = [
     ],
   },
   {
+    group: 'database',
+    items: [
+      { to: '/pricing', icon: '🏷️', labelKey: 'pricing' },
+      { to: '/materials', icon: '🧪', labelKey: 'sprayMaterials' },
+    ],
+  },
+  {
     group: 'finance',
     items: [
       { to: '/finance', icon: '💰', labelKey: 'finance' },
       { to: '/finance-forecast', icon: '📈', labelKey: 'financeForecast' },
-      { to: '/pricing', icon: '🏷️', labelKey: 'pricing' },
       { to: '/invoices', icon: '🧾', labelKey: 'invoices' },
       { to: '/delivery-notes', icon: '📄', labelKey: 'deliveryNotes' },
     ],
@@ -112,8 +122,6 @@ export function routeIcon(path) {
 // (למשל כשמשתמש הדביק URL של עמוד פנימי ישירות בדפדפן)
 // ============================================================
 const PARENT_ROUTE = {
-  '/materials': '/spraying',
-  '/planting': '/structures',
   '/nonworkdays': '/planting',
   '/treatments': '/spraying',
   '/harvests': '/crops',
@@ -121,8 +129,8 @@ const PARENT_ROUTE = {
   '/crew': '/workers',
   '/requests': '/workers',
   '/suppliers': '/inventory',
+  '/materials': '/pricing',
   '/finance-forecast': '/finance',
-  '/pricing': '/finance',
   '/invoices': '/finance',
   '/delivery-notes': '/finance',
 };

@@ -10,8 +10,10 @@ export const translations = {
   // קבוצות ניווט
   group_main: { he: 'ראשי', th: 'หลัก' },
   group_operations: { he: 'תפעול', th: 'การปฏิบัติงาน' },
+  group_spraying: { he: 'ריסוסים', th: 'การพ่นยา' },
   group_human: { he: 'כוח אדם', th: 'บุคลากร' },
   group_inventory: { he: 'מלאי', th: 'คงคลัง' },
+  group_database: { he: 'מסד נתונים', th: 'ฐานข้อมูล' },
   group_finance: { he: 'כספים', th: 'การเงิน' },
   group_docs: { he: 'מסמכים ובקרה', th: 'เอกสารและการควบคุม' },
   structures: { he: 'מבנים', th: 'โรงเรือน' },
