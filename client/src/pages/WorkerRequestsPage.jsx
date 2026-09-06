@@ -217,7 +217,10 @@ export default function WorkerRequestsPage() {
         </div>
       )}
 
-      {drawer && <RequestDrawer canAct={(app.user?.role || 'owner') === 'owner'} req={drawer} busy={busy} error={actionError} onClose={() => setDrawer(null)} onAnswer={answer}
+      {/* מנהל עבודה: אישור/דחייה של בקשות עובדים מותר (סעיף 2026-09-06) —
+          זו ההרשאה היחידה מעבר לצפייה; שאר העריכות (מחיקה) נשארות
+          למנהל הראשי בלבד, ר' onDelete למטה */}
+      {drawer && <RequestDrawer canAct={['owner', 'manager'].includes(app.user?.role || 'owner')} req={drawer} busy={busy} error={actionError} onClose={() => setDrawer(null)} onAnswer={answer}
         onDelete={(app.user?.role || 'owner') === 'owner' ? (async (r2) => {
           if (await removeRecord(app.api, REQUEST_TABLE, r2.id, 'הבקשה')) { setDrawer(null); await load(); }
         }) : null} />}
