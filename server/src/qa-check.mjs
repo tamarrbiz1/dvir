@@ -409,6 +409,71 @@ await test('טבלה גדולה: קריאת maxRecords גבוה לא נכשלת 
   return `${rows.length} רשומות ב-${ms}ms`;
 }, 5000);
 
+// תקרית 2026-09-06: טופס המבנים שלח שדות formula ("שטח בדונם"/"מספר שורות
+// במבנה") ל-Airtable כאילו הם רגילים — כל יצירה/עדכון נכשלה. תוקן דרך
+// /api/meta (computedFields) + RecordForm שמדלג עליהם. שתי הבדיקות הבאות
+// הן שומרי-רגרסיה קבועים לתקרית הזו.
+await test('מטא-דאטה: /api/meta/מבנים מסמן שדות מחושבים כראוי', async () => {
+  const meta = await api('GET', `meta/${enc('מבנים')}`);
+  const computed = new Set(meta?.computedFields || []);
+  if (!computed.has('שטח בדונם') || !computed.has('מספר שורות במבנה')) {
+    throw new Error(`חסרים שדות מחושבים צפויים: ${JSON.stringify(meta?.computedFields)}`);
+  }
+  return `${computed.size} שדות מחושבים מזוהים`;
+});
+
+await test('מבנה: יצירה עם שדות אמיתיים בלבד (בלי שדות מחושבים) → עדכון → מחיקה', async () => {
+  const created = await api('POST', enc('מבנים'), {
+    'מספר מבנה': MARK,
+    'סוג מבנה': 'בית רשת',
+    'סטטוס המבנה': 'חלקה פנויה: לפני עקירה',
+    'מספר גמלונים': 14,
+    'רוחב גמלון במטרים': 8,
+    'אורך שורה במטרים': 44,
+    'מספר שלוחות טפטוף בגמלון': 8,
+    'מספר שלוחות טפטוף בגמלון הראשון': 10,
+  });
+  if (!created?.id) throw new Error('לא חזר id ביצירה');
+  const read1 = await api('GET', `${enc('מבנים')}/${created.id}`);
+  if (read1['מספר מבנה'] !== MARK) throw new Error('שם המבנה לא נשמר כראוי');
+  if (typeof read1['שטח בדונם'] !== 'number' || typeof read1['מספר שורות במבנה'] !== 'number') {
+    throw new Error(`שדות מחושבים לא חושבו: שטח=${read1['שטח בדונם']} שורות=${read1['מספר שורות במבנה']}`);
+  }
+  await api('PATCH', `${enc('מבנים')}/${created.id}`, { 'מספר גמלונים': 20 });
+  const read2 = await api('GET', `${enc('מבנים')}/${created.id}`);
+  if (read2['מספר גמלונים'] !== 20) throw new Error('העדכון לא נשמר');
+  if (read2['שטח בדונם'] === read1['שטח בדונם']) throw new Error('השדה המחושב לא הגיב לשינוי הקלט');
+  await api('DELETE', `${enc('מבנים')}/${created.id}`);
+  let gone = false;
+  try { await api('GET', `${enc('מבנים')}/${created.id}`); } catch { gone = true; }
+  if (!gone) throw new Error('הרשומה לא נמחקה בפועל');
+  return `שטח ${read1['שטח בדונם']}→${read2['שטח בדונם']}, שורות ${read1['מספר שורות במבנה']}→${read2['מספר שורות במבנה']}`;
+});
+
+// תקרית 2026-09-06 (לילה): רשומת QA ישנה משנת 2099 שרדה בטבלת תוכניות
+// שתילה והציגה "תוכנית קרובה" מזויפת בכרטיס מבנה אצל לקוחה אמיתית.
+// stripTestRecords מסנן כל רשומה עם קידומת בדיקה (כולל MARK עצמו — ר'
+// TEST_RECORD_PATTERN ב-server.js) מכל קריאה רגילה; ?includeTest=1 הוא
+// יציאת חירום למערך הבדיקות בלבד (לא לשימוש מסך אמיתי).
+await test('הגנת רשומות בדיקה: רשומה מתויגת מוסתרת מרשימה רגילה, נראית עם includeTest=1', async () => {
+  const created = await create('גידולים', { 'שם גידול': MARK });
+  const plain = await api('GET', `${enc('גידולים')}?maxRecords=200`);
+  if (plain.some((r) => r.id === created.id)) throw new Error('הרשומה המתויגת הופיעה ברשימה הרגילה');
+  const withFlag = await api('GET', `${enc('גידולים')}?maxRecords=200&includeTest=1`);
+  if (!withFlag.some((r) => r.id === created.id)) throw new Error('הרשומה לא הופיעה גם עם includeTest=1');
+  return 'הוסתרה כראוי + נראית דרך יציאת החירום';
+});
+
+await test('תרגום הערת מנהל: עברית → תאילנדית (MyMemory)', async () => {
+  const text = 'אנא הגע בזמן מחר בבוקר';
+  const r = await api('POST', 'translate', { text, target: 'th' });
+  if (!r?.translated || typeof r.translated !== 'string' || !r.translated.trim()) {
+    throw new Error(`לא חזר תרגום תקין: ${JSON.stringify(r)}`);
+  }
+  if (r.translated.trim() === text) throw new Error('הטקסט חזר ללא שינוי — כנראה לא תורגם בפועל');
+  return r.translated.slice(0, 40);
+});
+
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
 // שרדה את הניקוי בריצה קודמת ונשארה בטבלה החיה עד שאותרה ידנית למחרת —
