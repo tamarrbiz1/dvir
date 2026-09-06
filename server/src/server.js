@@ -285,6 +285,36 @@ app.post('/api/worker-login', async (req, res) => {
 });
 
 // ============================================================
+// תרגום הערת מנהל לעובד (סעיף 2026-09-06) — טקסט חופשי, לא ניתן
+// לתרגם מראש כמו "סוג עבודה". פתרון זמני: MyMemory — שירות תרגום
+// חינמי, ללא מפתח API, ללא התקנת חבילה. מגבלות אמיתיות: איכות
+// תרגום בינונית לעברית↔תאילנדית (לא שפה נפוצה בשירות הזה), הגבלת
+// קצב לא-רשמית (~5000 מילה/יום ללא הרשמה), ואין שום התחייבות זמינות —
+// לא מתאים כפתרון קבוע לאפליקציה חיה. אם איכות/יציבות התרגום לא
+// מספקת בפועל — הפתרונות הבאים דורשים החלטת הלקוחה (עלות + חשבון
+// שירות חיצוני, לא משהו שאפשר להגדיר עבורה): Google Cloud Translation
+// API (משלם לפי תווים, איכות גבוהה, תמיכה רשמית בתאילנדית), DeepL API
+// (איכות מעולה, לא תומך רשמית בתאילנדית נכון לכתיבת שורות אלו — לבדוק
+// לפני בחירה), Azure Translator (משלם, תמיכה רשמית בתאילנדית).
+app.post('/api/translate', async (req, res) => {
+  try {
+    const { text, target } = req.body || {};
+    if (!text || !String(text).trim()) return res.status(400).json({ error: 'אין טקסט לתרגום' });
+    if (String(text).length > 480) return res.status(400).json({ error: 'הטקסט ארוך מדי לתרגום (מגבלת השירות החינמי)' });
+    const lang = target === 'he' ? 'th|he' : 'he|th';
+    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${lang}`;
+    const r = await fetch(url);
+    if (!r.ok) return res.status(502).json({ error: 'שירות התרגום לא זמין כרגע' });
+    const data = await r.json();
+    const translated = data?.responseData?.translatedText;
+    if (!translated) return res.status(502).json({ error: 'התרגום נכשל' });
+    res.json({ translated });
+  } catch (e) {
+    res.status(502).json({ error: 'שירות התרגום לא זמין כרגע' });
+  }
+});
+
+// ============================================================
 // מטמון קריאה קצר
 //
 // מסך אחד טוען לרוב 4–6 טבלאות, וכמה מסכים חולקים את אותן טבלאות
