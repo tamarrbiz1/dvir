@@ -5,7 +5,7 @@ import { useApp } from '../App.jsx';
 import { workHours , workTypeName } from '../utils/field.js';
 import { activatable } from '../utils/a11y.js';
 import { useAutoRefresh } from '../utils/live.js';
-import { formatMoney, formatNumber } from '../utils/format.js';
+import { formatMoney, formatNumber, yearProgressLabel } from '../utils/format.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps, yCategoryProps } from '../utils/chart.js';
 import PageHeader from '../components/PageHeader.jsx';
@@ -125,6 +125,15 @@ export default function TeamCrewPage() {
     return Object.entries(b).map(([k, v]) => ({ name: k, value: Math.round(v) }));
   }, [filtered]);
 
+  // כלל רוחבי: שום סכום תלוי-זמן בלי ציון טווח. תיאור התקופה המדויקת
+  // שמסונן כרגע (טווח מותאם / חודש מסוים / כל השנה, עם ציון "עד כה"
+  // כשמדובר בשנה הנוכחית שטרם הסתיימה).
+  const periodDisclosure = (from || to)
+    ? `${from || '…'} – ${to || '…'}`
+    : month
+      ? `${monthShort(month - 1)} ${year}`
+      : (year === now.getFullYear() ? yearProgressLabel(year) : String(year));
+
   const kpis = [
     { icon: '👷', label: t('m_activeWorkers'), value: formatNumber(activeWorkers.filter((w) => workerRecs(w).length > 0 || w['סטטוס'] === 'פעיל').length), color: 'var(--workers)' },
     { icon: '⏱️', label: t('m_totalHours'), value: formatNumber(sumHours), color: 'var(--hours)' },
@@ -166,6 +175,7 @@ export default function TeamCrewPage() {
               <div key={k.label} className="kpi-card">
                 <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--bg-secondary)' }}>{k.icon}</div><span className="kpi-label">{k.label}</span></div>
                 <div className="kpi-value" style={{ color: k.color }}>{k.value}</div>
+                <div className="kpi-sub">{periodDisclosure}</div>
               </div>
             ))}
           </div>

@@ -4,6 +4,7 @@ import { useApp } from '../App.jsx';
 import { useAutoRefresh } from '../utils/live.js';
 import { formatNumber, formatMoney, formatDate, safeValue } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
+import { sortStructures } from '../utils/structures.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
@@ -15,12 +16,30 @@ import { DELIVERY_TABLE, noteNumber, noteDate, noteCartons, noteWeight, noteMark
 
 const TABS = ['סקירה', 'תוכנית שתילה', 'עבודות', 'קטיפים', 'ריסוסים', 'תפוקה', 'כספים', 'מסמכים'];
 
+// חלוקה ראשית לפי סטטוס (סעיף 2026-09-06) — לפי 8 הערכים האמיתיים
+// בשדה "סטטוס המבנה" ב-Airtable (select). "בקטיף" הוא ערך מדויק אחד
+// מתוך שלושת ערכי "חלקה שתולה"; שאר "שתולה" הם "שתולים" (לא בקטיף
+// כרגע); כל "חלקה פנויה" הוא "לפני שתילה".
+const STATUS_CATEGORIES = [
+  { key: 'harvest', label: 'מבנים בקטיף', color: 'var(--harvest)', soft: 'var(--harvest-soft)' },
+  { key: 'growing', label: 'מבנים שתולים', color: 'var(--profit)', soft: 'var(--profit-soft)' },
+  { key: 'preplant', label: 'מבנים לפני שתילה', color: 'var(--text-secondary)', soft: 'var(--bg-secondary)' },
+];
+function statusCategory(status) {
+  const s = String(status || '');
+  if (s === 'חלקה שתולה: בקטיף') return 'harvest';
+  if (s.startsWith('חלקה שתולה')) return 'growing';
+  if (s.startsWith('חלקה פנויה')) return 'preplant';
+  return 'other';
+}
+
 export default function StructuresPage() {
   const app = useApp();
   const location = useLocation();
   const [structures, setStructures] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [drawer, setDrawer] = useState(null);
   const [form, setForm] = useState(null); // {} = חדש, רשומה = עריכה
   const canEdit = (app.user?.role || 'owner') === 'owner'; // CRUD למנהל ראשי בלבד
@@ -45,11 +64,16 @@ export default function StructuresPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [app.api, location.state]);
 
-  const filtered = structures.filter((s) => {
+  const bySearch = structures.filter((s) => {
     if (!search) return true;
     const q = search.toLowerCase();
     return String(s['מספר מבנה'] || s['סוג מבנה'] || '').toLowerCase().includes(q);
   });
+  const categoryCounts = STATUS_CATEGORIES.reduce((acc, c) => {
+    acc[c.key] = bySearch.filter((s) => statusCategory(s['סטטוס המבנה']) === c.key).length;
+    return acc;
+  }, {});
+  const filtered = sortStructures(statusFilter === 'all' ? bySearch : bySearch.filter((s) => statusCategory(s['סטטוס המבנה']) === statusFilter));
 
   return (
     <div>
@@ -58,27 +82,44 @@ export default function StructuresPage() {
         {canEdit && <button className="btn btn-primary" onClick={() => setForm({})}>+ מבנה חדש</button>}
       </PageHeader>
 
+      {/* חלוקה ראשית לפי סטטוס — עם אופציה לראות את כלל המבנים */}
+      <div className="tabs no-print" style={{ marginBottom: 16 }}>
+        <button className={`tab ${statusFilter === 'all' ? 'active' : ''}`} onClick={() => setStatusFilter('all')}>הכל ({bySearch.length})</button>
+        {STATUS_CATEGORIES.map((c) => (
+          <button key={c.key} className={`tab ${statusFilter === c.key ? 'active' : ''}`} onClick={() => setStatusFilter(c.key)}>{c.label} ({categoryCounts[c.key] || 0})</button>
+        ))}
+      </div>
+
       {loading ? (
         <div className="grid">
           {[1, 2, 3, 4, 5, 6].map((i) => <div key={i} className="skeleton skeleton-card" />)}
         </div>
+      ) : filtered.length === 0 ? (
+        <div className="empty-state">אין מבנים בקטגוריה זו</div>
       ) : (
         <div className="grid">
-          {filtered.map((s) => (
+          {filtered.map((s) => {
+            const cat = STATUS_CATEGORIES.find((c) => c.key === statusCategory(s['סטטוס המבנה']));
+            const crop = displayLinks(s['גידולים']);
+            return (
             <div key={s.id} className="card clickable" {...activatable(() => setDrawer(s), `פתיחת כרטיס מבנה ${s['מספר מבנה'] || s['סוג מבנה'] || ''}`)}>
-              {sketchUrl(s) && <StructureThumb s={s} alt={`סקיצת מבנה ${s['מספר מבנה'] || ''}`} />}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                 <b style={{ fontSize: 18 }}>🏗️ {s['מספר מבנה'] || s['סוג מבנה'] || 'מבנה'}</b>
-                <span className={`badge ${s['סטטוס המבנה'] === 'פעיל' ? 'badge-ok' : 'badge-warn'}`}>
+                <span className="badge" style={{ background: cat?.soft, color: cat?.color, fontWeight: 700 }}>
                   {s['סטטוס המבנה'] || 'לא זמין'}
                 </span>
               </div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-                <div>סוג: {safeValue(s['סוג מבנה'])}</div>
-                <div>שטח: {formatNumber(s['שטח בדונם'])} דונם</div>
-                <div>גמלונים: {formatNumber(s['מספר גמלונים'])}</div>
-                {displayLinks(s['גידולים']) && <div style={{ marginTop: 8 }}>גידולים: {displayLinks(s['גידולים'])}</div>}
+              <div className="form-grid-2" style={{ gap: '4px 12px', fontSize: 13, color: 'var(--text-secondary)' }}>
+                <div>סוג: <b style={{ color: 'var(--text-main)' }}>{safeValue(s['סוג מבנה'])}</b></div>
+                <div>שטח: <b style={{ color: 'var(--text-main)' }}>{formatNumber(s['שטח בדונם'])} דונם</b></div>
+                <div>גמלונים: <b style={{ color: 'var(--text-main)' }}>{formatNumber(s['מספר גמלונים'])}</b></div>
+                <div>שורות: <b style={{ color: 'var(--text-main)' }}>{formatNumber(s['מספר שורות במבנה'])}</b></div>
               </div>
+              {crop && (
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)', fontSize: 13, color: 'var(--text-secondary)' }}>
+                  🌱 גידול נוכחי: <b style={{ color: 'var(--profit)' }}>{crop}</b>
+                </div>
+              )}
               {canEdit && (
                 <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
                   <button className="btn btn-sm btn-ghost" aria-label="פתח פרטים" title="פתח פרטים" onClick={(e) => { e.stopPropagation(); setDrawer(s); }}>👁</button>
@@ -91,7 +132,8 @@ export default function StructuresPage() {
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -225,27 +267,24 @@ function sketchUrl(s, full = false) {
     : (a.thumbnails?.large?.url || a.url || null);
 }
 
-// תמונת סקיצה ברשת המבנים — "blur-up": ה-thumbnail הזעיר (כמה KB, נטען
-// כמעט מיידית) מוצג טשוש מייד, והתמונה האמיתית (thumbnails.large —
-// נמדדה כ-900KB בממוצע; 12 מבנים ביחד ≈ 11MB, זו הסיבה שהטעינה
-// הראשונה איטית) מוצגת מעליה ברגע שסיימה לטעון, במעבר חלק. כך יש
-// תוכן ויזואלי מיידי במקום ריק, בלי לשנות את כמות הנתונים שיורדת בפועל.
-function StructureThumb({ s, alt }) {
+// תמונת סקיצה במסך הפירוט — "blur-up": ה-thumbnail הזעיר (כמה KB) מוצג
+// טשוש מייד, והתמונה האמיתית (thumbnails.large, ~900KB בממוצע) מחליפה
+// אותו חלק ברגע שנטענה. עכשיו שהסקיצה מוצגת רק כאן (לא ב-12 כרטיסי
+// הרשת בבת אחת) — עומס ה-11MB שנמדד לרשת כבר לא רלוונטי מלכתחילה,
+// אבל התחושה המיידית עדיין נעימה גם לתמונה בודדת.
+function DetailSketch({ s, onZoom }) {
   const [loaded, setLoaded] = useState(false);
   const a = Array.isArray(s?.['סקיצה']) ? s['סקיצה'][0] : null;
   if (!a) return null;
   const tiny = a.thumbnails?.small?.url;
   const full = a.thumbnails?.large?.url || a.url;
-  const wrapStyle = { position: 'relative', width: 'calc(100% + 48px)', margin: '-20px -24px 12px', height: 120, borderRadius: '14px 14px 0 0', overflow: 'hidden', background: 'var(--bg-secondary)' };
-  const layerStyle = { position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' };
   return (
-    <div style={wrapStyle}>
-      {tiny && (
-        <img src={tiny} alt="" aria-hidden="true"
-          style={{ ...layerStyle, filter: 'blur(10px)', transform: 'scale(1.15)', opacity: loaded ? 0 : 1, transition: 'opacity .25s' }} />
+    <div style={{ position: 'relative', maxWidth: '100%', cursor: 'zoom-in' }} onClick={onZoom} title="לחיצה לתצוגה מוגדלת">
+      {tiny && !loaded && (
+        <img src={tiny} alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', filter: 'blur(10px)', borderRadius: 10 }} />
       )}
-      <img src={full} alt={alt} loading="lazy" onLoad={() => setLoaded(true)}
-        style={{ ...layerStyle, opacity: loaded ? 1 : 0, transition: 'opacity .25s' }} />
+      <img src={full} alt="סקיצת המבנה" loading="lazy" onLoad={() => setLoaded(true)}
+        style={{ maxWidth: '100%', borderRadius: 10, position: 'relative', opacity: loaded ? 1 : 0, transition: 'opacity .25s' }} />
     </div>
   );
 }
@@ -270,11 +309,7 @@ function Overview({ s }) {
       {row('מספר שורות', formatNumber(s['מספר שורות במבנה']))}
       <div className="section-title">סקיצה</div>
       <div className="card" style={{ background: 'var(--bg-secondary)', minHeight: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', padding: 10 }}>
-        {sketchUrl(s) ? (
-          <img src={sketchUrl(s)} alt="סקיצת המבנה" title="לחיצה לתצוגה מוגדלת"
-            style={{ maxWidth: '100%', borderRadius: 10, cursor: 'zoom-in' }}
-            onClick={() => setZoom(true)} />
-        ) : 'אין סקיצה זמינה'}
+        {sketchUrl(s) ? <DetailSketch s={s} onZoom={() => setZoom(true)} /> : 'אין סקיצה זמינה'}
       </div>
       {zoom && (
         <div className="modal-overlay lightbox" onClick={() => setZoom(false)}>
