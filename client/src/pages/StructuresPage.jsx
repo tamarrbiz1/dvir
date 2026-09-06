@@ -33,10 +33,45 @@ function statusCategory(status) {
   return 'other';
 }
 
+// תוכנית פעילה למבנה (תוקן 2026-09-06): קודם הוצג "גידולים" — lookup
+// שמצרף את כל התוכניות המקושרות (היסטוריות+עתידיות) ולכן הראה את אותו
+// גידול כמה פעמים. עכשיו: התוכנית שהיום נמצא בטווח המעודכן שלה (תחילת
+// שתילה מעודכנת עד סוף קטיף מעודכן) — שם גידול פעם אחת + שלב נוכחי.
+// אם אין תוכנית פעילה — התוכנית הקרובה הבאה (לפי תחילת שתילה), אם יש.
+function parseD(v) { const d = v ? new Date(String(v).slice(0, 10)) : null; return d && !Number.isNaN(d.getTime()) ? d : null; }
+function planStage(p, today) {
+  const plantStart = parseD(p['תחילת שתילה מעודכנת']);
+  const harvestStart = parseD(p['תחילת קטיף מעודכנת']);
+  const harvestEnd = parseD(p['סוף קטיף מעודכן']);
+  if (harvestStart && today >= harvestStart && (!harvestEnd || today <= harvestEnd)) return 'קטיף';
+  if (plantStart && today >= plantStart) return 'גידול';
+  return 'שתילה';
+}
+function activePlanFor(structureId, allPlans) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const linked = allPlans.filter((p) => {
+    const m = p['מבנה'];
+    const ids = Array.isArray(m) ? m.map((x) => x?.id ?? x) : [];
+    return ids.includes(structureId);
+  });
+  const withRange = linked.map((p) => ({
+    plan: p,
+    start: parseD(p['תחילת שתילה מעודכנת']),
+    end: parseD(p['סוף קטיף מעודכן']),
+    crop: displayName(p['גידולים'], ''),
+  })).filter((x) => x.crop);
+  const active = withRange.find((x) => x.start && x.end && today >= x.start && today <= x.end);
+  if (active) return { crop: active.crop, stage: planStage(active.plan, today), when: 'active' };
+  const upcoming = withRange.filter((x) => x.start && x.start > today).sort((a, b) => a.start - b.start)[0];
+  if (upcoming) return { crop: upcoming.crop, when: 'upcoming', date: upcoming.start };
+  return null;
+}
+
 export default function StructuresPage() {
   const app = useApp();
   const location = useLocation();
   const [structures, setStructures] = useState([]);
+  const [plans, setPlans] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -44,10 +79,14 @@ export default function StructuresPage() {
   const [form, setForm] = useState(null); // {} = חדש, רשומה = עריכה
   const canEdit = (app.user?.role || 'owner') === 'owner'; // CRUD למנהל ראשי בלבד
 
-  const load = useCallback(() => app.api.get('מבנים', '?maxRecords=200')
-    .then((d) => {
+  const load = useCallback(() => Promise.all([
+    app.api.get('מבנים', '?maxRecords=200'),
+    app.api.get('תוכניות שתילה', '?maxRecords=500').catch(() => []),
+  ])
+    .then(([d, pl]) => {
       const arr = Array.isArray(d) ? d : [];
       setStructures(arr);
+      setPlans(Array.isArray(pl) ? pl : []);
       // כרטיס פתוח ברענון ברקע מסונכרן לרשומה העדכנית, לא לתמונת-מצב ישנה
       setDrawer((cur) => (cur ? (arr.find((x) => x.id === cur.id) || cur) : cur));
       return arr;
@@ -100,7 +139,7 @@ export default function StructuresPage() {
         <div className="grid">
           {filtered.map((s) => {
             const cat = STATUS_CATEGORIES.find((c) => c.key === statusCategory(s['סטטוס המבנה']));
-            const crop = displayLinks(s['גידולים']);
+            const active = activePlanFor(s.id, plans);
             return (
             <div key={s.id} className="card clickable" {...activatable(() => setDrawer(s), `פתיחת כרטיס מבנה ${s['מספר מבנה'] || s['סוג מבנה'] || ''}`)}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -115,11 +154,15 @@ export default function StructuresPage() {
                 <div>גמלונים: <b style={{ color: 'var(--text-main)' }}>{formatNumber(s['מספר גמלונים'])}</b></div>
                 <div>שורות: <b style={{ color: 'var(--text-main)' }}>{formatNumber(s['מספר שורות במבנה'])}</b></div>
               </div>
-              {crop && (
-                <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)', fontSize: 13, color: 'var(--text-secondary)' }}>
-                  🌱 גידול נוכחי: <b style={{ color: 'var(--profit)' }}>{crop}</b>
-                </div>
-              )}
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)', fontSize: 13, color: 'var(--text-secondary)' }}>
+                {active?.when === 'active' ? (
+                  <>🌱 <b style={{ color: 'var(--profit)' }}>{active.crop}</b> · שלב: <b>{active.stage}</b></>
+                ) : active?.when === 'upcoming' ? (
+                  <>🗓️ אין תוכנית פעילה כרגע · הקרובה: <b style={{ color: 'var(--profit)' }}>{active.crop}</b> ({formatDate(active.date)})</>
+                ) : (
+                  <span style={{ color: 'var(--text-muted)' }}>אין תוכנית פעילה</span>
+                )}
+              </div>
               {canEdit && (
                 <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
                   <button className="btn btn-sm btn-ghost" aria-label="פתח פרטים" title="פתח פרטים" onClick={(e) => { e.stopPropagation(); setDrawer(s); }}>👁</button>
