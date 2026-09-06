@@ -141,7 +141,9 @@ await test('טיפול/ריסוס: יצירה + בוצע + עריכה', async ()
 await test('קטיף: יצירה + הופעה מיידית ברשימה', async () => {
   await api('GET', `${enc('קטיפים')}?maxRecords=1500`); // חימום מטמון — מדמה מסך פתוח
   const rec = await create('קטיפים', { 'תאריך': today, 'מבנה': [sId], 'כמות ק"ג': 5, 'הערות': MARK });
-  const list = await api('GET', `${enc('קטיפים')}?maxRecords=1500`);
+  // includeTest=1: הרשומה מתויגת-MARK בכוונה (ר' הגנת stripTestRecords
+  // ב-server.js) — צריך לראות אותה כדי לאמת שהיא מופיעה מיד ברשימה
+  const list = await api('GET', `${enc('קטיפים')}?maxRecords=1500&includeTest=1`);
   if (!list.some((x) => x.id === rec.id)) throw new Error('לא הופיע מיד ברשימה');
   return 'מופיע מיד';
 });
@@ -351,7 +353,8 @@ await test('שדות ריקים: רשומה עם שדה חובה בלבד לא �
   // ספק בלי שום שדה אופציונלי (טלפון/אימייל/הערות/תנאי תשלום וכו') —
   // מוודאים שקריאה חוזרת של הטבלה כולה לא נכשלת ושה-API מחזיר בבטחה
   const rec = await create('ספקים', { 'שם ספק': `${MARK}-empty` });
-  const list = await api('GET', `${enc('ספקים')}?maxRecords=500`);
+  // includeTest=1: הרשומה מתויגת-MARK בכוונה — ר' הערה למעלה
+  const list = await api('GET', `${enc('ספקים')}?maxRecords=500&includeTest=1`);
   const back = list.find((x) => x.id === rec.id);
   if (!back) throw new Error('הרשומה עם השדות הריקים לא הופיעה ברשימה');
   return 'נקרא בבטחה עם שדות אופציונליים ריקים';

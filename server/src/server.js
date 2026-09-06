@@ -50,6 +50,22 @@ const COMPUTED_FIELD_TYPES = new Set([
   'createdTime', 'lastModifiedTime', 'autoNumber', 'createdBy', 'lastModifiedBy', 'button',
 ]);
 
+// ============================================================
+// הגנה קבועה: שריד בדיקה שנשאר ב-Airtable (למשל תקרית 2026-09-06 —
+// גידול "__PLANT_TEST_...__" משנת 2099 ששכח להימחק) לעולם לא יגיע
+// למשתמש אמיתי, גם אם ניקוי עתידי ייכשל. נבדק על ה-JSON הגולמי של כל
+// רשומה לפני העשרה/קאש — התבניות ספציפיות מספיק כדי לא לפגוע ברשומה
+// אמיתית בטעות (מזהי בדיקה תמיד כוללים __PLANT_TEST_ או QA- ואחריו
+// חותמת-זמן ארוכה, לא טקסט חופשי שמישהו היה כותב).
+const TEST_RECORD_PATTERN = /__PLANT_TEST_\d+__|\bQA-\d{10,}\b|\bPERF-TEST\b/;
+// ?includeTest=1 — יציאת חירום למערך הבדיקות (qa-check.mjs) בלבד: הוא
+// יוצר וקורא בחזרה רשומות מתויגות-MARK כחלק מהאימות העצמי שלו, ולכן
+// חייב לראות אותן; שום מסך אמיתי באפליקציה לא שולח את הפרמטר הזה.
+function stripTestRecords(records, req) {
+  if (!Array.isArray(records) || req?.query?.includeTest === '1') return records;
+  return records.filter((r) => !TEST_RECORD_PATTERN.test(JSON.stringify(r)));
+}
+
 // מטא-נתונים — שדות של טבלה ספציפית
 app.get('/api/meta/:table', async (req, res) => {
   try {
@@ -280,7 +296,10 @@ const READ_TTL_MS = 30 * 1000;
 const readCache = new Map(); // key -> { at, payload }
 
 function cacheKeyFor(table, query) {
-  const relevant = ['filterByFormula', 'sortField', 'sortDirection', 'maxRecords', 'pageSize', 'raw', 'fields'];
+  // includeTest חייב להיות בטוח: אחרת בקשה עם ובלי הדגל ישתפו מפתח קאש
+  // ואחד ה"קורא" את מה שהשני ביקש (זליגת שריד-בדיקה למשתמש אמיתי, או
+  // הפוך — qa-check.mjs מקבל תוצאה מסוננת ונכשל בטעות).
+  const relevant = ['filterByFormula', 'sortField', 'sortDirection', 'maxRecords', 'pageSize', 'raw', 'fields', 'includeTest'];
   return table + '|' + relevant.map((k) => `${k}=${query[k] ?? ''}`).join('&');
 }
 
@@ -341,7 +360,7 @@ app.get('/api/:table', async (req, res) => {
       const names = String(req.query.fields).split(',').map((f) => f.trim()).filter(Boolean);
       if (names.length) opts.fields = names;
     }
-    const records = await fetchRecords(table, opts);
+    const records = stripTestRecords(await fetchRecords(table, opts), req);
 
     // העשרה: שדות מקושרים -> אובייקטים עם שם (אלא אם raw=1)
     const payload = req.query.raw === '1' ? records : await attachLinkedNames(table, records);
