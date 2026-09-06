@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import { sortStructures } from '../utils/structures.js';
 import { useAutoRefresh } from '../utils/live.js';
 import { formatNumber, formatDate, formatWeight, formatPercent } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
@@ -231,7 +232,7 @@ export default function DeliveryNotesPage() {
         {structures.length > 0 && (
           <select className="select" aria-label="סינון לפי מבנה" value={structureF} onChange={(e) => setStructureF(e.target.value)}>
             <option value="">כל המבנים</option>
-            {structures.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            {sortStructures(structures, (t) => t[1]).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
           </select>
         )}
         <select className="select" aria-label="סינון לפי שבוע" value={weekF} onChange={(e) => setWeekF(e.target.value)}>

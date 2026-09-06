@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { t, monthShort, workerStatusDisplay, workerTypeDisplay, translateStructureName, translateVariety } from '../i18n.js';
+import { sortStructures } from '../utils/structures.js';
 import { useApp } from '../App.jsx';
 import { workHours , workTypeName } from '../utils/field.js';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
@@ -486,7 +487,7 @@ function WorkForm({ api, workers, record, onClose, onSaved }) {
             <div className="form-group"><label className="required">מבנה</label>
               <select className="select" style={{ width: '100%' }} value={structure} onChange={(e) => setStructure(e.target.value)}>
                 <option value="">בחר מבנה...</option>
-                {structures.map((s) => <option key={s.id} value={s.id}>{s['מספר מבנה'] || s['סוג מבנה'] || s.id}</option>)}
+                {sortStructures(structures).map((s) => <option key={s.id} value={s.id}>{s['מספר מבנה'] || s['סוג מבנה'] || s.id}</option>)}
               </select></div>
             <div className="form-group"><label>סוג עבודה (תמחור)</label>
               <select className="select" style={{ width: '100%' }} value={priceId} onChange={(e) => setPriceId(e.target.value)}>

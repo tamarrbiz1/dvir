@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { formatNumber, formatWeight, formatDate, safeValue } from '../utils/format.js';
+import { sortStructures } from '../utils/structures.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { removeRecord } from '../components/RecordForm.jsx';
@@ -365,7 +366,7 @@ function HarvestForm({ api, structures, record, onClose, onSaved }) {
             <div className="form-group"><label className="required">מבנה</label>
               <select className="select" style={{ width: '100%' }} value={structure} onChange={(e) => setStructure(e.target.value)}>
                 <option value="">בחר מבנה...</option>
-                {structures.map((s) => <option key={s.id} value={s.id}>{s['מספר מבנה'] || s['סוג מבנה'] || s.id}</option>)}
+                {sortStructures(structures).map((s) => <option key={s.id} value={s.id}>{s['מספר מבנה'] || s['סוג מבנה'] || s.id}</option>)}
               </select></div>
             <div className="form-group"><label>סוג קטיף</label>
               <select className="select" style={{ width: '100%' }} value={type} onChange={(e) => setType(e.target.value)}>

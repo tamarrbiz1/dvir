@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
+import { sortStructures } from '../utils/structures.js';
 import { formatNumber, safeValue } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
@@ -226,7 +227,7 @@ function StructurePricingTable({ items, structName, pricingName, canEdit, api, s
             <div className="form-group"><label className="required">מבנה</label>
               <select className="select" style={{ width: '100%' }} value={addForm.structure} onChange={(e) => setAddForm({ ...addForm, structure: e.target.value })}>
                 <option value="">בחר מבנה...</option>
-                {structures.map((st) => <option key={st.id} value={st.id}>{st['מספר מבנה'] || st['סוג מבנה'] || st.id}</option>)}
+                {sortStructures(structures).map((st) => <option key={st.id} value={st.id}>{st['מספר מבנה'] || st['סוג מבנה'] || st.id}</option>)}
               </select></div>
             <div className="form-group"><label className="required">תמחור עבודה</label>
               <select className="select" style={{ width: '100%' }} value={addForm.price} onChange={(e) => setAddForm({ ...addForm, price: e.target.value })}>

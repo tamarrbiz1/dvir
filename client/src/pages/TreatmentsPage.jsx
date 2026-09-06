@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import { sortStructures } from '../utils/structures.js';
 import { useAutoRefresh } from '../utils/live.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { exportCsv, fileStamp } from '../utils/table.js';
@@ -384,7 +385,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
         <Sel label="חודש" value={month} onChange={(v) => setMonth(Number(v))} options={MONTHS.map((m, i) => [i, m])} />
         <Sel label="שבוע" value="" onChange={(v) => v && goWeekOfMonth(Number(v))} options={[['', 'בחר...'], ...[1, 2, 3, 4, 5].map((n) => [n, `שבוע ${n} בחודש`])]} />
         <Sel label="מבנה" value={fStructure} onChange={setFStructure}
-          options={[['', 'הכל'], ...structures.map((s) => [s.id, s['מספר מבנה'] ? `מבנה ${s['מספר מבנה']}` : 'מבנה'])]} />
+          options={[['', 'הכל'], ...sortStructures(structures).map((s) => [s.id, s['מספר מבנה'] ? `מבנה ${s['מספר מבנה']}` : 'מבנה'])]} />
         <Sel label="גידול" value={fCrop} onChange={setFCrop} options={[['', 'הכל'], ...cropOptions.map((c) => [c, c])]} />
         <Sel label="זן" value={fVariety} onChange={setFVariety} options={[['', 'הכל'], ...varietyOptions.map((c) => [c, c])]} />
         <Sel label="סוג טיפול" value={fType} onChange={setFType} options={[['', 'הכל'], ...Object.keys(TYPES).map((k) => [k, k])]} />
@@ -703,7 +704,7 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
           <div className="form-group">
             <label>מבנים <span className="required" /></label>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {structures.map((s) => {
+              {sortStructures(structures).map((s) => {
                 const on = form.structures.includes(s.id);
                 return (
                   <button type="button" key={s.id} onClick={() => toggleStruct(s.id)} className="badge"
