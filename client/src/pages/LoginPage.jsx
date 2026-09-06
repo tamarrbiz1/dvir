@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../App.jsx';
+import { getDeviceId, getDeviceLabel } from '../utils/device.js';
 
 const ROLES = [
   { key: 'owner', label: 'בעל העסק / מנהל', icon: '👑' },
@@ -29,10 +30,11 @@ export default function LoginPage() {
       const r = await fetch('/api/admin-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, code }),
+        body: JSON.stringify({ email, code, deviceId: getDeviceId(), deviceLabel: getDeviceLabel() }),
       });
       const data = await r.json();
       if (!r.ok) {
+        // מכשיר ממתין לאישור/נדחה — הודעה שונה מ"קוד שגוי" רגיל
         setError(data?.error || 'ההתחברות נכשלה');
         setLoading(false);
         return;

@@ -51,8 +51,9 @@ export const AppContext = createContext(null);
 export const useApp = () => useContext(AppContext);
 
 function Sidebar({ mobileOpen, onClose }) {
-  const { user, lang, setAppLang, logout, badges } = useApp();
+  const { user, lang, setAppLang, logout, badges, api } = useApp();
   const role = user?.role || 'owner';
+  const [devicesOpen, setDevicesOpen] = useState(false);
   return (
     <>
       {mobileOpen && <div className="sidebar-overlay" onClick={onClose} aria-hidden="true" />}
@@ -68,6 +69,17 @@ function Sidebar({ mobileOpen, onClose }) {
             <span className="brand-subtitle">מערכת גידול</span>
           </span>
           <span style={{ marginInlineStart: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            {role === 'owner' && (
+              <button
+                type="button"
+                onClick={() => setDevicesOpen(true)}
+                aria-label={badges.devices ? `מכשירים ממתינים לאישור — ${badges.devices}` : 'מכשירים מאושרים'}
+                title="מכשירי כניסה"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 18, padding: 0 }}
+              >
+                📱{badges.devices > 0 && <span className="nav-badge glow">{badges.devices}</span>}
+              </button>
+            )}
             {canSee(role, '/alerts') && (
               <NavLink
                 to="/alerts"
@@ -136,7 +148,87 @@ function Sidebar({ mobileOpen, onClose }) {
           </button>
         </div>
       </aside>
+      {devicesOpen && <DevicesDrawer api={api} onClose={() => setDevicesOpen(false)} />}
     </>
+  );
+}
+
+const DEVICES_TABLE = 'מכשירי כניסה';
+
+// ============================================================
+// אישור מכשירי כניסה — רק למנהל הראשי. אם הטבלה עדיין לא קיימת
+// ב-Airtable (טרם נוצרה שם) — מוצגת הודעה מסבירה במקום שגיאה סתומה.
+// ============================================================
+function DevicesDrawer({ api, onClose }) {
+  const [devices, setDevices] = useState(null); // null = טוען, [] = נטען וריק
+  const [missing, setMissing] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+
+  const load = () => api.get(DEVICES_TABLE, '?maxRecords=200')
+    .then((d) => { setDevices(Array.isArray(d) ? d : []); setMissing(false); })
+    .catch((e) => {
+      if (String(e.message || '').includes('אינה קיימת')) setMissing(true);
+      setDevices([]);
+    });
+
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const setStatus = async (id, status) => {
+    setBusyId(id);
+    try { await api.update(DEVICES_TABLE, id, { 'סטטוס': status }); await load(); } catch {}
+    setBusyId(null);
+  };
+
+  const sorted = (devices || []).slice().sort((a, b) => {
+    const rank = (s) => (s === 'ממתין לאישור' ? 0 : s === 'מאושר' ? 1 : 2);
+    return rank(a['סטטוס']) - rank(b['סטטוס']) || String(b['כניסה אחרונה'] || '').localeCompare(String(a['כניסה אחרונה'] || ''));
+  });
+
+  return (
+    <div className="drawer-overlay" onClick={onClose}>
+      <div className="drawer" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="מכשירי כניסה">
+        <div className="drawer-header">
+          <span>📱 מכשירי כניסה</span>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
+        </div>
+        <div className="drawer-body">
+          {missing ? (
+            <div className="empty-state">
+              טבלת "מכשירי כניסה" עדיין לא קיימת ב-Airtable — מנגנון אישור המכשירים
+              יתחיל לפעול ברגע שהיא תיווצר. פרטים בדוח שנשלח.
+            </div>
+          ) : devices === null ? (
+            <div className="skeleton skeleton-card" />
+          ) : sorted.length === 0 ? (
+            <div className="empty-state">אין מכשירים רשומים עדיין</div>
+          ) : (
+            sorted.map((d) => (
+              <div key={d.id} className="card" style={{ marginBottom: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <b>{d['שם משתמש'] || d['אימייל'] || 'משתמש'}</b>
+                  <span className={`badge ${d['סטטוס'] === 'מאושר' ? 'badge-ok' : d['סטטוס'] === 'נדחה' ? 'badge-error' : 'badge-warn'}`}>{d['סטטוס'] || 'לא ידוע'}</span>
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{d['תפקיד']} · {d['תיאור מכשיר'] || 'מכשיר לא ידוע'}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{d['אימייל']}</div>
+                {d['סטטוس'] !== 'מאושר' && (
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                    <button className="btn btn-success btn-sm" disabled={busyId === d.id} onClick={() => setStatus(d.id, 'מאושר')}>✓ אשר מכשיר</button>
+                    {d['סטטוס'] !== 'נדחה' && (
+                      <button className="btn btn-danger btn-sm" disabled={busyId === d.id} onClick={() => setStatus(d.id, 'נדחה')}>✕ דחה</button>
+                    )}
+                  </div>
+                )}
+                {d['סטטוס'] === 'מאושר' && (
+                  <div style={{ marginTop: 10 }}>
+                    <button className="btn btn-ghost btn-sm" style={{ color: 'var(--error)' }} disabled={busyId === d.id} onClick={() => setStatus(d.id, 'נדחה')}>בטל אישור מכשיר זה</button>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -205,7 +297,7 @@ export default function App() {
   const [lang, setUI] = useState('he');
   const [loadingTables, setLoadingTables] = useState(true);
   // מוני התראות/בקשות לסרגל הצד — מתרעננים ברקע (Near-Realtime לפי האיפיון)
-  const [badges, setBadges] = useState({ requests: 0, alerts: 0 });
+  const [badges, setBadges] = useState({ requests: 0, alerts: 0, devices: 0 });
 
   // מעדכן שפה: state, מודול i18n, ומאפיין data-lang לסקיילינג CSS בתאילנדית
   const setAppLang = useCallback((l) => {
@@ -281,10 +373,11 @@ export default function App() {
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []);
     const refresh = async () => {
-      const [reqs, stock, weeks] = await Promise.all([
+      const [reqs, stock, weeks, devices] = await Promise.all([
         getLight('בקשות עובדים', ['סטטוס']),
         getLight('מלאי בסיסי', ['מלאי נוכחי', 'מלאי מינימום']),
         getLight('סיכום שבועי', ['סטטוס התאמה', 'סטטוס התאמת קטיף', 'שגיאת חישוב קג לפי מבנים']),
+        user.role === 'owner' ? getLight('מכשירי כניסה', ['סטטוס']) : Promise.resolve([]),
       ]);
       if (stop) return;
       const list = (v) => (Array.isArray(v) ? v : []);
@@ -294,7 +387,8 @@ export default function App() {
         (w['סטטוס התאמה'] && w['סטטוס התאמה'] !== 'תקין')
         || (w['סטטוס התאמת קטיף'] && !String(w['סטטוס התאמת קטיף']).includes('תקין'))
         || String(w['שגיאת חישוב קג לפי מבנים'] || '').trim()).length;
-      setBadges({ requests: pending, alerts: pending + low + badWeeks });
+      const pendingDevices = list(devices).filter((d) => d['סטטוס'] === 'ממתין לאישור').length;
+      setBadges({ requests: pending, alerts: pending + low + badWeeks, devices: pendingDevices });
     };
     refresh();
     const id = setInterval(refresh, 90 * 1000);

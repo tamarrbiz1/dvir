@@ -140,16 +140,73 @@ function adminRoleOf(rec) {
   return (type.includes('עבודה') || type.toLowerCase() === 'manager') ? 'manager' : 'owner';
 }
 
+const DEVICES_TABLE = 'מכשירי כניסה';
+
+// ============================================================
+// כניסה לפי מכשיר (device binding) — סעיף אבטחה 2026-09-06:
+// כל משתמש נכנס רק מהמכשיר שבו נכנס לראשונה. למנהל ראשי מותרים 2
+// מכשירים מאושרים; מעבר לזה (וכל מכשיר נוסף לתפקידים אחרים) דורש
+// אישור ידני של המנהל הראשי דרך טבלת "מכשירי כניסה" (הרשומה נוצרת
+// במצב "ממתין לאישור"). דה-גרדציה בטוחה: אם הטבלה עדיין לא קיימת
+// ב-Airtable (טרם נוצרה — דורשת הרשאת סכמה שאין לטוקן הנוכחי), הכניסה
+// ממשיכה כרגיל בלי אכיפה, כדי שלא לנעול אף אחד בטעות עד שהטבלה תיווצר.
+async function checkDeviceBinding({ email, name, role, deviceId, deviceLabel }) {
+  if (!deviceId) return { status: 'ok' }; // לקוח ישן/בלי JS תומך — לא חוסמים
+  const names = await knownTableNames();
+  if (!names.has(DEVICES_TABLE)) return { status: 'ok', tableMissing: true };
+
+  const norm = (s) => String(s || '').trim().toLowerCase();
+  const all = await fetchRecords(DEVICES_TABLE, {});
+  const mine = all.filter((d) => norm(d['אימייל']) === norm(email));
+  const existing = mine.find((d) => d['מזהה מכשיר'] === deviceId);
+
+  if (existing) {
+    const status = existing['סטטוס'];
+    if (status === 'מאושר') {
+      await updateRecord(DEVICES_TABLE, existing.id, { 'כניסה אחרונה': new Date().toISOString() }).catch(() => {});
+      return { status: 'ok' };
+    }
+    if (status === 'נדחה') return { status: 'rejected' };
+    return { status: 'pending' }; // עדיין "ממתין לאישור"
+  }
+
+  // מכשיר חדש שלא ראינו מעולם עבור המשתמש הזה
+  const approvedCount = mine.filter((d) => d['סטטוס'] === 'מאושר').length;
+  const limit = role === 'owner' ? 2 : 1;
+  const autoApprove = approvedCount < limit;
+  await createRecord(DEVICES_TABLE, {
+    'אימייל': email,
+    'שם משתמש': name || '',
+    'תפקיד': role === 'owner' ? 'מנהל ראשי' : 'מנהל עבודה',
+    'מזהה מכשיר': deviceId,
+    'תיאור מכשיר': deviceLabel || '',
+    'סטטוס': autoApprove ? 'מאושר' : 'ממתין לאישור',
+    'כניסה אחרונה': new Date().toISOString(),
+  }).catch(() => {});
+  return { status: autoApprove ? 'ok' : 'pending' };
+}
+
 app.post('/api/admin-login', async (req, res) => {
   try {
-    const { email, code } = req.body || {};
+    const { email, code, deviceId, deviceLabel } = req.body || {};
     if (!email || !code) return res.status(400).json({ error: 'יש להזין אימייל וקוד אישי' });
     const admins = await fetchRecords('הרשאת מנהל', {});
     const norm = (s) => String(s || '').trim().toLowerCase();
     const found = admins.find((a) => norm(a['מייל']) === norm(email));
     if (!found) return res.status(401).json({ error: 'לא נמצא משתמש עם מייל זה במערכת' });
     if (norm(found['קוד אישי']) !== norm(code)) return res.status(401).json({ error: 'הקוד האישי שגוי' });
-    res.json({ ok: true, role: adminRoleOf(found), name: found['Name'] || 'משתמש', email: found['מייל'] || email, type: found['סוג'] || '' });
+    const role = adminRoleOf(found);
+    const name = found['Name'] || 'משתמש';
+
+    const device = await checkDeviceBinding({ email: found['מייל'] || email, name, role, deviceId, deviceLabel });
+    if (device.status === 'pending') {
+      return res.status(403).json({ error: 'המכשיר הזה טרם אושר. הבקשה נשלחה למנהל הראשי לאישור.', devicePending: true });
+    }
+    if (device.status === 'rejected') {
+      return res.status(403).json({ error: 'הכניסה ממכשיר זה נדחתה על ידי המנהל הראשי.', deviceRejected: true });
+    }
+
+    res.json({ ok: true, role, name, email: found['מייל'] || email, type: found['סוג'] || '' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
