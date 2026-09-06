@@ -830,7 +830,15 @@ export default function PlantingPlanPage() {
       <div className="filter-bar" style={{ marginBottom: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <div>
           <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>שנה</label>
-          <select className="select" value={year} onChange={(e) => { setYear(e.target.value); clearFilters(); }}>
+          <select className="select" value={year} onChange={(e) => {
+            const y = e.target.value;
+            setYear(y);
+            clearFilters();
+            // בגיליון השבועי כל השנים מוצגות ברצף — קפיצה לשנה שנבחרה במקום סינון
+            if (screen === 'sheet') {
+              requestAnimationFrame(() => document.getElementById(`plan-year-${y}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+            }
+          }}>
             {yearsAvailable.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </div>
@@ -876,25 +884,39 @@ export default function PlantingPlanPage() {
         ))}
       </div>
 
-      {/* ================= גיליון שבועי (א) ================= */}
+      {/* ================= גיליון שבועי (א) — גלילה רציפה על פני כל
+          השנים (2026-09-06), לא רק השנה שנבחרה למעלה. בורר "שנה" למעלה
+          לא נגעתי בו — הוא עדיין שולט בתצוגות האחרות (יומי/דשבורד/
+          חודש/שבוע) בדיוק כמו קודם; כאן הוא רק גם קופץ לשנה הזו בגלילה. */}
       {screen === 'sheet' && (
-        <PlanSheet
-          year={year}
-          plans={plansOfYear.filter((p) => {
-            const info = planInfo(p);
-            if (structureFilter && info.structureId !== structureFilter) return false;
-            if (cropFilter && info.cropId !== cropFilter) return false;
-            return true;
+        <div>
+          {yearsAvailable.map((y) => {
+            const plansOfThisYear = plans.filter((p) => {
+              if (String(num(p['שנת תוכנית'])) !== String(y)) return false;
+              const info = planInfo(p);
+              if (structureFilter && info.structureId !== structureFilter) return false;
+              if (cropFilter && info.cropId !== cropFilter) return false;
+              return true;
+            });
+            return (
+              <div key={y} id={`plan-year-${y}`} style={{ marginBottom: 28 }}>
+                <div className="section-title" style={{ fontSize: 20, marginBottom: 10 }}>{y}</div>
+                <PlanSheet
+                  year={y}
+                  plans={plansOfThisYear}
+                  periods={periods}
+                  forecasts={forecasts}
+                  structures={structureFilter ? structures.filter((s) => s.id === structureFilter) : structures}
+                  nonWorkByKey={nonWorkByKey}
+                  quarterFilter={quarterFilter}
+                  planInfo={planInfo}
+                  onPlan={openPlanCard}
+                  onWeek={(w) => setWeekDrawer(w)}
+                />
+              </div>
+            );
           })}
-          periods={periods}
-          forecasts={forecasts}
-          structures={structureFilter ? structures.filter((s) => s.id === structureFilter) : structures}
-          nonWorkByKey={nonWorkByKey}
-          quarterFilter={quarterFilter}
-          planInfo={planInfo}
-          onPlan={openPlanCard}
-          onWeek={(w) => setWeekDrawer(w)}
-        />
+        </div>
       )}
 
       {(screen === 'month' || screen === 'week') && (
