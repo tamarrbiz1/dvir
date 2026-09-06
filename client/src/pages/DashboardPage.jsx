@@ -16,16 +16,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
-import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
-import { displayName } from '../utils/resolve.js';
+import { formatMoney, formatNumber, formatDate, yearProgressLabel } from '../utils/format.js';
 import { useAutoRefresh } from '../utils/live.js';
 import { expenseCategory , workHours } from '../utils/field.js';
 import {
-  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, CartesianGrid,
 } from 'recharts';
 import {
-  CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps, yCategoryProps,
+  CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps,
 } from '../utils/chart.js';
 
 const PRESETS = [
@@ -84,7 +83,6 @@ export default function DashboardPage() {
   const [preset, setPreset] = useState('year');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const [metric, setMetric] = useState('ק"ג');
 
   const loadFast = useCallback(async () => {
     const enc = encodeURIComponent;
@@ -175,6 +173,25 @@ export default function DashboardPage() {
     return Array.isArray(ref) ? (ref[0]?.id ?? ref[0]) : ref;
   }).filter(Boolean)).size;
 
+  // שעות עבודה ועלות עובדים — תמיד שבוע/חודש/שנה נוכחיים, בלתי-תלוי
+  // בבורר התקופה העליון (סעיף 2026-09-06: 3 נתונים קבועים במשבצת)
+  const weekWorkRange = periodRange('week');
+  const monthWorkRange = periodRange('month');
+  const yearWorkRange = periodRange('year');
+  const worksIn = (r) => {
+    const d = new Date(r['תאריך']);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const laborIn = (r) => num(r['סכום לתשלום']);
+  const hoursIn = (r) => workHours(r);
+  const sumIf = (fn, rng) => data.works.reduce((s, r) => { const d = worksIn(r); return (d && d >= rng[0] && d <= rng[1]) ? s + fn(r) : s; }, 0);
+  const laborWeek = sumIf(laborIn, weekWorkRange);
+  const laborMonth = sumIf(laborIn, monthWorkRange);
+  const laborYear = sumIf(laborIn, yearWorkRange);
+  const hoursWeek = sumIf(hoursIn, weekWorkRange);
+  const hoursMonth = sumIf(hoursIn, monthWorkRange);
+  const hoursYear = sumIf(hoursIn, yearWorkRange);
+
   // ============ נתוני גרפים ============
   // הכנסות/הוצאות לפי חודש
   const monthly = useMemo(() => {
@@ -203,25 +220,6 @@ export default function DashboardPage() {
       }));
   }, [fInvoices, fExpenses]);
 
-  // תפוקה לאורך זמן לפי מדד נבחר
-  const productionChart = useMemo(() => fDays.map((d) => ({
-    date: formatDate(d.date),
-    value: Math.round(metric === 'ק"ג' ? d.weight : metric === 'קרטונים' ? d.cartons : d.pallets),
-  })), [fDays, metric]);
-
-  // עלות עובדים לפי עובד
-  const laborByWorker = useMemo(() => {
-    const m = new Map();
-    fWorks.forEach((r) => {
-      const name = displayName(r['עובד'], 'אחר');
-      const id = Array.isArray(r['עובד']) ? (r['עובד'][0]?.id ?? r['עובד'][0]) : null;
-      const cur = m.get(name) || { name, id, value: 0 };
-      cur.value += num(r['סכום לתשלום']);
-      m.set(name, cur);
-    });
-    return [...m.values()].map((x) => ({ ...x, value: Math.round(x.value) })).sort((a, b) => b.value - a.value).slice(0, 12);
-  }, [fWorks]);
-
   // הוצאות לפי קטגוריה
   const donutData = useMemo(() => {
     const m = {};
@@ -245,6 +243,9 @@ export default function DashboardPage() {
   }
 
   const periodLabel = PRESETS.find((p) => p.key === preset)?.label || '';
+  // כלל רוחבי: שום סכום תלוי-זמן בלי לציין טווח. ב"השנה" (ברירת המחדל)
+  // מציינים גם כמה מהשנה נאסף בפועל עד כה — לא רק "השנה" כאילו שנה שלמה.
+  const periodDisclosure = preset === 'year' ? yearProgressLabel() : periodLabel;
   const Kpi = ({ icon, label, value, sub, color, soft, footer, footerBg, onClick }) => (
     <div className={`kpi-card ${onClick ? 'clickable' : ''}`}
       {...(onClick ? { role: 'button', tabIndex: 0, onClick, onKeyDown: (e) => { if (e.key === 'Enter') onClick(); } } : {})}>
@@ -283,43 +284,59 @@ export default function DashboardPage() {
 
       {/* ===== שורה 1 — KPI כספיים ===== */}
       <div className="kpi-grid">
-        <Kpi icon="💰" label="פדיון ברוטו" value={fInvoices.length ? formatMoney(kGross) : 'אין נתונים'} sub={`${fInvoices.length} חשבוניות`}
-          color="var(--revenue)" soft="var(--revenue-soft)" footer="דוח הכנסות" footerBg="linear-gradient(135deg,#08A878,#16BE8B)" onClick={() => navigate('/invoices')} />
-        <Kpi icon="💸" label="פדיון נטו" value={fInvoices.length ? formatMoney(kNet) : 'אין נתונים'} sub={periodLabel}
-          color="var(--revenue)" soft="var(--revenue-soft)" footer="דוח הכנסות נטו" footerBg="linear-gradient(135deg,#27C99A,#08A878)" onClick={() => navigate('/finance')} />
-        <Kpi icon="🧾" label="הוצאות" value={fExpenses.length ? formatMoney(kExpenses) : 'אין נתונים'} sub={`${fExpenses.length} חשבוניות הוצאה`}
+        <div className="kpi-card clickable" role="button" tabIndex={0} onClick={() => navigate('/finance')} onKeyDown={(e) => { if (e.key === 'Enter') navigate('/finance'); }}>
+          <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div>
+            <span className="kpi-label">{fInvoices.length ? `הכנסות ברוטו: ${formatMoney(kGross)}` : 'הכנסות ברוטו: אין נתונים'}</span></div>
+          <div className="kpi-value" style={{ color: 'var(--revenue)' }}>{fInvoices.length ? formatMoney(kNet) : 'אין נתונים'}</div>
+          <div className="kpi-sub">הכנסות נטו · {periodDisclosure}</div>
+          <div className="kpi-footer" style={{ background: 'linear-gradient(135deg,#08A878,#16BE8B)' }}>דוח הכנסות</div>
+        </div>
+        <Kpi icon="🧾" label="הוצאות" value={fExpenses.length ? formatMoney(kExpenses) : 'אין נתונים'} sub={`${fExpenses.length} חשבוניות הוצאה · ${periodDisclosure}`}
           color="var(--expense)" soft="var(--expense-soft)" footer="דוח הוצאות" footerBg="linear-gradient(135deg,#EF4444,#FF625F)" onClick={() => navigate('/finance?tab=expenses')} />
-        <Kpi icon="📈" label="רווח" value={(fInvoices.length || fExpenses.length) ? formatMoney(kProfit) : 'אין נתונים'} sub="פדיון נטו − הוצאות"
+        <Kpi icon="📈" label="רווח" value={(fInvoices.length || fExpenses.length) ? formatMoney(kProfit) : 'אין נתונים'} sub={`פדיון נטו − הוצאות · ${periodDisclosure}`}
           color="var(--profit)" soft="var(--profit-soft)" footer="סקירה כספית" footerBg="linear-gradient(135deg,#10A66A,#39C889)" onClick={() => navigate('/finance')} />
       </div>
 
       {/* ===== שורה 2 — תפוקה ===== */}
       <div className="kpi-grid" style={{ marginTop: 14 }}>
-        <Kpi icon="⚖️" label={'ק"ג בפועל'} value={fDays.length ? formatNumber(Math.round(kWeight)) : 'אין נתונים'} sub={periodLabel}
+        <Kpi icon="⚖️" label={'ק"ג בפועל'} value={fDays.length ? formatNumber(Math.round(kWeight)) : 'אין נתונים'} sub={periodDisclosure}
           color="var(--weight)" soft="var(--weight-soft)" onClick={() => navigate('/weekly')} />
-        <Kpi icon="📦" label="קרטונים" value={fDays.length ? formatNumber(kCartons) : 'אין נתונים'}
+        <Kpi icon="📦" label="קרטונים" value={fDays.length ? formatNumber(kCartons) : 'אין נתונים'} sub={periodDisclosure}
           color="var(--cartons)" soft="var(--cartons-soft)" onClick={() => navigate('/weekly')} />
-        <Kpi icon="🛒" label="משטחים" value={fDays.length ? formatNumber(kPallets) : 'אין נתונים'}
+        <Kpi icon="🛒" label="משטחים" value={fDays.length ? formatNumber(kPallets) : 'אין נתונים'} sub={periodDisclosure}
           color="var(--pallets)" soft="var(--pallets-soft)" onClick={() => navigate('/weekly')} />
-        <Kpi icon="🏗️" label="מבנים פעילים" value={formatNumber(activeStructures)} sub={`מתוך ${data.structures.length}`}
+        <Kpi icon="🏗️" label="מבנים פעילים" value={formatNumber(activeStructures)} sub={`מתוך ${data.structures.length} · כרגע`}
           color="var(--harvest)" soft="var(--harvest-soft)" onClick={() => navigate('/structures')} />
       </div>
 
       {/* ===== שורה 3 — עובדים (נטענת בנפרד — הטבלה הכבדה ביותר) ===== */}
+      {/* עלות עובדים ושעות עבודה: תמיד שבוע/חודש/שנה — קבוע, לא תלוי בבורר התקופה */}
       {loadingWorks ? (
         <div className="kpi-grid" style={{ marginTop: 14 }}>
-          {[1, 2, 3, 4].map((i) => <div key={i} className="skeleton skeleton-card" />)}
+          {[1, 2, 3].map((i) => <div key={i} className="skeleton skeleton-card" />)}
         </div>
       ) : (
         <div className="kpi-grid" style={{ marginTop: 14 }}>
-          <Kpi icon="👷" label="עלות עובדים" value={fWorks.length ? formatMoney(kLabor) : 'אין נתונים'} sub={`${fWorks.length} עבודות`}
-            color="var(--workers)" soft="var(--workers-soft)" footer="דוח עובדים" footerBg="linear-gradient(135deg,#7548ED,#9259F4)" onClick={() => navigate('/crew')} />
-          <Kpi icon="⏱️" label="שעות עבודה" value={fWorks.length ? formatNumber(Math.round(kHours * 10) / 10) : 'אין נתונים'}
-            color="var(--hours)" soft="var(--hours-soft)" onClick={() => navigate('/workers?tab=jobs')} />
-          <Kpi icon="👥" label="עובדים פעילים" value={formatNumber(kActiveWorkers)} sub={periodLabel}
+          <div className="kpi-card clickable" role="button" tabIndex={0} onClick={() => navigate('/crew')} onKeyDown={(e) => { if (e.key === 'Enter') navigate('/crew'); }}>
+            <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--workers-soft)' }}>👷</div><span className="kpi-label">עלות עובדים</span></div>
+            <div style={{ display: 'flex', gap: 14, marginTop: 4, flexWrap: 'wrap' }}>
+              <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>השבוע</div><b style={{ color: 'var(--workers)' }}>{formatMoney(laborWeek)}</b></div>
+              <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>החודש</div><b style={{ color: 'var(--workers)' }}>{formatMoney(laborMonth)}</b></div>
+              <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{yearProgressLabel()}</div><b style={{ color: 'var(--workers)' }}>{formatMoney(laborYear)}</b></div>
+            </div>
+            <div className="kpi-footer" style={{ background: 'linear-gradient(135deg,#7548ED,#9259F4)' }}>דוח עובדים</div>
+          </div>
+          <div className="kpi-card clickable" role="button" tabIndex={0} onClick={() => navigate('/workers?tab=jobs')} onKeyDown={(e) => { if (e.key === 'Enter') navigate('/workers?tab=jobs'); }}>
+            <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--hours-soft)' }}>⏱️</div><span className="kpi-label">שעות עבודה</span></div>
+            <div style={{ display: 'flex', gap: 14, marginTop: 4, flexWrap: 'wrap' }}>
+              <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>השבוע</div><b style={{ color: 'var(--hours)' }}>{formatNumber(Math.round(hoursWeek * 10) / 10)}</b></div>
+              <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>החודש</div><b style={{ color: 'var(--hours)' }}>{formatNumber(Math.round(hoursMonth * 10) / 10)}</b></div>
+              <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{yearProgressLabel()}</div><b style={{ color: 'var(--hours)' }}>{formatNumber(Math.round(hoursYear * 10) / 10)}</b></div>
+            </div>
+            <div style={{ height: 12 }} />
+          </div>
+          <Kpi icon="👥" label="עובדים פעילים" value={formatNumber(kActiveWorkers)} sub={periodDisclosure}
             color="var(--workers)" soft="var(--workers-soft)" onClick={() => navigate('/workers')} />
-          <Kpi icon="📋" label="עבודות שבוצעו" value={formatNumber(fWorks.length)}
-            color="var(--pallets)" soft="var(--pallets-soft)" onClick={() => navigate('/workers?tab=jobs')} />
         </div>
       )}
 
@@ -389,79 +406,6 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* ===== תפוקה לאורך זמן (בחירת מדד) + הכנסות לאורך זמן ===== */}
-      <div className="grid-2" style={{ marginTop: 18 }}>
-        <div className="card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-            <div className="section-title" style={{ margin: 0 }}>תפוקה לאורך זמן</div>
-            <div className="tabs" style={{ padding: 3 }}>
-              {['ק"ג', 'קרטונים', 'משטחים'].map((m) => (
-                <button key={m} type="button" className={`tab ${metric === m ? 'active' : ''}`} style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => setMetric(m)}>{m}</button>
-              ))}
-            </div>
-          </div>
-          {productionChart.length ? (
-            <div style={{ direction: 'ltr', marginTop: 8 }}>
-              <ResponsiveContainer width="100%" height={240}>
-                <BarChart data={productionChart} margin={CHART_MARGIN}>
-                  <CartesianGrid {...GRID_PROPS} />
-                  <XAxis dataKey="date" {...xAxisProps(productionChart.length, { rotate: productionChart.length > 8 })} />
-                  <YAxis {...yAxisProps()} />
-                  <Tooltip {...TOOLTIP_STYLE} formatter={(v) => [`${formatNumber(v)} ${metric}`, metric]} />
-                  <Bar dataKey="value" fill={metric === 'ק"ג' ? '#2878D0' : metric === 'קרטונים' ? '#09A7B2' : '#8B5CF6'} radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ) : <div className="empty-state"><div className="icon">⚖️</div>אין נתונים לתקופה זו</div>}
-        </div>
-
-        <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>הכנסות לאורך זמן</div>
-          {monthly.length ? (
-            <div style={{ direction: 'ltr' }}>
-              <ResponsiveContainer width="100%" height={264}>
-                <AreaChart data={monthly} margin={CHART_MARGIN}>
-                  <defs>
-                    <linearGradient id="gRev" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#08A878" stopOpacity={0.18} />
-                      <stop offset="95%" stopColor="#08A878" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid {...GRID_PROPS} />
-                  <XAxis dataKey="month" {...xAxisProps(monthly.length)} />
-                  <YAxis {...yAxisProps({ money: true })} />
-                  <Tooltip {...TOOLTIP_STYLE} formatter={(v, n) => [formatMoney(v), n]} />
-                  <Area type="monotone" dataKey="הכנסות" stroke="#08A878" strokeWidth={3} fill="url(#gRev)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          ) : <div className="empty-state"><div className="icon">📈</div>אין נתונים לתקופה זו</div>}
-        </div>
-      </div>
-
-      {/* ===== עלות עובדים לפי עובד (נטען בנפרד — ר' loadingWorks) ===== */}
-      <div className="grid-2" style={{ marginTop: 18 }}>
-        <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>עלות עובדים</div>
-          {loadingWorks ? (
-            <div className="skeleton skeleton-chart" />
-          ) : laborByWorker.length ? (
-            <div style={{ direction: 'ltr' }}>
-              <ResponsiveContainer width="100%" height={Math.max(200, laborByWorker.length * 38)}>
-                <BarChart data={laborByWorker} layout="vertical" margin={CHART_MARGIN}>
-                  <CartesianGrid {...GRID_PROPS} vertical horizontal={false} />
-                  <XAxis type="number" {...xAxisProps(0)} />
-                  <YAxis dataKey="name" {...yCategoryProps({ width: 120 })} />
-                  <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
-                  <Bar dataKey="value" fill="#7C4DFF" radius={[0, 6, 6, 0]} style={{ cursor: 'pointer' }}
-                    onClick={() => navigate('/crew')} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ) : <div className="empty-state"><div className="icon">👷</div>אין נתונים לתקופה זו</div>}
-        </div>
-      </div>
-
       {/* ===== פעולות מהירות ===== */}
       <div className="card" style={{ marginTop: 18 }}>
         <div className="section-title" style={{ marginTop: 0 }}>פעולות מהירות</div>
@@ -470,17 +414,6 @@ export default function DashboardPage() {
           <button type="button" className="btn btn-ghost" onClick={() => navigate('/workers?tab=jobs&new=1')}>👷 עבודה חדשה</button>
           <button type="button" className="btn btn-ghost" onClick={() => navigate('/spraying?new=1')}>🧴 ריסוס חדש</button>
           <button type="button" className="btn btn-ghost" onClick={() => navigate('/planting')}>🌱 תוכנית שתילה חדשה</button>
-        </div>
-
-        <div className="section-title">מבנים</div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          {data.structures.slice(0, 14).map((s) => (
-            <span key={s.id} className="obj-chip" role="button" tabIndex={0} title="פתיחת פרטי המבנה"
-              onClick={() => navigate('/structures', { state: { openStructure: s } })}
-              onKeyDown={(e) => { if (e.key === 'Enter') navigate('/structures', { state: { openStructure: s } }); }}>
-              🏗️ {s['מספר מבנה'] || 'מבנה'}
-            </span>
-          ))}
         </div>
       </div>
     </div>

@@ -2,6 +2,24 @@
 // פונקציות עיצוב מספרים/תאריכים — לפי האיפיון
 // ============================================================
 
+// כלל רוחבי (2026-09-06): שום סכום/סיכום תלוי-זמן לא מוצג בלי לציין
+// לאיזה טווח הוא מתייחס. עבור "השנה הנוכחית" באמצע השנה — כמה מהשנה
+// נאסף בפועל עד כה (לא "השנה" סתם, שעלול להטעות כאילו זו שנה שלמה).
+// לדוגמה ב-6 בספטמבר: "2026 (8 חודשים ו-6 ימים)".
+export function yearProgressLabel(year = new Date().getFullYear()) {
+  const now = new Date();
+  const isCurrentYear = year === now.getFullYear();
+  if (!isCurrentYear) return String(year); // שנה שהסתיימה — כל הנתונים קיימים, אין צורך בפירוט
+  const start = new Date(year, 0, 1);
+  const months = now.getMonth(); // חודשים שלמים שחלפו (ינואר=0)
+  const days = now.getDate() - start.getDate() + 1; // כולל היום הנוכחי
+  const parts = [];
+  if (months > 0) parts.push(`${months} ${months === 1 ? 'חודש' : 'חודשים'}`);
+  if (days > 0) parts.push(`${days} ${days === 1 ? 'יום' : 'ימים'}`);
+  const detail = parts.length ? parts.join(' ו-') : 'פחות מיום';
+  return `${year} (${detail} עד כה)`;
+}
+
 // הסר אפסים עשרוניים מיותרים: 5.00000 → 5, 5.25000 → 5.25
 export function trimNumber(n) {
   if (n === null || n === undefined || n === '') return null;
