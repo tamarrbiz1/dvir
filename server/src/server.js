@@ -39,13 +39,28 @@ app.get('/api/tables', async (_req, res) => {
   }
 });
 
+// שדות "מחושבים" ב-Airtable (formula/rollup/lookup/autoNumber/...) — Airtable
+// דוחה כל כתיבה אליהם עם שגיאה ("cannot accept a value because the field is
+// computed"). נחשף כאן כדי שטפסי עריכה/יצירה (RecordForm) יוכלו לסנן אותם
+// אוטומטית מגוף הבקשה, בלי תלות בכך שמי שכתב את רשימת השדות של הטופס זכר
+// לבדוק זאת ידנית (תקרית 2026-09-06: STRUCTURE_FORM_FIELDS כלל שני שדות
+// formula במבנים, "שטח בדונם" ו"מספר שורות במבנה", והוספה/עריכה נכשלו).
+const COMPUTED_FIELD_TYPES = new Set([
+  'formula', 'rollup', 'multipleLookupValues', 'count',
+  'createdTime', 'lastModifiedTime', 'autoNumber', 'createdBy', 'lastModifiedBy', 'button',
+]);
+
 // מטא-נתונים — שדות של טבלה ספציפית
 app.get('/api/meta/:table', async (req, res) => {
   try {
     const meta = await getMeta();
     const table = meta.find((t) => t.name === req.params.table);
     if (!table) return res.status(404).json({ error: 'טבלה לא נמצאה' });
-    res.json({ name: table.name, fields: table.fields.map((f) => f.name) });
+    res.json({
+      name: table.name,
+      fields: table.fields.map((f) => f.name),
+      computedFields: table.fields.filter((f) => COMPUTED_FIELD_TYPES.has(f.type)).map((f) => f.name),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

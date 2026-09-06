@@ -23,9 +23,17 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
   const [options, setOptions] = useState({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // שדות "מחושבים" (formula/rollup/lookup/autoNumber/...) — Airtable דוחה כל
+  // כתיבה אליהם. נטען פעם אחת מהמטא ומסונן אוטומטית מגוף הבקשה, בלי תלות
+  // בכך שרשימת ה-fields של הטופס בנויה נכון (תקרית 2026-09-06: מסך מבנים).
+  const [computedFields, setComputedFields] = useState(new Set());
 
   useEffect(() => {
     let cancelled = false;
+    fetch(`/api/meta/${encodeURIComponent(table)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && Array.isArray(d?.computedFields)) setComputedFields(new Set(d.computedFields)); })
+      .catch(() => {});
     fields.filter((f) => f.type === 'select' || f.type === 'multiselect').forEach((f) => {
       fetch(`/api/select-options/${encodeURIComponent(table)}/${encodeURIComponent(f.name)}`)
         .then((r) => (r.ok ? r.json() : { choices: [] }))
@@ -42,6 +50,7 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
     e.preventDefault();
     if (saving) return;
     for (const f of fields) {
+      if (computedFields.has(f.name)) continue; // לקריאה בלבד — לעולם לא שדה חובה מבחינת הטופס
       if (f.required && (values[f.name] === '' || values[f.name] == null)) {
         setError(`חסר שדה חובה: ${f.label}`);
         return;
@@ -50,6 +59,7 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
     setSaving(true); setError('');
     const body = {};
     for (const f of fields) {
+      if (computedFields.has(f.name)) continue; // לעולם לא נשלח — Airtable דוחה כתיבה לשדה מחושב
       const v = values[f.name];
       if (f.type === 'multiselect') {
         if (Array.isArray(v) && v.length) body[f.name] = v;
@@ -80,8 +90,13 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '0 12px' }}>
             {fields.map((f) => (
               <div className="form-group" key={f.name} style={f.type === 'textarea' ? { gridColumn: '1 / -1' } : undefined}>
-                <label>{f.label}{f.required && <span className="required" />}</label>
-                {f.type === 'multiselect' ? (
+                <label>{f.label}{f.required && !computedFields.has(f.name) && <span className="required" />}</label>
+                {computedFields.has(f.name) ? (
+                  <div className="input" style={{ width: '100%', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', cursor: 'default' }}
+                    title="שדה מחושב אוטומטית ב-Airtable — לא ניתן לעריכה">
+                    {values[f.name] === '' || values[f.name] == null ? 'מחושב אוטומטית' : String(values[f.name])}
+                  </div>
+                ) : f.type === 'multiselect' ? (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                     {(options[f.name] || []).map((c) => {
                       const on = (values[f.name] || []).includes(c);

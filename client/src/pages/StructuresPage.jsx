@@ -111,19 +111,24 @@ export default function StructuresPage() {
   );
 }
 
-// שדות הטופס — שדות קלט בלבד (לא Formula/Lookup/Rollup)
+// שדות הטופס. "שטח בדונם" ו"מספר שורות במבנה" הם שדות formula ב-Airtable
+// (מחושבים מהשדות האחרים) — למרות ה-type המוצהר כאן, RecordForm מזהה
+// אותם אוטומטית מול /api/meta (computedFields) ומציג אותם לקריאה בלבד,
+// בלי לנסות לכתוב אליהם (Airtable דוחה כל כתיבה לשדה מחושב). תקרית
+// 2026-09-06: לפני התיקון הזה, הוספה/עריכה של מבנה נכשלה תמיד.
 const STRUCTURE_FORM_FIELDS = [
   { name: 'מספר מבנה', label: 'מספר מבנה', type: 'text', required: true },
   { name: 'סוג מבנה', label: 'סוג מבנה', type: 'select' },
   { name: 'סטטוס המבנה', label: 'סטטוס המבנה', type: 'select' },
   { name: 'סוג כיסוי', label: 'סוג כיסוי', type: 'select' },
   { name: 'סוג רשת', label: 'סוג רשת', type: 'select' },
-  { name: 'שטח בדונם', label: 'שטח בדונם', type: 'number' },
+  { name: 'שטח בדונם', label: 'שטח בדונם (מחושב אוטומטית)', type: 'number' },
   { name: 'מספר גמלונים', label: 'מספר גמלונים', type: 'number' },
   { name: 'רוחב גמלון במטרים', label: 'רוחב גמלון (מ׳)', type: 'number' },
-  { name: 'מספר שורות במבנה', label: 'מספר שורות', type: 'number' },
+  { name: 'מספר שורות במבנה', label: 'מספר שורות (מחושב אוטומטית)', type: 'number' },
   { name: 'אורך שורה במטרים', label: 'אורך שורה (מ׳)', type: 'number' },
   { name: 'מספר שלוחות טפטוף בגמלון', label: 'שלוחות טפטוף בגמלון', type: 'number' },
+  { name: 'מספר שלוחות טפטוף בגמלון הראשון', label: 'שלוחות טפטוף בגמלון הראשון', type: 'number' },
   { name: 'הערות', label: 'הערות', type: 'textarea' },
 ];
 
