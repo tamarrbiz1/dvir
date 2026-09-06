@@ -845,32 +845,43 @@ function MaterialsTab({ materials, search, setSearch, canEdit, api, onChanged, o
         <input className="input" aria-label="חיפוש חומר" placeholder="חיפוש חומר..." value={search} onChange={(e) => setSearch(e.target.value)} />
         <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{formatNumber(list.length, 0)} חומרים</span>
       </div>
-      <div className="grid">
-        {list.length === 0 && <div className="empty-state" style={{ gridColumn: '1 / -1' }}><div className="icon">🧪</div>אין נתונים לתקופה זו</div>}
-        {list.map((m) => (
-          <div key={m.id} className="card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <b style={{ fontSize: 16 }}>🧪 {m['שם חומר'] || 'חומר'}</b>
-              {m['יחידת תמחור'] && <span className="badge" style={{ background: 'var(--spray-soft)', color: 'var(--spray)' }}>{m['יחידת תמחור']}</span>}
-            </div>
-            <div style={{ fontSize: 14 }}>
-              {m['מחיר'] != null && <div className="obj-row"><span className="obj-row-label">מחיר</span><span className="obj-row-value">{formatMoney(m['מחיר'])}</span></div>}
-              {m['גודל האריזה'] != null && <div className="obj-row"><span className="obj-row-label">גודל אריזה</span><span className="obj-row-value">{formatNumber(m['גודל האריזה'])}</span></div>}
-              {m['מינון בסמ"ק'] != null && <div className="obj-row"><span className="obj-row-label">מינון ברירת מחדל</span><span className="obj-row-value">{formatNumber(m['מינון בסמ"ק'])}</span></div>}
-              {m['מחיר לדונם בריסוס'] != null && <div className="obj-row"><span className="obj-row-label">מחיר לדונם</span><span className="obj-row-value">{formatMoney(m['מחיר לדונם בריסוס'])}</span></div>}
-            </div>
-            {canEdit && (
-              <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
-                <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={() => onEdit(m)}>✎</button>
-                <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
-                  onClick={async () => {
-                    if (await removeRecord(api, 'חומרי ריסוס', m.id, m['שם חומר'] || 'החומר')) await onChanged();
-                  }}>🗑</button>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
+      {list.length === 0 ? (
+        <div className="empty-state"><div className="icon">🧪</div>אין נתונים לתקופה זו</div>
+      ) : (
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>שם חומר</th><th>יחידת תמחור</th><th>מחיר</th><th>גודל אריזה</th><th>מינון ברירת מחדל</th><th>מחיר לדונם</th>
+                {canEdit && <th className="no-print">פעולות</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((m) => (
+                <tr key={m.id}>
+                  <td><b>🧪 {m['שם חומר'] || 'חומר'}</b></td>
+                  <td>{m['יחידת תמחור'] ? <span className="badge" style={{ background: 'var(--spray-soft)', color: 'var(--spray)' }}>{m['יחידת תמחור']}</span> : '—'}</td>
+                  <td>{m['מחיר'] != null ? formatMoney(m['מחיר']) : '—'}</td>
+                  <td>{m['גודל האריזה'] != null ? formatNumber(m['גודל האריזה']) : '—'}</td>
+                  <td>{m['מינון בסמ"ק'] != null ? formatNumber(m['מינון בסמ"ק']) : '—'}</td>
+                  <td>{m['מחיר לדונם בריסוס'] != null ? formatMoney(m['מחיר לדונם בריסוס']) : '—'}</td>
+                  {canEdit && (
+                    <td className="no-print">
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={() => onEdit(m)}>✎</button>
+                        <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
+                          onClick={async () => {
+                            if (await removeRecord(api, 'חומרי ריסוס', m.id, m['שם חומר'] || 'החומר')) await onChanged();
+                          }}>🗑</button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </>
   );
 }

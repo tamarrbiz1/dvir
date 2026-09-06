@@ -153,15 +153,10 @@ export default function HarvestsPage() {
             </ChartCard>
           </div>
 
-          {/* גרפים 3–4: לפי מבנה */}
-          <div className="grid-2" style={{ marginTop: 16 }}>
-            <ChartCard title={'ק"ג לפי מבנה'}>
-              <HorizontalBars data={byStructure} dataKey="kg" color="#2E9B62" fmt={(v) => formatWeight(v)} />
-            </ChartCard>
-            <ChartCard title="קרטונים לפי מבנה">
-              <HorizontalBars data={byStructure} dataKey="cartons" color="#09A7B2" fmt={(v) => `${formatNumber(v)} קרטונים`} />
-            </ChartCard>
-          </div>
+          {/* גרף 3: לפי מבנה */}
+          <ChartCard title={'ק"ג לפי מבנה'} style={{ marginTop: 16 }}>
+            <HorizontalBars data={byStructure} dataKey="kg" color="#2E9B62" fmt={(v) => formatWeight(v)} />
+          </ChartCard>
 
           {/* גרף 5: משקל ממוצע לקרטון לאורך זמן */}
           <ChartCard title="משקל ממוצע לקרטון לאורך זמן" style={{ marginTop: 16 }}>

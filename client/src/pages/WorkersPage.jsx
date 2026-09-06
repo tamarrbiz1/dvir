@@ -520,6 +520,8 @@ function WorkerDetails({ worker, records, onClose }) {
   useEscapeClose(onClose); // סגירה במקש Escape
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+  const [zoomPassport, setZoomPassport] = useState(false);
+  const passportPhoto = Array.isArray(worker['צילום דרכון']) ? worker['צילום דרכון'][0] : null;
 
   const name = `${worker['שם פרטי'] || ''} ${worker['שם משפחה'] || ''}`.trim() || t('m_workerFallback');
 
@@ -617,10 +619,36 @@ function WorkerDetails({ worker, records, onClose }) {
     <div className="drawer-overlay" onClick={onClose}>
       <div className="drawer worker-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
-          <span>👤 {name}</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {passportPhoto ? (
+              <img src={passportPhoto.thumbnails?.small?.url || passportPhoto.url} alt="" onClick={() => setZoomPassport(true)}
+                style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', cursor: 'zoom-in' }} title="לחיצה לתצוגת הדרכון" />
+            ) : '👤'} {name}
+          </span>
           <button type="button" className="drawer-close" onClick={onClose} aria-label={t('nav_close')} title={t('nav_close')}>✕</button>
         </div>
         <div className="drawer-body">
+
+          {/* צילום דרכון */}
+          <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            {passportPhoto ? (
+              <img src={passportPhoto.thumbnails?.large?.url || passportPhoto.url} alt="צילום דרכון" onClick={() => setZoomPassport(true)}
+                style={{ width: 84, height: 84, borderRadius: 10, objectFit: 'cover', cursor: 'zoom-in', flexShrink: 0 }} />
+            ) : (
+              <div style={{ width: 84, height: 84, borderRadius: 10, background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, flexShrink: 0 }}>🛂</div>
+            )}
+            <div>
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>מספר דרכון</div>
+              <div style={{ fontWeight: 700, direction: 'ltr', textAlign: 'right' }}>{worker['מספר דרכון'] || t('c_notAvailable')}</div>
+              {!passportPhoto && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>לא הועלה צילום דרכון</div>}
+            </div>
+          </div>
+          {zoomPassport && passportPhoto && (
+            <div className="modal-overlay lightbox" onClick={() => setZoomPassport(false)}>
+              <img src={passportPhoto.url} alt="צילום דרכון — תצוגה מלאה" onClick={(e) => e.stopPropagation()} />
+              <button type="button" className="drawer-close lightbox-close" onClick={() => setZoomPassport(false)} aria-label="סגירה">✕</button>
+            </div>
+          )}
 
           {/* KPI */}
           <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
