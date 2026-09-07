@@ -49,7 +49,9 @@ const parseAny = (v) => {
 
 export default function InventoryPage() {
   const app = useApp();
-  const canEdit = (app.user?.role || 'owner') === 'owner';
+  // חריג שני להרשאת מנהל-עבודה (2026-09-07): עדכון מלאי מותר גם לו,
+  // בנוסף לבעל העסק — ר' הערה ב-navigation.jsx (OPERATIONS/canWrite).
+  const canEdit = ['owner', 'manager'].includes(app.user?.role || 'owner');
   const [params, setParams] = useSearchParams();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
