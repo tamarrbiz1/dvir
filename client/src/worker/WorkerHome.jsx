@@ -2,10 +2,11 @@ import { workHours , workTypeName } from '../utils/field.js';
 // ============================================================
 // מסך בית לעובד — כרטיסי רווחים
 // ============================================================
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { useAutoRefresh } from '../utils/live.js';
 import { formatMoney, formatNumber } from '../utils/format.js';
 import { t, translateStructureName } from '../i18n.js';
+import TranslatableNote from './TranslatableNote.jsx';
 
 export default function WorkerHome({ api, worker }) {
   const [records, setRecords] = useState([]);
@@ -89,14 +90,24 @@ export default function WorkerHome({ api, worker }) {
                   </thead>
                   <tbody>
                     {mine.slice(-15).reverse().map((r) => (
-                      <tr key={r.id}>
-                        <td>{formatDate(r['תאריך'])}</td>
-                        <td>{workTypeName(r, '—')}</td>
-                        <td>{translateStructureName(structureName(r['מבנה']))}</td>
-                        <td>{formatNumber(r['כמות'])}</td>
-                        <td>{formatNumber(r['סכום שעות'])}</td>
-                        <td style={{ fontWeight: 700 }}>{formatMoney(r['סכום לתשלום'])}</td>
-                      </tr>
+                      <Fragment key={r.id}>
+                        <tr>
+                          <td>{formatDate(r['תאריך'])}</td>
+                          <td>{workTypeName(r, '—')}</td>
+                          <td>{translateStructureName(structureName(r['מבנה']))}</td>
+                          <td>{formatNumber(r['כמות'])}</td>
+                          <td>{formatNumber(r['סכום שעות'])}</td>
+                          <td style={{ fontWeight: 700 }}>{formatMoney(r['סכום לתשלום'])}</td>
+                        </tr>
+                        {r['הערות'] && (
+                          <tr>
+                            <td colSpan={6} style={{ paddingTop: 0, background: 'var(--bg-secondary)' }}>
+                              <div style={{ color: 'var(--text-secondary)', fontSize: 11 }}>📝 {t('w_notes')}:</div>
+                              <TranslatableNote text={r['הערות']} />
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>

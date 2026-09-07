@@ -6,6 +6,7 @@ import { t } from '../i18n.js';
 import { formatDate } from '../utils/format.js';
 import { firstId } from '../utils/resolve.js';
 import { REQUEST_TABLE, REQUEST_FIELDS, REQUEST_STATUS, REQUEST_TYPES, DATE_CHANGE_MARK, isDateChangeReq, workerNotesOf, approvalExpiry, approvalValid, statusStyle, requestTimeLabel } from '../utils/requests.jsx';
+import TranslatableNote from './TranslatableNote.jsx';
 
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 
@@ -198,50 +199,4 @@ function statusLabel(s) {
   if (s === REQUEST_STATUS.approved) return t('w_stApproved');
   if (s === REQUEST_STATUS.rejected) return t('w_stRejected');
   return t('w_stPending');
-}
-
-// ============================================================
-// הערת מנהל (טקסט חופשי) + כפתור "תרגם" — קורא ל-/api/translate
-// (שירות MyMemory חינמי, ר' server.js). שגיאה מוצגת ברור, לא נבלעת.
-// ============================================================
-function TranslatableNote({ text }) {
-  const [translated, setTranslated] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [showOriginal, setShowOriginal] = useState(true);
-
-  const doTranslate = async () => {
-    setBusy(true); setError('');
-    try {
-      const resp = await fetch('/api/translate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, target: 'th' }),
-      });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data?.error || t('w_translateFailed'));
-      setTranslated(data.translated);
-      setShowOriginal(false);
-    } catch (e) {
-      setError(e.message || t('w_translateFailed'));
-    }
-    setBusy(false);
-  };
-
-  return (
-    <div>
-      <div>{showOriginal || !translated ? text : translated}</div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
-        {!translated ? (
-          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={doTranslate}>
-            {busy ? t('w_translating') : `🌐 ${t('w_translate')}`}
-          </button>
-        ) : (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowOriginal((v) => !v)}>
-            {showOriginal ? `🌐 ${t('w_translated')}` : t('w_showOriginal')}
-          </button>
-        )}
-        {error && <span style={{ fontSize: 11, color: 'var(--error)' }}>{error}</span>}
-      </div>
-    </div>
-  );
 }

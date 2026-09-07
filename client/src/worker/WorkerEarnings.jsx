@@ -3,11 +3,12 @@ import { workHours } from '../utils/field.js';
 // ============================================================
 // "הרווחים שלי" — פילטר טווח + גרף + טבלה
 // ============================================================
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { formatMoney, formatNumber } from '../utils/format.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { t, translateStructureName } from '../i18n.js';
+import TranslatableNote from './TranslatableNote.jsx';
 
 const fmt = (d) => {
   if (!d) return '';
@@ -180,14 +181,24 @@ export default function WorkerEarnings({ api, worker }) {
                   </thead>
                   <tbody>
                     {rangeRecs.slice().reverse().map((r) => (
-                      <tr key={r.id}>
-                        <td>{fmt(r['תאריך'])}</td>
-                        <td>{workTypeName(r, '—')}</td>
-                        <td>{translateStructureName(structureName(r['מבנה']))}</td>
-                        <td>{formatNumber(r['כמות'])}</td>
-                        <td>{formatNumber(r['סכום שעות'])}</td>
-                        <td style={{ fontWeight: 700 }}>{formatMoney(r['סכום לתשלום'])}</td>
-                      </tr>
+                      <Fragment key={r.id}>
+                        <tr>
+                          <td>{fmt(r['תאריך'])}</td>
+                          <td>{workTypeName(r, '—')}</td>
+                          <td>{translateStructureName(structureName(r['מבנה']))}</td>
+                          <td>{formatNumber(r['כמות'])}</td>
+                          <td>{formatNumber(r['סכום שעות'])}</td>
+                          <td style={{ fontWeight: 700 }}>{formatMoney(r['סכום לתשלום'])}</td>
+                        </tr>
+                        {r['הערות'] && (
+                          <tr>
+                            <td colSpan={6} style={{ paddingTop: 0, background: 'var(--bg-secondary)' }}>
+                              <div style={{ color: 'var(--text-secondary)', fontSize: 11 }}>📝 {t('w_notes')}:</div>
+                              <TranslatableNote text={r['הערות']} />
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>
