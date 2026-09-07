@@ -474,6 +474,53 @@ await test('תרגום הערת מנהל: עברית → תאילנדית (MyMem
   return r.translated.slice(0, 40);
 });
 
+// בדיקת-על 2026-09-07: מחזור CRUD מלא מול Airtable לכל ישות שניתנת
+// לעריכה — לא רק "אין שגיאה", אלא קריאה חוזרת ואימות שדה-שדה בכל שלב.
+await test('עובד: יצירה → קריאה חוזרת → עדכון → קריאה חוזרת → מחיקה', async () => {
+  const created = await api('POST', enc('עובדים'), {
+    'שם פרטי': MARK, 'שם משפחה': 'בדיקה', 'טלפון': '0500000000',
+    'סוג עובד': 'עובד קבוע', 'סטטוס': 'פעיל',
+  });
+  if (!created?.id) throw new Error('לא חזר id ביצירה');
+  const read1 = await api('GET', `${enc('עובדים')}/${created.id}`);
+  if (read1['שם פרטי'] !== MARK || read1['סטטוס'] !== 'פעיל') throw new Error('ערכים לא נשמרו כראוי ביצירה');
+  await api('PATCH', `${enc('עובדים')}/${created.id}`, { 'סטטוס': 'לא פעיל', 'טלפון': '0501111111' });
+  const read2 = await api('GET', `${enc('עובדים')}/${created.id}`);
+  if (read2['סטטוס'] !== 'לא פעיל' || read2['טלפון'] !== '0501111111') throw new Error('העדכון לא נשמר כראוי');
+  await api('DELETE', `${enc('עובדים')}/${created.id}`);
+  let gone = false;
+  try { await api('GET', `${enc('עובדים')}/${created.id}`); } catch { gone = true; }
+  if (!gone) throw new Error('הרשומה לא נמחקה בפועל');
+  return `סטטוס פעיל→לא פעיל, טלפון עודכן ואומת`;
+});
+
+await test('תוכנית שתילה: יצירה מקושרת למבנה אמיתי → עדכון → הפעלת "חשב תוכנית" → מחיקה', async () => {
+  const structs = await api('GET', `${enc('מבנים')}?maxRecords=1`);
+  if (!structs.length) throw new Error('אין אף מבנה אמיתי לקשר אליו — לא ניתן לבדוק');
+  const structId = structs[0].id;
+  const created = await api('POST', enc('תוכניות שתילה'), {
+    'מבנה': [structId], 'שנת תוכנית': 2031,
+    'תחילת שתילה מקורית': '2031-01-01', 'מספר ימי שתילה': 30,
+    'תחילת קטיף מקורית': '2031-03-01', 'מספר ימי קטיף': 60,
+  });
+  if (!created?.id) throw new Error('לא חזר id ביצירה');
+  const read1 = await api('GET', `${enc('תוכניות שתילה')}/${created.id}`);
+  const linkedId = Array.isArray(read1['מבנה']) ? (read1['מבנה'][0]?.id || read1['מבנה'][0]) : null;
+  if (String(linkedId) !== String(structId)) throw new Error(`השיוך למבנה לא נשמר: ${JSON.stringify(read1['מבנה'])}`);
+  if (Number(read1['שנת תוכנית']) !== 2031) throw new Error('שנת תוכנית לא נשמרה');
+  await api('PATCH', `${enc('תוכניות שתילה')}/${created.id}`, { 'מספר ימי קטיף': 75 });
+  const read2 = await api('GET', `${enc('תוכניות שתילה')}/${created.id}`);
+  if (Number(read2['מספר ימי קטיף']) !== 75) throw new Error('העדכון לא נשמר');
+  // מנגנון הטריגר (תקרית 2026-09-06): false→true תמיד, גם אם כבר true
+  await api('PATCH', `${enc('תוכניות שתילה')}/${created.id}`, { 'חשב תוכנית': false });
+  await api('PATCH', `${enc('תוכניות שתילה')}/${created.id}`, { 'חשב תוכנית': true });
+  await api('DELETE', `${enc('תוכניות שתילה')}/${created.id}`);
+  let gone = false;
+  try { await api('GET', `${enc('תוכניות שתילה')}/${created.id}`); } catch { gone = true; }
+  if (!gone) throw new Error('הרשומה לא נמחקה בפועל');
+  return `שויכה למבנה אמיתי, עדכון+טריגר אומתו, נמחקה`;
+});
+
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
 // שרדה את הניקוי בריצה קודמת ונשארה בטבלה החיה עד שאותרה ידנית למחרת —
