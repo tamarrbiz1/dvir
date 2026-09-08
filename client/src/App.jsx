@@ -52,9 +52,15 @@ export const AppContext = createContext(null);
 export const useApp = () => useContext(AppContext);
 
 function Sidebar({ mobileOpen, onClose }) {
-  const { user, lang, setAppLang, logout, badges, api, realRole, viewAsManager, toggleViewAsManager } = useApp();
+  const { user, lang, setAppLang, logout, badges, api, realRole, viewAsManager, toggleViewAsManager, tables } = useApp();
   const role = user?.role || 'owner';
   const [devicesOpen, setDevicesOpen] = useState(false);
+  // 2026-09-08: הטבלה "מכשירי כניסה" עדיין לא נוצרה ב-Airtable (חסם
+  // הרשאת סכמה, ר' checkDeviceBinding בשרת) — עד שהיא תיווצר, האייקון
+  // לא מוצג בכלל (במקום להראות מגירה ריקה עם הודעת "הטבלה לא קיימת").
+  // ברגע שהטבלה תיווצר היא תופיע ב-tables אוטומטית וזה יחזור לבד,
+  // בלי צורך בשינוי קוד נוסף.
+  const devicesTableExists = Array.isArray(tables) && tables.some((t) => t.name === DEVICES_TABLE);
   return (
     <>
       {mobileOpen && <div className="sidebar-overlay" onClick={onClose} aria-hidden="true" />}
@@ -70,7 +76,7 @@ function Sidebar({ mobileOpen, onClose }) {
             <span className="brand-subtitle">מערכת גידול</span>
           </span>
           <span style={{ marginInlineStart: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            {role === 'owner' && (
+            {role === 'owner' && devicesTableExists && (
               <button
                 type="button"
                 onClick={() => setDevicesOpen(true)}
@@ -413,7 +419,7 @@ export default function App() {
         getLight('מלאי בסיסי', ['מלאי נוכחי', 'מלאי מינימום']),
         // סיכום שבועי: לא בהרשאת קריאה של מנהל עבודה — רלוונטי לבעלים בלבד
         user.role === 'owner' ? getLight('סיכום שבועי', ['סטטוס התאמה', 'סטטוס התאמת קטיף', 'שגיאת חישוב קג לפי מבנים']) : Promise.resolve([]),
-        user.role === 'owner' ? getLight('מכשירי כניסה', ['סטטוס']) : Promise.resolve([]),
+        user.role === 'owner' && tables.some((tb) => tb.name === 'מכשירי כניסה') ? getLight('מכשירי כניסה', ['סטטוס']) : Promise.resolve([]),
       ]);
       if (stop) return;
       const list = (v) => (Array.isArray(v) ? v : []);

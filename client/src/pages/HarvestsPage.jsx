@@ -21,7 +21,7 @@ import { exportCsv, fileStamp, inDateRange } from '../utils/table.js';
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
-import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, TOOLTIP_STYLE, xAxisProps, yAxisProps, yCategoryProps } from '../utils/chart.js';
+import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 
 const TABLE = 'קטיפים';
 
@@ -85,17 +85,6 @@ export default function HarvestsPage() {
       .map((r) => ({ ...r, kg: Math.round(r.kg), avg: r.cartons ? Math.round((r.kg / r.cartons) * 10) / 10 : null }));
   }, [filtered]);
 
-  const byStructure = useMemo(() => {
-    const m = {};
-    filtered.forEach((h) => {
-      const k = structName(h) || 'אחר';
-      m[k] = m[k] || { name: k, kg: 0, cartons: 0 };
-      m[k].kg += num(h, 'כמות ק"ג');
-      m[k].cartons += num(h, 'מספר קרטונים');
-    });
-    return Object.values(m).map((r) => ({ ...r, kg: Math.round(r.kg) })).sort((a, b) => b.kg - a.kg);
-  }, [filtered]);
-
   const hasFilters = search || fStructure || fType || from || to;
 
   const doExport = () => exportCsv(`קטיפים-${fileStamp()}`, [
@@ -153,11 +142,6 @@ export default function HarvestsPage() {
               <TimeBars data={byDate} dataKey="cartons" color="#09A7B2" fmt={(v) => `${formatNumber(v)} קרטונים`} />
             </ChartCard>
           </div>
-
-          {/* גרף 3: לפי מבנה */}
-          <ChartCard title={'ק"ג לפי מבנה'} style={{ marginTop: 16 }}>
-            <HorizontalBars data={byStructure} dataKey="kg" color="#2E9B62" fmt={(v) => formatWeight(v)} />
-          </ChartCard>
 
           {/* גרף 5: משקל ממוצע לקרטון לאורך זמן */}
           <ChartCard title="משקל ממוצע לקרטון לאורך זמן" style={{ marginTop: 16 }}>
@@ -271,23 +255,6 @@ function TimeBars({ data, dataKey, color, fmt }) {
           <YAxis {...yAxisProps()} />
           <Tooltip {...TOOLTIP_STYLE} formatter={(v) => [fmt(v), '']} />
           <Bar dataKey={dataKey} fill={color} radius={[4, 4, 0, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-function HorizontalBars({ data, dataKey, color, fmt }) {
-  if (!data.length) return <div className="empty-state">אין נתונים לתקופה זו</div>;
-  return (
-    <div style={{ direction: 'ltr' }}>
-      <ResponsiveContainer width="100%" height={Math.max(180, data.length * 36)}>
-        <BarChart data={data} layout="vertical" margin={CHART_MARGIN}>
-          <CartesianGrid {...GRID_PROPS} vertical horizontal={false} />
-          <XAxis type="number" {...xAxisProps(0)} />
-          <YAxis dataKey="name" {...yCategoryProps({ width: 110 })} />
-          <Tooltip {...TOOLTIP_STYLE} formatter={(v) => [fmt(v), '']} />
-          <Bar dataKey={dataKey} fill={color} radius={[0, 6, 6, 0]} />
         </BarChart>
       </ResponsiveContainer>
     </div>
