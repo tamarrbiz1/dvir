@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import { authFetch } from '../utils/authFetch.js';
 import { formatDate, formatMoney, formatNumber } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { confirmDialog, toast } from '../utils/ui.js';
@@ -207,7 +208,7 @@ export default function UploadDocumentPage() {
       fd.append('table', target.table);
       fd.append('field', target.field);
       if (needsWeek) fd.append('weekCode', week.code);
-      const r = await fetch('/api/upload-document', { method: 'POST', body: fd });
+      const r = await authFetch('/api/upload-document', { method: 'POST', body: fd });
       const data = await r.json().catch(() => ({}));
       // קובץ פגום/לא רלוונטי (למשל טקסט שנשמר בשם "קובץ.pdf") — הודעה ברורה,
       // בלי ניסוח טכני, ובלי שנוצרה רשומה כלשהי ב-Airtable (השרת בדק לפני היצירה)

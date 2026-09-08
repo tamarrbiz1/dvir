@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { t } from '../i18n.js';
+import { authFetch } from '../utils/authFetch.js';
 
 // ============================================================
 // כפתור "תרגם" לטקסט חופשי בעברית (הערת מנהל, הערה על עבודה וכו') —
@@ -17,7 +18,7 @@ export default function TranslatableNote({ text }) {
   const doTranslate = async () => {
     setBusy(true); setError('');
     try {
-      const resp = await fetch('/api/translate', {
+      const resp = await authFetch('/api/translate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, target: 'th' }),
       });

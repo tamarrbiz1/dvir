@@ -8,6 +8,7 @@
 // ============================================================
 import { useEffect, useState } from 'react';
 import { confirmDialog, toast } from '../utils/ui.js';
+import { authFetch } from '../utils/authFetch.js';
 
 export default function RecordForm({ api, table, title, fields, record, onClose, onSaved }) {
   const [values, setValues] = useState(() => {
@@ -30,12 +31,12 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/meta/${encodeURIComponent(table)}`)
+    authFetch(`/api/meta/${encodeURIComponent(table)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (!cancelled && Array.isArray(d?.computedFields)) setComputedFields(new Set(d.computedFields)); })
       .catch(() => {});
     fields.filter((f) => f.type === 'select' || f.type === 'multiselect').forEach((f) => {
-      fetch(`/api/select-options/${encodeURIComponent(table)}/${encodeURIComponent(f.name)}`)
+      authFetch(`/api/select-options/${encodeURIComponent(table)}/${encodeURIComponent(f.name)}`)
         .then((r) => (r.ok ? r.json() : { choices: [] }))
         .then((d) => { if (!cancelled) setOptions((o) => ({ ...o, [f.name]: Array.isArray(d.choices) ? d.choices : [] })); })
         .catch(() => {});

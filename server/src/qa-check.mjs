@@ -12,6 +12,13 @@
 // מנוקה מיד אחר-כך. הרצה רגילה מדלגת עליהן. ר' פירוט למטה.
 // ============================================================
 import { readFile } from 'node:fs/promises';
+// גישה ישירה ל-Airtable (לא דרך ה-HTTP API) — נחוצה אך ורק כדי לקרוא
+// אישורי-בדיקה אמיתיים לבדיקות ההתחברות (admin-login/worker-login).
+// אין לזה שום קשר ל"עקיפת" האבטחה: זו בדיוק אותה שיטה שבה משתמש
+// /api/admin-login עצמו בצד השרת. לעולם לא נכתב כאן ערך קבוע/גלוי —
+// הקוד/הדרכון תמיד נקראים חי מהטבלה בזמן ריצה, לא מוטמעים בקובץ.
+import { fetchRecords as directFetchRecords } from './airtable.js';
+import { LOGIN_CODES_TABLE } from './auth.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
@@ -22,10 +29,18 @@ const cleanup = [];
 const READ_WARN_MS = 2000;   // קריאה איטית מזה מסומנת באזהרה
 const WRITE_WARN_MS = 3500;  // כתיבה איטית מזה מסומנת באזהרה
 
-async function api(method, path, body, isForm = false) {
+// 2026-09-08: מאז שנוסף אימות בצד השרת, כל קריאה (מלבד ההתחברות עצמה)
+// דורשת טוקן. ברירת המחדל של api() מצרפת את טוקן הבדיקה הנוכחי
+// (currentToken, נקבע אחרי התחברות למטה); test('...',...,{noAuth:true})
+// או apiAs(token,...) מאפשרים לבדוק תרחישים אחרים במפורש.
+let currentToken = null;
+async function apiRaw(method, path, body, isForm, token) {
+  const headers = {};
+  if (body && !isForm) headers['Content-Type'] = 'application/json';
+  if (token) headers.Authorization = `Bearer ${token}`;
   const r = await fetch(`${BASE}/${path}`, {
     method,
-    headers: body && !isForm ? { 'Content-Type': 'application/json' } : undefined,
+    headers,
     body: isForm ? body : (body ? JSON.stringify(body) : undefined),
   });
   const text = await r.text();
@@ -34,6 +49,8 @@ async function api(method, path, body, isForm = false) {
   if (!r.ok) throw new Error(`${r.status}: ${json?.error || text.slice(0, 140)}`);
   return json;
 }
+const api = (method, path, body, isForm = false) => apiRaw(method, path, body, isForm, currentToken);
+const apiAs = (token, method, path, body, isForm = false) => apiRaw(method, path, body, isForm, token);
 const get = (t, qs = '?maxRecords=3&raw=1') => api('GET', `${enc(t)}${qs}`);
 const create = async (t, fields) => {
   const rec = await api('POST', enc(t), fields);
@@ -43,6 +60,19 @@ const create = async (t, fields) => {
 };
 const patch = (t, id, fields) => api('PATCH', `${enc(t)}/${id}`, fields);
 const del = (t, id) => api('DELETE', `${enc(t)}/${id}`);
+
+// כניסה כמנהל ראשי אמיתי (הרשומה הראשונה מהסוג "מנהל ראשי") — כדי
+// שכל שאר הבדיקות (שרצות תחת ההרשאה הרחבה ביותר, כמו לפני שהיה אימות
+// כלל) יעבדו כרגיל. קוד הכניסה עצמו נקרא חי מ-Airtable ולעולם לא
+// נכתב/נשמר בקובץ הזה.
+const allAdmins = await directFetchRecords('הרשאת מנהל', {});
+const qaOwner = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && !String(a['סוג'] || '').includes('עבודה'));
+if (!qaOwner) { console.error('אין רשומת מנהל ראשי עם קוד — לא ניתן להריץ בדיקות'); process.exit(1); }
+{
+  const loginRes = await apiRaw('POST', 'admin-login', { email: qaOwner['מייל'], code: qaOwner['קוד אישי'] }, false, null);
+  currentToken = loginRes.token;
+  if (!currentToken) { console.error('ההתחברות לא החזירה טוקן — לא ניתן להריץ בדיקות'); process.exit(1); }
+}
 
 // תקרית 2026-09-02: בדיקה שיצרה רשומה חשופה (בלי קובץ) בטבלת "הוצאות" —
 // אוטומציית Make שמאזינה לטבלה הזו (וגם לחשבוניות/תעודות משלוח/צ׳קים)
@@ -96,6 +126,20 @@ const today = new Date().toISOString().slice(0, 10);
 // ============ 1. קריאת כל הטבלאות + זמני תגובה ============
 const tables = await api('GET', 'tables');
 for (const t of tables) {
+  // הרשאת מנהל חסומה בכוונה מה-API הכללי לגמרי (ר' בדיקות אבטחה
+  // למטה) — כאן רק מוודאים שהיא באמת חסומה, לא שהיא קריאה.
+  if (t.name === LOGIN_CODES_TABLE) {
+    await test(`קריאה: ${t.name} (חסום בכוונה)`, async () => {
+      try {
+        await api('GET', `${enc(t.name)}?maxRecords=50`);
+        throw new Error('טבלת קודי הכניסה נקראה — אמורה להיות חסומה!');
+      } catch (e) {
+        if (String(e.message).startsWith('403')) return 'חסום כנדרש';
+        throw e;
+      }
+    }, READ_WARN_MS);
+    continue;
+  }
   await test(`קריאה: ${t.name}`, async () => {
     const rows = await api('GET', `${enc(t.name)}?maxRecords=50`);
     return `${Array.isArray(rows) ? rows.length : 0} רשומות`;
@@ -238,8 +282,9 @@ await test("צ'ק: זרימה מלאה — יצירה + סטטוס + עריכה 
 await test('כניסת עובד: אימייל+דרכון נכונים', async () => {
   const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
   if (!w) return 'דולג — אין עובד עם מייל+דרכון';
-  const res = await api('POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+  const res = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
   if (!res?.worker?.id) throw new Error('לא הוחזר עובד');
+  if (!res?.token) throw new Error('לא הוחזר טוקן');
   return res.worker['שם פרטי'] || 'זוהה';
 });
 
@@ -301,30 +346,28 @@ await test('ספק: תנאי תשלום (בחירה) + תחום אספקה (רב
 });
 
 // ---- הרשאות מנהל (מקור אמת בצד השרת) ----
+// admins נקרא ישירות מ-Airtable (לא דרך ה-API) — הטבלה חסומה עכשיו
+// לגמרי מה-API הכללי בכל תפקיד, ר' בדיקת "קודי כניסה לא נחשפים" למטה.
 await test('כניסת מנהל: מייל+קוד נכונים → תפקיד מהטבלה', async () => {
-  const admins = await get('הרשאת מנהל', '?raw=1');
-  const admin = admins.find((a) => a['מייל'] && a['קוד אישי']);
+  const admin = allAdmins.find((a) => a['מייל'] && a['קוד אישי']);
   if (!admin) return 'דולג — אין רשומת מנהל עם קוד';
-  const res = await api('POST', 'admin-login', { email: admin['מייל'], code: admin['קוד אישי'] });
-  if (!res?.role) throw new Error('לא הוחזר תפקיד');
+  const res = await apiAs(null, 'POST', 'admin-login', { email: admin['מייל'], code: admin['קוד אישי'] });
+  if (!res?.role || !res?.token) throw new Error('לא הוחזר תפקיד/טוקן');
   return `${res.name} → ${res.role}`;
 });
 await test('כניסת מנהל: קוד שגוי נדחה', async () => {
-  const admins = await get('הרשאת מנהל', '?raw=1');
-  const admin = admins.find((a) => a['מייל']);
+  const admin = allAdmins.find((a) => a['מייל']);
   try {
-    await api('POST', 'admin-login', { email: admin['מייל'], code: 'wrong-code-000' });
+    await apiAs(null, 'POST', 'admin-login', { email: admin['מייל'], code: 'wrong-code-000' });
     throw new Error('התקבלה כניסה עם קוד שגוי!');
   } catch (e) {
     if (String(e.message).startsWith('401')) return 'נדחה (401)';
     throw e;
   }
 });
-await test('רענון תפקיד חי (admin-role)', async () => {
-  const admins = await get('הרשאת מנהל', '?raw=1');
-  const admin = admins.find((a) => a['מייל']);
-  const res = await api('POST', 'admin-role', { email: admin['מייל'] });
-  if (!res?.role) throw new Error('לא הוחזר תפקיד');
+await test('רענון תפקיד חי (admin-role) — מזהה לפי הטוקן, לא לפי גוף הבקשה', async () => {
+  const res = await api('POST', 'admin-role');
+  if (!res?.role || !res?.token) throw new Error('לא הוחזר תפקיד/טוקן');
   return `${res.role} (סוג: ${res.type || 'ריק'})`;
 });
 
@@ -519,6 +562,78 @@ await test('תוכנית שתילה: יצירה מקושרת למבנה אמית
   try { await api('GET', `${enc('תוכניות שתילה')}/${created.id}`); } catch { gone = true; }
   if (!gone) throw new Error('הרשומה לא נמחקה בפועל');
   return `שויכה למבנה אמיתי, עדכון+טריגר אומתו, נמחקה`;
+});
+
+// ============================================================
+// אבטחה בצד השרת (2026-09-08) — בדיקות-על קבועות לפי דרישת הלקוחה:
+// "בקשות בלי token נדחות, עם token של עובד אי אפשר לקרוא כספים, עם
+// token של מנהל עבודה אי אפשר לכתוב מחוץ לחריגים, קודי כניסה לא
+// נחשפים". כל בדיקה כאן פועלת מול טוקנים אמיתיים שהתקבלו מהתחברות
+// אמיתית — לא הדמיה.
+// ============================================================
+await test('אבטחה: בקשה בלי טוקן נדחית (401)', async () => {
+  try {
+    await apiAs(null, 'GET', enc('מבנים'));
+    throw new Error('בקשה בלי טוקן עברה!');
+  } catch (e) {
+    if (String(e.message).startsWith('401')) return 'נדחה כנדרש (401)';
+    throw e;
+  }
+});
+
+await test('אבטחה: קודי כניסה לא נחשפים דרך ה-API הכללי, גם עם טוקן מנהל ראשי', async () => {
+  try {
+    await api('GET', enc('הרשאת מנהל'));
+    throw new Error('טבלת קודי הכניסה נקראה דרך ה-API הכללי!');
+  } catch (e) {
+    if (String(e.message).startsWith('403') || String(e.message).startsWith('401')) return 'חסום כנדרש';
+    throw e;
+  }
+});
+
+await test('אבטחה: טוקן עובד לא יכול לקרוא טבלת כספים (הוצאות)', async () => {
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  if (!w) return 'דולג — אין עובד עם מייל+דרכון';
+  const wLogin = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+  try {
+    await apiAs(wLogin.token, 'GET', enc('הוצאות'));
+    throw new Error('עובד הצליח לקרוא הוצאות!');
+  } catch (e) {
+    if (String(e.message).startsWith('403')) return 'חסום כנדרש (403)';
+    throw e;
+  }
+});
+
+await test('אבטחה: טוקן עובד רואה רק את הרשומות שלו (עבודות עובדים)', async () => {
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  if (!w) return 'דולג — אין עובד עם מייל+דרכון';
+  const wLogin = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+  const rows = await apiAs(wLogin.token, 'GET', `${enc('עבודות עובדים')}?raw=1`);
+  const foreign = rows.filter((r) => {
+    const linked = Array.isArray(r['עובד']) ? r['עובד'].map((x) => (x && typeof x === 'object' ? x.id : x)) : [];
+    return !linked.includes(wLogin.worker.id);
+  });
+  if (foreign.length) throw new Error(`${foreign.length} רשומות של עובדים אחרים דלפו`);
+  return `${rows.length} רשומות, כולן שייכות לעובד המחובר`;
+});
+
+await test('אבטחה: טוקן מנהל עבודה לא יכול לכתוב מחוץ לשני החריגים', async () => {
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  if (!manager) return 'דולג — אין רשומת מנהל עבודה עם קוד';
+  const mLogin = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
+  if (!mLogin?.token) throw new Error('מנהל העבודה לא קיבל טוקן');
+  if (!sId) return 'דולג — אין מבנה לבדוק מולו';
+  try {
+    await apiAs(mLogin.token, 'PATCH', `${enc('מבנים')}/${sId}`, { 'הערות': MARK });
+    throw new Error('מנהל עבודה הצליח לכתוב למבנים!');
+  } catch (e) {
+    if (!String(e.message).startsWith('403')) throw e;
+  }
+  // חריג אמיתי: מלאי בסיסי כן מותר בכתיבה למנהל עבודה
+  const created = await apiAs(mLogin.token, 'POST', enc('מלאי בסיסי'), { 'קטגוריה': 'קרטונים', 'הערות': MARK });
+  if (!created?.id) throw new Error('הכתיבה לחריג המותר (מלאי) נכשלה');
+  cleanup.push({ table: 'מלאי בסיסי', id: created.id });
+  return 'כתיבה מחוץ לחריגים נחסמה, כתיבה בתוך חריג (מלאי) עברה';
 });
 
 // ============ 4. ניקוי מלא ============

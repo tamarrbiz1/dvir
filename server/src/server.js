@@ -6,6 +6,10 @@ import cors from 'cors';
 import multer from 'multer';
 import { getMeta, fetchRecords, createRecord, createRecords, updateRecord, deleteRecord, uploadAttachmentToRecord } from './airtable.js';
 import { attachLinkedNames, invalidateIndex } from './resolve-links.js';
+import {
+  signToken, authenticate, authorizeRead, authorizeWrite,
+  canReadTable, canWriteTable, ownFilterField, LOGIN_CODES_TABLE,
+} from './auth.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -67,7 +71,7 @@ function stripTestRecords(records, req) {
 }
 
 // מטא-נתונים — שדות של טבלה ספציפית
-app.get('/api/meta/:table', async (req, res) => {
+app.get('/api/meta/:table', authenticate, async (req, res) => {
   try {
     const meta = await getMeta();
     const table = meta.find((t) => t.name === req.params.table);
@@ -85,7 +89,7 @@ app.get('/api/meta/:table', async (req, res) => {
 // אפשרויות של שדה בחירה (singleSelect / multipleSelects).
 // המסכים טוענים מכאן את הערכים המותרים, כדי לא לכתוב ל-Airtable
 // ערך שאינו ברשימה — כתיבה כזו נדחית בשגיאת הרשאות.
-app.get('/api/select-options/:table/:field', async (req, res) => {
+app.get('/api/select-options/:table/:field', authenticate, async (req, res) => {
   try {
     const meta = await getMeta();
     const table = meta.find((t) => t.name === req.params.table);
@@ -124,11 +128,12 @@ function isValidDocumentFile(buffer) {
   return false;
 }
 
-app.post('/api/upload-document', upload.single('file'), async (req, res) => {
+app.post('/api/upload-document', authenticate, upload.single('file'), async (req, res) => {
   try {
     const { table, field, weekCode } = req.body;
     if (!req.file) return res.status(400).json({ error: 'לא נבחר קובץ' });
     if (!table || !field) return res.status(400).json({ error: 'פרמטרים חסרים' });
+    if (!canWriteTable(req.auth.role, table)) return res.status(403).json({ error: 'אין הרשאת עדכון לטבלה זו' });
     // מגבלת נקודת הקצה של Airtable להעלאת קובץ בבקשה אחת
     if (req.file.size > 5 * 1024 * 1024) {
       return res.status(400).json({ error: 'הקובץ גדול מ-5MB. יש להעלות קובץ קטן יותר (תמונות מוקטנות אוטומטית).' });
@@ -237,22 +242,28 @@ app.post('/api/admin-login', async (req, res) => {
       return res.status(403).json({ error: 'הכניסה ממכשיר זה נדחתה על ידי המנהל הראשי.', deviceRejected: true });
     }
 
-    res.json({ ok: true, role, name, email: found['מייל'] || email, type: found['סוג'] || '' });
+    const token = signToken({ role, sub: found['מייל'] || email, name });
+    res.json({ ok: true, role, name, email: found['מייל'] || email, type: found['סוג'] || '', token });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// רענון תפקיד חי — נקרא בכל טעינה ומחזורית, כדי ששינוי "סוג" ב-Airtable ייתפס מיד
-app.post('/api/admin-role', async (req, res) => {
+// רענון תפקיד חי — נקרא בכל טעינה ומחזורית, כדי ששינוי "סוג" ב-Airtable ייתפס מיד.
+// דורש טוקן תקף קיים; המייל נלקח מהטוקן עצמו (לא מגוף הבקשה) — אחרת כל אחד
+// יכול היה לבדוק אם מייל כלשהו רשום כמנהל בלי שום אימות (דליפת מידע).
+// מנפיק טוקן חדש עם התפקיד המעודכן, כדי שסשן פתוח יקבל הרשאות עדכניות מיד.
+app.post('/api/admin-role', authenticate, async (req, res) => {
   try {
-    const { email } = req.body || {};
-    if (!email) return res.status(400).json({ error: 'חסר אימייל' });
+    const email = req.auth.sub;
     const admins = await fetchRecords('הרשאת מנהל', {});
     const norm = (s) => String(s || '').trim().toLowerCase();
     const found = admins.find((a) => norm(a['מייל']) === norm(email));
     if (!found) return res.status(404).json({ error: 'לא נמצא' });
-    res.json({ ok: true, role: adminRoleOf(found), name: found['Name'] || 'משתמש', type: found['סוג'] || '' });
+    const role = adminRoleOf(found);
+    const name = found['Name'] || 'משתמש';
+    const token = signToken({ role, sub: found['מייל'] || email, name });
+    res.json({ ok: true, role, name, type: found['סוג'] || '', token });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -269,8 +280,11 @@ app.post('/api/worker-login', async (req, res) => {
     const norm = (s) => String(s || '').trim().toLowerCase();
     const found = workers.find((w) => norm(w['מייל']) === norm(email) && norm(w['מספר דרכון']) === norm(passport));
     if (!found) return res.status(401).json({ error: 'האימייל ומספר הדרכון אינם תואמים לעובד רשום' });
+    const name = `${found['שם פרטי'] || ''} ${found['שם משפחה'] || ''}`.trim() || 'עובד';
+    const token = signToken({ role: 'worker', sub: found.id, name, email: found['מייל'] || email });
     res.json({
       ok: true,
+      token,
       worker: {
         id: found.id,
         'שם פרטי': found['שם פרטי'] || '',
@@ -296,7 +310,7 @@ app.post('/api/worker-login', async (req, res) => {
 // API (משלם לפי תווים, איכות גבוהה, תמיכה רשמית בתאילנדית), DeepL API
 // (איכות מעולה, לא תומך רשמית בתאילנדית נכון לכתיבת שורות אלו — לבדוק
 // לפני בחירה), Azure Translator (משלם, תמיכה רשמית בתאילנדית).
-app.post('/api/translate', async (req, res) => {
+app.post('/api/translate', authenticate, async (req, res) => {
   try {
     const { text, target } = req.body || {};
     if (!text || !String(text).trim()) return res.status(400).json({ error: 'אין טקסט לתרגום' });
@@ -368,12 +382,41 @@ app.use('/api/:table', async (req, res, next) => {
   } catch { /* המטא לא זמין כרגע — הנתיב עצמו ידווח על השגיאה */ }
   next();
 });
+// אימות זהות — חובה מכאן ואילך לכל קריאה ל-/api/:table (קריאה וכתיבה
+// כאחד). אין רשימה לבנה: כל בקשה בלי טוקן תקף נדחית ב-401. תקרית
+// 2026-09-07: לפני זה כל קריאה ישירה (בלי שום כותרת) עברה, כולל
+// קריאת טבלת קודי הכניסה עצמה.
+app.use('/api/:table', (req, res, next) => {
+  if (RESERVED_PATHS.has(req.params.table)) return next();
+  return authenticate(req, res, next);
+});
+
+/** מוודא (בקריאה חוזרת מ-Airtable) שרשומה קיימת שייכת למשתמש-עובד לפני עדכון/מחיקה */
+async function assertOwnRecord(req, res, table) {
+  const field = ownFilterField(req.auth.role, table);
+  if (!field) return true; // אין אכיפת-בעלות לתפקיד/טבלה הזו (כבר עבר canWriteTable)
+  let rec;
+  try {
+    const base = (await import('./airtable.js')).getBase();
+    rec = await base(table).find(req.params.id);
+  } catch {
+    res.status(404).json({ error: 'הרשומה לא נמצאה' });
+    return false;
+  }
+  const linked = rec.fields[field];
+  const ids = Array.isArray(linked) ? linked.map((x) => (x && typeof x === 'object' ? x.id : x)) : [];
+  if (!ids.includes(req.auth.sub)) {
+    res.status(403).json({ error: 'אין הרשאה לרשומה זו' });
+    return false;
+  }
+  return true;
+}
 
 // רשומות מטבלה (עם filters / sort / limit)
-app.get('/api/:table', async (req, res) => {
+app.get('/api/:table', authorizeRead, async (req, res) => {
   try {
     const { table } = req.params;
-    const key = cacheKeyFor(table, req.query);
+    const key = cacheKeyFor(table, req.query) + '|role=' + req.auth.role + (req.auth.sub || '');
     const cached = readCache.get(key);
     if (cached && Date.now() - cached.at < READ_TTL_MS) {
       res.set('X-Cache', 'HIT');
@@ -390,7 +433,22 @@ app.get('/api/:table', async (req, res) => {
       const names = String(req.query.fields).split(',').map((f) => f.trim()).filter(Boolean);
       if (names.length) opts.fields = names;
     }
-    const records = stripTestRecords(await fetchRecords(table, opts), req);
+    // עובד: רק הרשומות ששייכות אליו. הערה חשובה: אי-אפשר לסנן את זה עם
+    // filterByFormula ישירות על שדה קישור — ARRAYJOIN על שדה מקושר מחזיר
+    // את שם הרשומה המקושרת (Primary Field), לא את מזהה ה-record שלה,
+    // כך שהשוואה למזהה תמיד נכשלת בשקט. לכן מסננים כאן ב-Node, אחרי
+    // הקריאה — לא ניתן לעקוף מהלקוח (opts.fields תמיד כולל את שדה
+    // השיוך גם אם הלקוח לא ביקש אותו, כדי שהסינון יהיה אפשרי).
+    const ownField = ownFilterField(req.auth.role, table);
+    if (ownField && opts.fields && !opts.fields.includes(ownField)) opts.fields.push(ownField);
+    let records = stripTestRecords(await fetchRecords(table, opts), req);
+    if (ownField) {
+      records = records.filter((r) => {
+        const linked = r[ownField];
+        const ids = Array.isArray(linked) ? linked.map((x) => (x && typeof x === 'object' ? x.id : x)) : [];
+        return ids.includes(req.auth.sub);
+      });
+    }
 
     // העשרה: שדות מקושרים -> אובייקטים עם שם (אלא אם raw=1)
     const payload = req.query.raw === '1' ? records : await attachLinkedNames(table, records);
@@ -403,10 +461,16 @@ app.get('/api/:table', async (req, res) => {
 });
 
 // רשומה ספציפית
-app.get('/api/:table/:id', async (req, res) => {
+app.get('/api/:table/:id', authorizeRead, async (req, res) => {
   try {
     const base = (await import('./airtable.js')).getBase();
     const rec = await base(req.params.table).find(req.params.id);
+    const ownField = ownFilterField(req.auth.role, req.params.table);
+    if (ownField) {
+      const linked = rec.fields[ownField];
+      const ids = Array.isArray(linked) ? linked.map((x) => (x && typeof x === 'object' ? x.id : x)) : [];
+      if (!ids.includes(req.auth.sub)) return res.status(403).json({ error: 'אין הרשאה לרשומה זו' });
+    }
     res.json({ id: rec.id, ...rec.fields });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -414,16 +478,22 @@ app.get('/api/:table/:id', async (req, res) => {
 });
 
 // יצירת רשומה (או כמה רשומות — כשנשלח מערך, למשל בייבוא חגים)
-app.post('/api/:table', async (req, res) => {
+app.post('/api/:table', authorizeWrite, async (req, res) => {
   try {
+    const { table } = req.params;
+    const ownField = ownFilterField(req.auth.role, table);
     if (Array.isArray(req.body)) {
+      if (ownField) return res.status(403).json({ error: 'יצירה קבוצתית אינה נתמכת עבור הרשאה זו' });
       if (req.body.length > 100) return res.status(400).json({ error: 'עד 100 רשומות בבקשה אחת' });
-      const created = await createRecords(req.params.table, req.body);
-      invalidateReads(req.params.table);
+      const created = await createRecords(table, req.body);
+      invalidateReads(table);
       return res.status(201).json(created);
     }
-    const created = await createRecord(req.params.table, req.body);
-    invalidateReads(req.params.table); // כדי שהרשומה החדשה תיקרא מיד ותיפתר לשם
+    // עובד: שדה השיוך נכפה תמיד להיות הרשומה של עצמו, בלי קשר למה שנשלח —
+    // מונע יצירת רשומה בשם עובד אחר דרך payload מזויף.
+    const body = ownField ? { ...req.body, [ownField]: [req.auth.sub] } : req.body;
+    const created = await createRecord(table, body);
+    invalidateReads(table); // כדי שהרשומה החדשה תיקרא מיד ותיפתר לשם
     res.status(201).json(created);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -431,10 +501,15 @@ app.post('/api/:table', async (req, res) => {
 });
 
 // עדכון רשומה
-app.patch('/api/:table/:id', async (req, res) => {
+app.patch('/api/:table/:id', authorizeWrite, async (req, res) => {
   try {
-    const updated = await updateRecord(req.params.table, req.params.id, req.body);
-    invalidateReads(req.params.table);
+    const { table } = req.params;
+    if (!(await assertOwnRecord(req, res, table))) return;
+    const ownField = ownFilterField(req.auth.role, table);
+    // עובד לא יכול "להעביר" רשומה לעובד אחר דרך עדכון שדה השיוך
+    const body = ownField && req.body?.[ownField] ? { ...req.body, [ownField]: [req.auth.sub] } : req.body;
+    const updated = await updateRecord(table, req.params.id, body);
+    invalidateReads(table);
     res.json(updated);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -442,10 +517,12 @@ app.patch('/api/:table/:id', async (req, res) => {
 });
 
 // מחיקה
-app.delete('/api/:table/:id', async (req, res) => {
+app.delete('/api/:table/:id', authorizeWrite, async (req, res) => {
   try {
-    await deleteRecord(req.params.table, req.params.id);
-    invalidateReads(req.params.table);
+    const { table } = req.params;
+    if (!(await assertOwnRecord(req, res, table))) return;
+    await deleteRecord(table, req.params.id);
+    invalidateReads(table);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });

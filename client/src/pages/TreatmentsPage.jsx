@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import { authFetch } from '../utils/authFetch.js';
 import { sortStructures } from '../utils/structures.js';
 import { useAutoRefresh } from '../utils/live.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
@@ -167,7 +168,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
   // אפשרויות singleSelect — נטענות מהמטא כדי לא לכתוב ערך שאינו ברשימה
   useEffect(() => {
     const fetchChoices = (field) =>
-      fetch(`/api/select-options/${encodeURIComponent('ריסוסים')}/${encodeURIComponent(field)}`)
+      authFetch(`/api/select-options/${encodeURIComponent('ריסוסים')}/${encodeURIComponent(field)}`)
         .then((r) => (r.ok ? r.json() : { choices: [] }))
         .then((d) => (Array.isArray(d.choices) ? d.choices : []))
         .catch(() => []);

@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
+import { authFetch } from '../utils/authFetch.js';
 import { formatNumber, formatDate } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
 import PageHeader from '../components/PageHeader.jsx';
@@ -90,7 +91,7 @@ export default function InventoryPage() {
   useEffect(() => {
     const enc = encodeURIComponent;
     const fields = ['קוד שבוע', 'תאריך התחלה', 'JSON לפי ימים מאוחד'].map(enc).join(',');
-    fetch(`/api/${enc('סיכום שבועי')}?raw=1&fields=${fields}`)
+    authFetch(`/api/${enc('סיכום שבועי')}?raw=1&fields=${fields}`)
       .then((r) => (r.ok ? r.json() : []))
       .then((rows) => {
         const list = (Array.isArray(rows) ? rows : [])

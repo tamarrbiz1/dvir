@@ -3,6 +3,7 @@ import { useState, useEffect, useMemo, useCallback, createContext, useContext } 
 import { t, setLang } from './i18n.js';
 import LanguageSwitcher from './components/LanguageSwitcher.jsx';
 import { NAV_GROUPS, INITIAL_ROUTE, canSee, NavigationProvider } from './utils/navigation.jsx';
+import { authFetch } from './utils/authFetch.js';
 
 // ============================================================
 // אפליקציית עובד (Mobile-first)
@@ -51,7 +52,7 @@ export const AppContext = createContext(null);
 export const useApp = () => useContext(AppContext);
 
 function Sidebar({ mobileOpen, onClose }) {
-  const { user, lang, setAppLang, logout, badges, api } = useApp();
+  const { user, lang, setAppLang, logout, badges, api, realRole, viewAsManager, toggleViewAsManager } = useApp();
   const role = user?.role || 'owner';
   const [devicesOpen, setDevicesOpen] = useState(false);
   return (
@@ -141,7 +142,19 @@ function Sidebar({ mobileOpen, onClose }) {
         <div style={{ marginTop: 16, borderTop: '1px solid rgba(255,255,255,0.16)', paddingTop: 16, position: 'relative', zIndex: 1 }}>
           <div style={{ padding: '0 12px 8px', fontSize: 12, color: 'rgba(255,255,255,0.6)' }}>
             מחובר: <b style={{ color: '#fff' }}>{user?.name || 'משתמש'}</b> · {role === 'owner' ? 'מנהל ראשי' : 'מנהל עבודה'}
+            {viewAsManager && <span style={{ color: '#FCD34D' }}> (תצוגת מנהל עבודה)</span>}
           </div>
+          {realRole === 'owner' && (
+            <button
+              type="button"
+              className="nav-item"
+              onClick={toggleViewAsManager}
+              style={{ width: '100%', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'inherit', font: 'inherit' }}
+            >
+              <span className="nav-icon" aria-hidden="true">👁️</span>
+              <span>{viewAsManager ? 'חזרה לתצוגת מנהל ראשי' : 'צפה כמנהל עבודה'}</span>
+            </button>
+          )}
           <button type="button" className="nav-item" onClick={logout}>
             <span className="nav-icon" aria-hidden="true">🚪</span>
             <span>{t('logout')}</span>
@@ -299,6 +312,30 @@ export default function App() {
   // מוני התראות/בקשות לסרגל הצד — מתרעננים ברקע (Near-Realtime לפי האיפיון)
   const [badges, setBadges] = useState({ requests: 0, alerts: 0, devices: 0 });
 
+  // ============================================================
+  // "צפה כמנהל עבודה" (2026-09-08) — מתג תצוגה למנהל ראשי בלבד.
+  // משנה רק את מה שמוצג ומה שהתפריט/העמודים מרשים בצד הלקוח (role
+  // חשוף כ-'manager'); הטוקן עצמו נשאר טוקן מנהל-ראשי לגמרי ללא
+  // שינוי, כך שאין שום סיכון "נעילה עצמית" — כל קריאת API עדיין
+  // עובדת עם כל ההרשאות האמיתיות, ברגע שחוזרים לתצוגה הרגילה (או
+  // גם באמצע, אם מסך-בת כלשהו קורא ישירות ל-api עם טבלה שהתצוגה
+  // המדומה לא הייתה מציגה — זה עדיין יעבוד, כי השרת לא רואה הבדל).
+  const [viewAsManager, setViewAsManager] = useState(() => {
+    try { return sessionStorage.getItem('zite_view_as') === 'manager'; } catch { return false; }
+  });
+  const toggleViewAsManager = useCallback(() => {
+    setViewAsManager((v) => {
+      const next = !v;
+      try { sessionStorage.setItem('zite_view_as', next ? 'manager' : ''); } catch {}
+      return next;
+    });
+  }, []);
+  const realRole = user?.role;
+  const effectiveUser = useMemo(() => {
+    if (user && realRole === 'owner' && viewAsManager) return { ...user, role: 'manager' };
+    return user;
+  }, [user, realRole, viewAsManager]);
+
   // מעדכן שפה: state, מודול i18n, ומאפיין data-lang לסקיילינג CSS בתאילנדית
   const setAppLang = useCallback((l) => {
     setUI(l);
@@ -333,23 +370,21 @@ export default function App() {
           });
           if (!r.ok || cancelled) return;
           const d = await r.json();
-          if (d?.worker?.id && d.worker.id !== rec.id) {
+          if (d?.worker?.id) {
             setUser((u) => {
-              const nu = { ...u, record: { ...u.record, ...d.worker } };
+              const nu = { ...u, token: d.token || u.token, record: { ...u.record, ...d.worker } };
               try { sessionStorage.setItem('zite_user', JSON.stringify(nu)); } catch {}
               return nu;
             });
           }
         } else if (user.email) {
-          const r = await fetch('/api/admin-role', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: user.email }),
-          });
+          // אימייל נלקח מהטוקן עצמו בצד השרת — לא נשלח יותר בגוף הבקשה
+          const r = await authFetch('/api/admin-role', { method: 'POST' });
           if (!r.ok || cancelled) return;
           const d = await r.json();
-          if (d?.role && (d.role !== user.role || d.name !== user.name)) {
+          if (d?.role) {
             setUser((u) => {
-              const nu = { ...u, role: d.role, name: d.name, record: { ...u.record, 'סוג': d.type, Name: d.name } };
+              const nu = { ...u, role: d.role, name: d.name, token: d.token || u.token, record: { ...u.record, 'סוג': d.type, Name: d.name } };
               try { sessionStorage.setItem('zite_user', JSON.stringify(nu)); } catch {}
               return nu;
             });
@@ -369,14 +404,15 @@ export default function App() {
     let stop = false;
     const enc = encodeURIComponent;
     const getLight = (table, fields) =>
-      fetch(`/api/${enc(table)}?raw=1&fields=${fields.map(enc).join(',')}`)
+      authFetch(`/api/${enc(table)}?raw=1&fields=${fields.map(enc).join(',')}`)
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []);
     const refresh = async () => {
       const [reqs, stock, weeks, devices] = await Promise.all([
         getLight('בקשות עובדים', ['סטטוס']),
         getLight('מלאי בסיסי', ['מלאי נוכחי', 'מלאי מינימום']),
-        getLight('סיכום שבועי', ['סטטוס התאמה', 'סטטוס התאמת קטיף', 'שגיאת חישוב קג לפי מבנים']),
+        // סיכום שבועי: לא בהרשאת קריאה של מנהל עבודה — רלוונטי לבעלים בלבד
+        user.role === 'owner' ? getLight('סיכום שבועי', ['סטטוס התאמה', 'סטטוס התאמת קטיף', 'שגיאת חישוב קג לפי מבנים']) : Promise.resolve([]),
         user.role === 'owner' ? getLight('מכשירי כניסה', ['סטטוס']) : Promise.resolve([]),
       ]);
       if (stop) return;
@@ -421,19 +457,20 @@ export default function App() {
   }, []);
   const logout = useCallback(() => {
     setUser(null);
-    try { sessionStorage.removeItem('zite_user'); } catch {}
+    setViewAsManager(false);
+    try { sessionStorage.removeItem('zite_user'); sessionStorage.removeItem('zite_view_as'); } catch {}
   }, []);
 
   // חשוב: אובייקט ה-API חייב להיות יציב בין רינדורים — אחרת כל מסך
   // שטוען נתונים לפי [app.api] נטען מחדש בכל עדכון מונים (כל 90 שניות)
   const api = useMemo(() => ({
     async get(table, qs = '') {
-      const r = await fetch(`/api/${encodeURIComponent(table)}${qs}`);
+      const r = await authFetch(`/api/${encodeURIComponent(table)}${qs}`);
       if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
       return r.json();
     },
     async create(table, body) {
-      const r = await fetch(`/api/${encodeURIComponent(table)}`, {
+      const r = await authFetch(`/api/${encodeURIComponent(table)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -442,7 +479,7 @@ export default function App() {
       return r.json();
     },
     async update(table, id, body) {
-      const r = await fetch(`/api/${encodeURIComponent(table)}/${id}`, {
+      const r = await authFetch(`/api/${encodeURIComponent(table)}/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -451,14 +488,17 @@ export default function App() {
       return r.json();
     },
     async remove(table, id) {
-      const r = await fetch(`/api/${encodeURIComponent(table)}/${id}`, { method: 'DELETE' });
+      const r = await authFetch(`/api/${encodeURIComponent(table)}/${id}`, { method: 'DELETE' });
       if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
       return r.json();
     },
   }), []);
 
   const appValue = useMemo(() => ({
-    user,
+    user: effectiveUser,
+    realRole,
+    viewAsManager,
+    toggleViewAsManager,
     login,
     logout,
     lang,
@@ -467,7 +507,7 @@ export default function App() {
     loadingTables,
     badges,
     api,
-  }), [user, login, logout, lang, setAppLang, tables, loadingTables, badges, api]);
+  }), [effectiveUser, realRole, viewAsManager, toggleViewAsManager, login, logout, lang, setAppLang, tables, loadingTables, badges, api]);
 
   // אם אין משתמש מחובר — מסך התחברות
   if (!user) {
@@ -489,7 +529,7 @@ export default function App() {
 
   return (
     <AppContext.Provider value={appValue}>
-      <NavigationProvider role={user.role}>
+      <NavigationProvider role={effectiveUser.role}>
         <AppShell />
       </NavigationProvider>
     </AppContext.Provider>
@@ -499,7 +539,7 @@ export default function App() {
 // מכיל את מבנה העמוד עצמו — נפרד מ-App כדי שיוכל להשתמש ב-useLocation
 // (הזמין רק בתוך NavigationProvider/Router) לסגירת התפריט הנייד במעבר מסך.
 function AppShell() {
-  const { user, lang, setAppLang } = useApp();
+  const { user, lang, setAppLang, viewAsManager, toggleViewAsManager } = useApp();
   const role = user.role || 'owner';
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const location = useLocation();
@@ -516,6 +556,19 @@ function AppShell() {
   return (
     <div className={`role-${role}`}>
       <a className="skip-link" href="#main-content">{t('nav_skipToContent')}</a>
+      {viewAsManager && (
+        <div style={{
+          position: 'sticky', top: 0, zIndex: 80, background: '#B45309', color: '#fff',
+          padding: '8px 16px', fontSize: 14, fontWeight: 600, textAlign: 'center',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, flexWrap: 'wrap',
+        }}>
+          <span>👁️ אתה צופה כמנהל עבודה</span>
+          <button type="button" onClick={toggleViewAsManager}
+            style={{ background: '#fff', color: '#B45309', border: 'none', borderRadius: 6, padding: '4px 12px', fontWeight: 700, cursor: 'pointer', fontSize: 13 }}>
+            חזור למנהל ראשי
+          </button>
+        </div>
+      )}
       <MobileTopbar onOpenMenu={() => setMobileNavOpen(true)} role={role} lang={lang} onLang={setAppLang} />
       <div className="app-shell">
         <Sidebar mobileOpen={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />

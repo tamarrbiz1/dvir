@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
+import { authFetch } from '../utils/authFetch.js';
 import { formatDate } from '../utils/format.js';
 import { holidayInfo, jewishHolidaysOfYear, thaiHolidaysOfYear, kindOf, KIND_STYLE, toISO } from '../utils/holidays.js';
 import { confirmDialog, toast } from '../utils/ui.js';
@@ -63,7 +64,7 @@ export default function NonWorkDaysPage() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/select-options/${encodeURIComponent('ימי אי עבודה')}/${encodeURIComponent('סוג החג')}`)
+    authFetch(`/api/select-options/${encodeURIComponent('ימי אי עבודה')}/${encodeURIComponent('סוג החג')}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('meta'))))
       .then((data) => { if (!cancelled) setHolidayTypes(Array.isArray(data.choices) ? data.choices : []); })
       .catch(() => {});

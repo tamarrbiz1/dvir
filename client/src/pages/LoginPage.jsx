@@ -43,6 +43,7 @@ export default function LoginPage() {
         role: data.role,
         name: data.name,
         email: data.email,
+        token: data.token,
         record: { 'מייל': data.email, 'סוג': data.type, Name: data.name },
         source: 'admin',
       });
@@ -72,7 +73,7 @@ export default function LoginPage() {
       const found = data.worker;
       const name = `${found['שם פרטי'] || ''} ${found['שם משפחה'] || ''}`.trim() || 'עובד';
       try { sessionStorage.setItem('zite_user_recId', found.id); } catch {}
-      login({ role: 'worker', name, email: found['מייל'], record: found, source: 'workers' });
+      login({ role: 'worker', name, email: found['מייל'], token: data.token, record: found, source: 'workers' });
     } catch (err) {
       setError('שגיאת התחברות לשרת');
     }

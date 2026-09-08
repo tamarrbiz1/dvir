@@ -57,3 +57,7 @@ docs/*.mp4
 # מול Make) - נשארים בשרת בלבד, לא ב-git
 server/fixtures/*
 !server/fixtures/.gitkeep
+
+# מפתח חתימת session/token — נוצר אוטומטית בשרת בהרצה ראשונה, סוד
+# לכל מופע, לעולם לא ב-git (אם ייחשף — כל טוקן ניתן לזיוף)
+server/.session-secret

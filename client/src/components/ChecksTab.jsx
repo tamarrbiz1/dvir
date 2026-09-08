@@ -11,6 +11,7 @@
 // ============================================================
 import { useEffect, useMemo, useState } from 'react';
 import { confirmDialog, toast } from '../utils/ui.js';
+import { authFetch } from '../utils/authFetch.js';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatMoney, formatDate, formatNumber } from '../utils/format.js';
@@ -76,7 +77,7 @@ export default function ChecksTab({ checks, onRefresh }) {
 
   // אפשרויות הסטטוס האמיתיות מ-Airtable — כדי לא לכתוב ערך שאינו ברשימה
   useEffect(() => {
-    fetch(`/api/select-options/${encodeURIComponent(CHECKS_TABLE)}/${encodeURIComponent('סטטוס')}`)
+    authFetch(`/api/select-options/${encodeURIComponent(CHECKS_TABLE)}/${encodeURIComponent('סטטוס')}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => setStatusChoices(Array.isArray(d?.choices) ? d.choices : []))
       .catch(() => setStatusChoices([]));

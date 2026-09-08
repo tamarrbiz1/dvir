@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { authFetch } from '../utils/authFetch.js';
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -2569,7 +2570,7 @@ function NonWorkQuickAdd({ app, year, onChanged, onRecalc }) {
   const [msg, setMsg] = useState('');
 
   useEffect(() => {
-    fetch(`/api/select-options/${encodeURIComponent('ימי אי עבודה')}/${encodeURIComponent('סוג החג')}`)
+    authFetch(`/api/select-options/${encodeURIComponent('ימי אי עבודה')}/${encodeURIComponent('סוג החג')}`)
       .then((r) => (r.ok ? r.json() : { choices: [] }))
       .then((d) => {
         const c = Array.isArray(d.choices) ? d.choices : [];

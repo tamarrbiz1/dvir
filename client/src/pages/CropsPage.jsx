@@ -8,6 +8,7 @@
 // ============================================================
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
+import { authFetch } from '../utils/authFetch.js';
 import PageHeader from '../components/PageHeader.jsx';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { formatNumber, formatMoney, formatDate, safeValue } from '../utils/format.js';
@@ -460,7 +461,7 @@ function CropLinkedForm({ api, table, crops, record, title, fields, onClose, onS
 
   useEffect(() => {
     fields.filter((f) => f.type === 'select').forEach((f) => {
-      fetch(`/api/select-options/${encodeURIComponent(table)}/${encodeURIComponent(f.name)}`)
+      authFetch(`/api/select-options/${encodeURIComponent(table)}/${encodeURIComponent(f.name)}`)
         .then((r) => (r.ok ? r.json() : { choices: [] }))
         .then((d) => setOptions((o) => ({ ...o, [f.name]: Array.isArray(d.choices) ? d.choices : [] })))
         .catch(() => {});

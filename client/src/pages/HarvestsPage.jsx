@@ -7,6 +7,7 @@
 // ============================================================
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
+import { authFetch } from '../utils/authFetch.js';
 import { formatNumber, formatWeight, formatDate, safeValue } from '../utils/format.js';
 import { sortStructures } from '../utils/structures.js';
 import { displayName, firstId } from '../utils/resolve.js';
@@ -316,7 +317,7 @@ function HarvestForm({ api, structures, record, onClose, onSaved }) {
 
   // אפשרויות "סוג קטיף" מהמטא — לא כותבים ערך שאינו ברשימה
   useEffect(() => {
-    fetch(`/api/select-options/${encodeURIComponent(TABLE)}/${encodeURIComponent('סוג קטיף')}`)
+    authFetch(`/api/select-options/${encodeURIComponent(TABLE)}/${encodeURIComponent('סוג קטיף')}`)
       .then((r) => (r.ok ? r.json() : { choices: [] }))
       .then((d) => setTypeOptions(Array.isArray(d.choices) ? d.choices : []))
       .catch(() => {});
