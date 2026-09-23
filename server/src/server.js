@@ -34,10 +34,17 @@ app.use((req, _res, next) => {
 // ENDPOINTS
 // ============================================================
 
-// מטא-נתונים — רשימת טבלאות
+// מטא-נתונים — רשימת טבלאות. נתיב זה ציבורי בכוונה (נטען בעליית
+// האפליקציה, גם לפני התחברות — ר' App.jsx). ממצא-אבטחה 2026-09-23:
+// היה חושף גם את שמות השדות של טבלת "הרשאת מנהל" (כולל "קוד אישי")
+// לכל קורא בלי טוקן — לא את הערכים עצמם (הטבלה חסומה מה-API הכללי
+// בכל מקרה, ר' auth.js), אבל שם השדה עצמו הוא מידע-סיוע לתוקף שאין
+// שום סיבה לחשוף. הטבלה מוסרת כאן לגמרי מהרשימה הציבורית.
 app.get('/api/tables', async (_req, res) => {
   try {
-    const tables = (await getMeta()).map((t) => ({ id: t.id, name: t.name, fields: t.fields.map((f) => f.name) }));
+    const tables = (await getMeta())
+      .filter((t) => t.name !== LOGIN_CODES_TABLE)
+      .map((t) => ({ id: t.id, name: t.name, fields: t.fields.map((f) => f.name) }));
     res.json(tables);
   } catch (e) {
     res.status(500).json({ error: e.message });

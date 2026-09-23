@@ -4,6 +4,7 @@ import { t, setLang } from './i18n.js';
 import LanguageSwitcher from './components/LanguageSwitcher.jsx';
 import { NAV_GROUPS, INITIAL_ROUTE, canSee, NavigationProvider } from './utils/navigation.jsx';
 import { authFetch } from './utils/authFetch.js';
+import { toast } from './utils/ui.js';
 
 // ============================================================
 // אפליקציית עובד (Mobile-first)
@@ -34,6 +35,29 @@ import AlertsPage from './pages/AlertsPage.jsx';
 import UploadDocumentPage from './pages/UploadDocumentPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import FinancialForecastPage from './pages/FinancialForecastPage.jsx';
+
+// ============================================================
+// שגיאת שרת/Airtable (429/500/timeout) — עד כה נבלעה בשקט בכל
+// מסך (catch(()=>[]) / console.error) והמסך הציג "0 בכל מקום" בלי
+// שום סימן שמשהו נכשל. עכשיו מוצג טוסט קצר בנוסף (לא במקום ה-
+// catch הקיים בכל עמוד — הזרימה הקיימת ממשיכה בלי שינוי), ל-5xx
+// בלבד (4xx הם שגיאות אפליקטיביות תקינות עם הודעה עברית משלהן
+// שנקבעת ע"י route handler-ים שלנו, לא איתות תקשורת). דה-בונס כדי
+// שלא יוצגו כמה טוסטים זהים כשכמה בקשות נכשלות במקביל (Promise.all).
+let lastServerErrorToastAt = 0;
+async function serverErrorMessage(res) {
+  let serverMsg = '';
+  try { serverMsg = (await res.json())?.error || ''; } catch {}
+  if (res.status >= 500) {
+    const now = Date.now();
+    if (now - lastServerErrorToastAt > 4000) {
+      lastServerErrorToastAt = now;
+      toast('תקלה בתקשורת עם השרת — הנתונים עשויים להיות לא מעודכנים, נסו לרענן בעוד רגע', 'error');
+    }
+    return 'תקלה בתקשורת עם השרת. נסו שוב בעוד רגע.';
+  }
+  return serverMsg || 'שגיאה';
+}
 
 // שער הרשאות: כתובת שאינה מותרת לתפקיד מנותבת לעמוד הבית שלו
 function RoleGate({ role, children }) {
@@ -472,7 +496,7 @@ export default function App() {
   const api = useMemo(() => ({
     async get(table, qs = '') {
       const r = await authFetch(`/api/${encodeURIComponent(table)}${qs}`);
-      if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
+      if (!r.ok) throw new Error(await serverErrorMessage(r));
       return r.json();
     },
     async create(table, body) {
@@ -481,7 +505,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
+      if (!r.ok) throw new Error(await serverErrorMessage(r));
       return r.json();
     },
     async update(table, id, body) {
@@ -490,12 +514,12 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
+      if (!r.ok) throw new Error(await serverErrorMessage(r));
       return r.json();
     },
     async remove(table, id) {
       const r = await authFetch(`/api/${encodeURIComponent(table)}/${id}`, { method: 'DELETE' });
-      if (!r.ok) throw new Error((await r.json()).error || 'שגיאה');
+      if (!r.ok) throw new Error(await serverErrorMessage(r));
       return r.json();
     },
   }), []);
