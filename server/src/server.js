@@ -10,6 +10,7 @@ import {
   signToken, authenticate, authorizeRead, authorizeWrite,
   canReadTable, canWriteTable, ownFilterField, LOGIN_CODES_TABLE,
 } from './auth.js';
+import { notifyMakeWebhook } from './make-webhooks.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -160,6 +161,9 @@ app.post('/api/upload-document', authenticate, upload.single('file'), async (req
       throw uploadErr;
     }
     invalidateReads(table);
+    // טריגר ל-Make — רק אחרי שהרשומה+הקובץ נוצרו בהצלחה. fire-and-forget
+    // בכוונה: לא await-ים, כשל כאן לא ישפיע על התגובה למשתמש.
+    notifyMakeWebhook(table, created.id);
     res.status(201).json({ ok: true, record: created });
   } catch (e) {
     res.status(500).json({ error: e.message });
