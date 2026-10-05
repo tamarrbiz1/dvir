@@ -12,7 +12,7 @@
 export const KIND_STYLE = {
   jewish: { bg: '#DCEEFF', border: '#3578E5', label: 'חג יהודי', th: 'วันหยุดยิว' },
   thai: { bg: '#FFE7CC', border: '#F79009', label: 'חג תאילנדי', th: 'วันหยุดไทย' },
-  shabbat: { bg: '#EDE9FE', border: '#8B5CF6', label: 'שבת', th: 'วันสะบาโต' },
+  shabbat: { bg: '#EDE9FE', border: '#8B5CF6', label: 'יום מנוחה', th: 'วันพักผ่อน' },
   other: { bg: '#F1F5F9', border: '#98A2B3', label: 'יום אי עבודה', th: 'วันหยุด' },
 };
 
@@ -114,12 +114,16 @@ export const toISO = (d) =>
  * @param record רשומת "ימי אי עבודה" לתאריך (אם קיימת)
  */
 export function holidayInfo(date, record) {
-  if (record) {
-    const kind = kindOf(record['סוג החג']);
-    const name = (kind === 'jewish' ? jewishHoliday(date) : kind === 'thai' ? thaiHoliday(date) : null)
-      || (date.getDay() === 6 && kind === 'jewish' ? { he: 'שבת', th: 'วันสะบาโต' } : null)
-      || { he: KIND_STYLE[kind].label, th: KIND_STYLE[kind].th };
-    return { kind, name, style: KIND_STYLE[kind] };
+  if (!record) return null;
+  const rawKind = kindOf(record['סוג החג']);
+  const holiday = rawKind === 'jewish' ? jewishHoliday(date) : rawKind === 'thai' ? thaiHoliday(date) : null;
+  if (holiday) return { kind: rawKind, name: holiday, style: KIND_STYLE[rawKind] };
+  // שישי/שבת שיובאו לרשימה (השדה ב-Airtable מכיל רק "יהודי"/"תילאנדי", לכן
+  // מזהים לפי היום בשבוע) — "יום מנוחה", לא "חג יהודי". שם היום לצד התווית.
+  const wd = date.getDay();
+  if (rawKind === 'jewish' && (wd === 5 || wd === 6)) {
+    const dayName = wd === 6 ? { he: 'שבת', th: 'วันเสาร์' } : { he: 'יום שישי', th: 'วันศุกร์' };
+    return { kind: 'shabbat', name: { he: `יום מנוחה · ${dayName.he}`, th: `${KIND_STYLE.shabbat.th} · ${dayName.th}` }, style: KIND_STYLE.shabbat };
   }
-  return null;
+  return { kind: rawKind, name: { he: KIND_STYLE[rawKind].label, th: KIND_STYLE[rawKind].th }, style: KIND_STYLE[rawKind] };
 }
