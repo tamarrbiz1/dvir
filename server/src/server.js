@@ -11,6 +11,7 @@ import {
   canReadTable, canWriteTable, ownFilterField, LOGIN_CODES_TABLE,
 } from './auth.js';
 import { notifyMakeWebhook } from './make-webhooks.js';
+import { scheduleFridaysCheck } from './fridays.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -543,6 +544,7 @@ app.delete('/api/:table/:id', authorizeWrite, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ שרת Zite רץ על http://localhost:${PORT}`);
   warmUpLinkIndex();
+  scheduleFridaysCheck(); // ימי שישי תמיד ב"ימי אי עבודה" — ר' fridays.js
 });
 
 // ============================================================

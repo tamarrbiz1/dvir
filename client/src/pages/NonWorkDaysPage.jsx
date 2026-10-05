@@ -267,6 +267,10 @@ export default function NonWorkDaysPage() {
         </div>
       </PageHeader>
 
+      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+        ℹ️ ימי שישי נוספים אוטומטית לכל שנה. מחיקת יום שישי בודד (כשעובדים בו) נשמרת ולא מתבטלת.
+      </div>
+
       {preview && (
         <div className="modal-overlay" onClick={() => !importing && setPreview(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
