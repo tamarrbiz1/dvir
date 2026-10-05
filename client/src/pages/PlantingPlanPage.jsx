@@ -8,7 +8,7 @@ import {
 import { useApp } from '../App.jsx';
 import { formatDate, formatMoney, formatNumber } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
-import { holidayInfo, jewishHoliday, KIND_STYLE } from '../utils/holidays.js';
+import { holidayInfo, KIND_STYLE } from '../utils/holidays.js';
 import { confirmDialog, toast } from '../utils/ui.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
@@ -971,7 +971,6 @@ export default function PlantingPlanPage() {
             <LegendSwatch bg={PLANT.bg} border={PLANT.border} label="שתילה" />
             <LegendSwatch bg={HARVEST.bg} border={HARVEST.border} label="קטיף" />
             {QUARTERS.map((q) => <LegendSwatch key={q.q} bg={q.color} border={q.color} label={q.short} />)}
-            <LegendSwatch bg={KIND_STYLE.shabbat.bg} border={KIND_STYLE.shabbat.border} label="שבת" />
             <LegendSwatch bg={KIND_STYLE.jewish.bg} border={KIND_STYLE.jewish.border} label="חג יהודי" />
             <LegendSwatch bg={KIND_STYLE.thai.bg} border={KIND_STYLE.thai.border} label="חג תאילנדי" />
             <span style={{ color: 'var(--text-muted)' }}>עבר מוצג בשקיפות · היום במסגרת בולטת</span>
@@ -1261,11 +1260,13 @@ function CalendarGrid({ days, leadingBlanks, tall, eventsOnDate, nonWorkByKey, o
       ))}
 
       {days.map((day) => {
-        const dayEvents = eventsOnDate(day);
+        const nonWork = nonWorkByKey.get(dateKey(day));
+        // ביום אי-עבודה אין סימון שתילה/קטיף — היום נשאר בלוח, רק בלי הפעילות (לבקשת הלקוחה)
+        const dayEvents = nonWork ? [] : eventsOnDate(day);
         const isToday = day.getTime() === today.getTime();
         const isPast = day < today;
         // שבת / חג — כל רקע התא מודגש, בצבע לפי הסוג, עם שם החג (שלב 5)
-        const holiday = holidayInfo(day, nonWorkByKey.get(dateKey(day)));
+        const holiday = holidayInfo(day, nonWork);
 
         return (
           <div key={dateKey(day)} title={holiday ? holiday.name.he : undefined} style={{
@@ -2304,13 +2305,12 @@ function PlanSheet({
           planTotals.set(pid, t);
         }
       }
-      // חגים בשבוע — מרשומות "ימי אי עבודה" ומהלוח העברי (בלי שבתות)
+      // חגים בשבוע — רק מרשומות "ימי אי עבודה" (מה שהלקוח ייבא/הוסיף), בלי חישוב אוטומטי
       const holidayNames = [];
       for (let d = week.start; d <= week.end; d = addDays(d, 1)) {
         const rec = nonWorkByKey.get(dateKey(d));
-        const computed = jewishHoliday(d);
-        const info = rec ? holidayInfo(d, rec) : (computed ? { name: computed } : null);
-        if (!info || info.kind === 'shabbat') continue;
+        const info = rec ? holidayInfo(d, rec) : null;
+        if (!info) continue;
         if (!holidayNames.includes(info.name.he)) holidayNames.push(info.name.he);
       }
       return { week, kg, hasData, revenue, holidayNames, fcRows };

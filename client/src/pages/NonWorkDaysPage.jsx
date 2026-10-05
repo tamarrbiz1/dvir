@@ -47,6 +47,8 @@ export default function NonWorkDaysPage() {
   const [importing, setImporting] = useState(false);
   const [preview, setPreview] = useState(null); // {label, type, items:[{iso,he,checked}]}
   const [notice, setNotice] = useState('');
+  const [lastImport, setLastImport] = useState(null); // {ids, label} — לביטול הייבוא האחרון
+  const [undoing, setUndoing] = useState(''); // טקסט התקדמות בזמן ביטול
 
   const load = useCallback(async () => {
     setLoadError('');
@@ -132,6 +134,18 @@ export default function NonWorkDaysPage() {
     });
   };
 
+  // חישוב מחדש של כל תוכניות השתילה של השנה. האוטומציה ב-Airtable ("חשב תוכנית")
+  // רצה רק על מעבר false→true, לכן כותבים false ואז true (כמו במסך תוכנית השתילה).
+  const recalcPlansOfYear = async () => {
+    const plans = await app.api.get('תוכניות שתילה', '?maxRecords=500');
+    const list = (Array.isArray(plans) ? plans : []).filter((p) => String(p['שנת תוכנית'] || '') === String(yearNum));
+    for (const p of list) {
+      await app.api.update('תוכניות שתילה', p.id, { 'חשב תוכנית': false });
+      await app.api.update('תוכניות שתילה', p.id, { 'חשב תוכנית': true });
+    }
+    return list.length;
+  };
+
   const runImport = async () => {
     if (!preview || importing) return;
     const chosen = preview.items.filter((i) => i.checked);
@@ -139,8 +153,12 @@ export default function NonWorkDaysPage() {
     setImporting(true);
     try {
       // יצירה קבוצתית — בקשה אחת במקום בקשה לכל יום
-      await app.api.create('ימי אי עבודה', chosen.map((h) => ({ 'תאריך': h.iso, 'סוג החג': preview.type })));
-      setNotice(`נוספו ${chosen.length} ימים — ${preview.label} ${year}. התוכנית תתעדכן רק כשתבחרו בכך במסך תוכנית השתילה.`);
+      const created = await app.api.create('ימי אי עבודה', chosen.map((h) => ({ 'תאריך': h.iso, 'סוג החג': preview.type })));
+      const ids = (Array.isArray(created) ? created : [created]).map((r) => r?.id).filter(Boolean);
+      setLastImport(ids.length ? { ids, label: `${preview.label} ${year}` } : null);
+      // הייבוא משפיע מיד על תוכנית השתילה של השנה (לבקשת הלקוחה, 5.10.2026)
+      const n = await recalcPlansOfYear().catch(() => null);
+      setNotice(`נוספו ${chosen.length} ימים — ${preview.label} ${year}.${n ? ` ${n} תוכניות שתילה מחושבות מחדש.` : ''}`);
     } catch (e) {
       setNotice(`הייבוא נכשל: ${e.message || e}`);
     }
@@ -149,11 +167,46 @@ export default function NonWorkDaysPage() {
     await load();
   };
 
+  // ביטול הייבוא האחרון — מוחק רק את הרשומות שנוצרו בו, ומחשב מחדש את התוכנית
+  const undoImport = async () => {
+    if (!lastImport || undoing) return;
+    const yes = await confirmDialog({
+      title: `ביטול ייבוא — ${lastImport.label}`,
+      message: `${lastImport.ids.length} הימים שיובאו ימחקו מהרשימה, ותוכניות השתילה של ${yearNum} יחושבו מחדש.\nהאם להמשיך?`,
+      confirmLabel: 'בטל ייבוא', danger: true,
+    });
+    if (!yes) return;
+    setNotice('');
+    let done = 0;
+    const failed = [];
+    for (const id of lastImport.ids) {
+      setUndoing(`מבטל ייבוא... (${done}/${lastImport.ids.length})`);
+      try { await app.api.remove('ימי אי עבודה', id); } catch { failed.push(id); }
+      done += 1;
+    }
+    setUndoing('מחשב מחדש את תוכנית השתילה...');
+    const n = await recalcPlansOfYear().catch(() => null);
+    setUndoing('');
+    setLastImport(failed.length ? { ...lastImport, ids: failed } : null);
+    setNotice(failed.length
+      ? `${done - failed.length} ימים נמחקו, ${failed.length} לא נמחקו — אפשר לנסות שוב.`
+      : `הייבוא בוטל — ${done} ימים נמחקו.${n ? ` ${n} תוכניות שתילה מחושבות מחדש.` : ''}`);
+    await load();
+  };
+
   // ימי שישי — יום המנוחה במשק (עובדים במוצאי שבת, לכן שבתות אינן מיובאות)
   const fridaysOfYear = () => {
     const out = [];
     const d = new Date(yearNum, 0, 1);
     while (d.getFullYear() === yearNum) { if (d.getDay() === 5) out.push({ iso: toISO(d), he: 'יום שישי' }); d.setDate(d.getDate() + 1); }
+    return out;
+  };
+
+  // ימי שבת — לייבוא לפי בחירה בלבד (אין הדגשה אוטומטית של שבת; לעיתים עובדים במוצאי שבת)
+  const saturdaysOfYear = () => {
+    const out = [];
+    const d = new Date(yearNum, 0, 1);
+    while (d.getFullYear() === yearNum) { if (d.getDay() === 6) out.push({ iso: toISO(d), he: 'שבת' }); d.setDate(d.getDate() + 1); }
     return out;
   };
 
@@ -185,6 +238,9 @@ export default function NonWorkDaysPage() {
           </button>
           <button className="btn btn-ghost" disabled={importing || !jewishType || !yearValid} onClick={() => openImportPreview(fridaysOfYear(), jewishType, 'ימי שישי')}>
             🕯️ ייבא ימי שישי
+          </button>
+          <button className="btn btn-ghost" disabled={importing || !jewishType || !yearValid} onClick={() => openImportPreview(saturdaysOfYear(), jewishType, 'ימי שבת')}>
+            ✨ ייבא ימי שבת
           </button>
           {!yearValid && <span className="muted" style={{ fontSize: 12, alignSelf: 'center' }}>יש להקליד שנה בת 4 ספרות</span>}
         </div>
@@ -223,7 +279,15 @@ export default function NonWorkDaysPage() {
 
 
       {loadError && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {loadError}</div>}
-      {notice && <div className="badge" style={{ marginBottom: 14, background: 'var(--docs-soft)' }}>{notice}</div>}
+      {undoing && <div className="badge" style={{ marginBottom: 14 }}><span className="spinner" /> {undoing}</div>}
+      {notice && !undoing && (
+        <div className="badge" style={{ marginBottom: 14, background: 'var(--docs-soft)', display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+          <span>{notice}</span>
+          {lastImport && (
+            <button type="button" className="btn btn-sm btn-ghost" onClick={undoImport}>↩ בטל את הייבוא</button>
+          )}
+        </div>
+      )}
 
       <div className="kpi-grid" style={{ marginBottom: 16 }}>
         {[['jewish', counts.jewish], ['thai', counts.thai]].map(([k, v]) => (

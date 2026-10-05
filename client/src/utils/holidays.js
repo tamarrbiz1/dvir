@@ -5,7 +5,8 @@
 // (יהודי / תילאנדי). שם החג מחושב כאן מהתאריך:
 //   - חג יהודי: לפי הלוח העברי (Intl, ללא ספרייה חיצונית).
 //   - חג תאילנדי: לפי תאריכים קבועים בלוח הגרגוריאני.
-//   - שבת: כל יום שבת מודגש גם בלי רשומה בטבלה.
+//   - אין ימי אי-עבודה אוטומטיים (גם לא שבת): מודגש רק מה שיובא/נוסף
+//     לטבלה — במשק עובדים לעיתים במוצאי שבת וההחלטה בידי הלקוח (5.10.2026).
 // ============================================================
 
 export const KIND_STYLE = {
@@ -120,6 +121,5 @@ export function holidayInfo(date, record) {
       || { he: KIND_STYLE[kind].label, th: KIND_STYLE[kind].th };
     return { kind, name, style: KIND_STYLE[kind] };
   }
-  if (date.getDay() === 6) return { kind: 'shabbat', name: { he: 'שבת', th: 'วันสะบาโต' }, style: KIND_STYLE.shabbat };
   return null;
 }
