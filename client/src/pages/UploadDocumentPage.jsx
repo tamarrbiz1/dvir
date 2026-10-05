@@ -124,6 +124,11 @@ export default function UploadDocumentPage() {
   const [tracking, setTracking] = useState('idle'); // idle | polling | analyzed | timeout
   const fileRef = useRef(null);
   const historyPollFrom = useRef(Date.now()); // נקודת ההתחלה של חלון הרענון העצמי
+  // הרענון השקט (setInterval) מנוקה כראוי ב-unmount, אבל קריאת loadHistory
+  // שכבר יצאה לדרך (fetch באוויר) לא "נעצרת" בעצמה — שומר שלא נעדכן state
+  // אחרי שעזבו את המסך (אזהרת React / עבודה מיותרת).
+  const isMounted = useRef(true);
+  useEffect(() => () => { isMounted.current = false; }, []);
 
   const week = useMemo(() => weekOf(weekStart), [weekStart]);
   const needsWeek = topic === 'income' || topic === 'delivery';
@@ -146,6 +151,7 @@ export default function UploadDocumentPage() {
           analyzed: isAnalyzed(r, t),
         }))).catch(() => [])
     )).then((results) => {
+      if (!isMounted.current) return;
       setHistory(results.flat().sort((a, b) => String(b.uploadedAt).localeCompare(String(a.uploadedAt))).slice(0, 20));
       setHistLoading(false);
     });

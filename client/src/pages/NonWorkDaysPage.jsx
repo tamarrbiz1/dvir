@@ -92,11 +92,15 @@ export default function NonWorkDaysPage() {
   // ---------- כתיבה ----------
   const saveForm = async () => {
     if (!form?.date || !form?.type || saving) return;
-    setSaving(true); setFormError('');
+    setSaving(true); setFormError(''); setNotice('');
     try {
       if (form.id) await app.api.update('ימי אי עבודה', form.id, { 'תאריך': form.date, 'סוג החג': form.type });
       else await app.api.create('ימי אי עבודה', { 'תאריך': form.date, 'סוג החג': form.type });
       setForm(null);
+      // הוספה/עריכה בודדת משפיעה מיידית על תוכנית השתילה — לא רק ייבוא/ביטול (2026-10-05.7)
+      const y = String(form.date).slice(0, 4);
+      const n = await recalcPlansOfYear(y).catch(() => null);
+      if (n) setNotice(`${n} תוכניות מחושבות מחדש.`);
       await load();
     } catch (e) {
       setFormError(`לא ניתן היה להשלים את הפעולה. הנתונים לא עודכנו. (${e.message || e})`);
@@ -114,7 +118,14 @@ export default function NonWorkDaysPage() {
     });
     if (!yes) return;
     setSaving(true); setNotice('');
-    try { await app.api.remove('ימי אי עבודה', it.id); await load(); }
+    try {
+      await app.api.remove('ימי אי עבודה', it.id);
+      // מחיקה בודדת משפיעה מיידית על תוכנית השתילה — לא רק ביטול ייבוא (2026-10-05.7)
+      const y = String(it['תאריך'] || '').slice(0, 4);
+      const n = y ? await recalcPlansOfYear(y).catch(() => null) : null;
+      setNotice(n ? `${n} תוכניות מחושבות מחדש.` : '');
+      await load();
+    }
     catch (e) { setNotice(`המחיקה נכשלה: ${e.message || e}`); }
     setSaving(false);
   };
@@ -134,11 +145,14 @@ export default function NonWorkDaysPage() {
     });
   };
 
-  // חישוב מחדש של כל תוכניות השתילה של השנה. האוטומציה ב-Airtable ("חשב תוכנית")
-  // רצה רק על מעבר false→true, לכן כותבים false ואז true (כמו במסך תוכנית השתילה).
-  const recalcPlansOfYear = async () => {
+  // חישוב מחדש של כל תוכניות השתילה של שנה נתונה (ברירת מחדל: השנה המוצגת
+  // כרגע במסך). האוטומציה ב-Airtable ("חשב תוכנית") רצה רק על מעבר
+  // false→true, לכן כותבים false ואז true (כמו במסך תוכנית השתילה). פרמטר
+  // ה-year מאפשר לחשב מחדש לפי שנת היום שנוסף/נמחק בפועל, לא רק סינון
+  // המסך הנוכחי — רלוונטי להוספה/מחיקה בודדת של יום אי עבודה (2026-10-05.7).
+  const recalcPlansOfYear = async (y = yearNum) => {
     const plans = await app.api.get('תוכניות שתילה', '?maxRecords=500');
-    const list = (Array.isArray(plans) ? plans : []).filter((p) => String(p['שנת תוכנית'] || '') === String(yearNum));
+    const list = (Array.isArray(plans) ? plans : []).filter((p) => String(p['שנת תוכנית'] || '') === String(y));
     for (const p of list) {
       await app.api.update('תוכניות שתילה', p.id, { 'חשב תוכנית': false });
       await app.api.update('תוכניות שתילה', p.id, { 'חשב תוכנית': true });
@@ -187,12 +201,19 @@ export default function NonWorkDaysPage() {
     setUndoing('מחשב מחדש את תוכנית השתילה...');
     const n = await recalcPlansOfYear().catch(() => null);
     setUndoing('');
-    setLastImport(failed.length ? { ...lastImport, ids: failed } : null);
+    // hadFailure: מסמן שכבר נכשל ניסיון אחד לפחות — מציג אפשרות "עזוב" כדי
+    // שרשומה שלא ניתנת למחיקה (למשל נמחקה כבר ע"י מישהו אחר) לא תשאיר את
+    // המשתמש תקוע לנצח עם כפתור "בטל ייבוא" שרק ימשיך להיכשל.
+    setLastImport(failed.length ? { ...lastImport, ids: failed, hadFailure: true } : null);
     setNotice(failed.length
-      ? `${done - failed.length} ימים נמחקו, ${failed.length} לא נמחקו — אפשר לנסות שוב.`
+      ? `${done - failed.length} ימים נמחקו, ${failed.length} לא נמחקו — אפשר לנסות שוב או לעזוב.`
       : `הייבוא בוטל — ${done} ימים נמחקו.${n ? ` ${n} תוכניות שתילה מחושבות מחדש.` : ''}`);
     await load();
   };
+
+  // ויתור על ניסיונות ביטול נוספים (למשל רשומה שלא ניתנת למחיקה) —
+  // בלי זה, hadFailure היה יכול להשאיר כפתור "בטל ייבוא" תקוע לנצח
+  const dismissFailedUndo = () => { setLastImport(null); setNotice(''); };
 
   // ימי שישי — יום המנוחה במשק (עובדים במוצאי שבת, לכן שבתות אינן מיובאות)
   const fridaysOfYear = () => {
@@ -285,6 +306,9 @@ export default function NonWorkDaysPage() {
           <span>{notice}</span>
           {lastImport && (
             <button type="button" className="btn btn-sm btn-ghost" onClick={undoImport}>↩ בטל את הייבוא</button>
+          )}
+          {lastImport?.hadFailure && (
+            <button type="button" className="btn btn-sm btn-ghost" onClick={dismissFailedUndo}>✕ עזוב</button>
           )}
         </div>
       )}
