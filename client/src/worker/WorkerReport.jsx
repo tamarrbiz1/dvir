@@ -2,8 +2,9 @@
 // דיווח עבודה — יצירת רשומת "עבודות עובדים" ב-Airtable
 // ============================================================
 import { useEffect, useState } from 'react';
-import { t, translateStructureName } from '../i18n.js';
+import { t, translateStructureName, translateVariety } from '../i18n.js';
 import { workTypeName, pricingForStructureOnDate } from '../utils/field.js';
+import { formatMoney } from '../utils/format.js';
 
 export default function WorkerReport({ api, worker, approvedDate = null, onDone, onAskDateChange }) {
   const [structures, setStructures] = useState([]);
@@ -22,6 +23,8 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  // הסכום שחושב ב-Airtable לדיווח האחרון: null = עדיין מחשב, number = הגיע, 'pending' = לא הגיע בזמן
+  const [computedSum, setComputedSum] = useState(null);
 
   useEffect(() => {
     Promise.all([
@@ -45,7 +48,7 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
   const { options: relevantPricing, noActivePlan } = pricingForStructureOnDate(pricing, plans, structure, date);
   const pricingOptions = relevantPricing.map((p) => ({
     id: p.id,
-    label: [workTypeName(p) || p['סוג עבודה'], p['זן']].filter(Boolean).join(' · ') || p.id,
+    label: [workTypeName(p) || p['סוג עבודה'], translateVariety(p['זן'])].filter(Boolean).join(' · ') || p.id,
     unit: p['יחידת תמחור'],
   })).filter((p) => p.label !== p.id);
 
@@ -59,7 +62,7 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
 
   const submit = async (e) => {
     e.preventDefault();
-    setSaving(true); setError(''); setSuccess(false);
+    setSaving(true); setError(''); setSuccess(false); setComputedSum(null);
     // המבנה הוא שדה חובה; סוג העבודה נבחר עבור תצוגה/תווית — אינו נכתב ל-Airtable
     if (!structure) {
       setError(t('w_requiredFields'));
@@ -90,11 +93,27 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
       }
       setSuccess(true);
       setAmount(''); setNotes(''); setStartTime(''); setEndTime(''); setWorkType('');
-      setTimeout(() => setSuccess(false), 4000);
+      // האוטומציה ב-Airtable כותבת את "סכום לתשלום" כמה שניות אחרי השמירה —
+      // ממתינים לה (קריאת רשומה בודדת, לא מהמטמון) ומציגים לעובד את הסכום.
+      if (created?.id) waitForComputedSum(created.id);
+      else setComputedSum('pending');
     } catch (err) {
       setError(err.message || t('w_saveError'));
     }
     setSaving(false);
+  };
+
+  // עד ~20 שניות של ניסיונות (כל 2 שניות) — האוטומציה בדרך כלל מסיימת תוך 2-5 שניות
+  const waitForComputedSum = async (id) => {
+    for (let i = 0; i < 10; i += 1) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const rec = await api.get('עבודות עובדים', '/' + id);
+        const sum = Number(rec?.['סכום לתשלום']);
+        if (rec && rec['סכום לתשלום'] != null && !Number.isNaN(sum)) { setComputedSum(sum); return; }
+      } catch { /* ננסה שוב */ }
+    }
+    setComputedSum('pending');
   };
 
   return (
@@ -102,7 +121,14 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
       <div className="page-header"><h2>{t('w_report')}</h2></div>
 
       {success && (
-        <div className="badge badge-ok" style={{ width: '100%', marginBottom: 14 }}>✓ {t('w_reportSaved')}</div>
+        <div className="badge badge-ok" style={{ width: '100%', marginBottom: 14, display: 'block' }}>
+          <div>✓ {t('w_reportSaved')}</div>
+          <div style={{ marginTop: 6, fontSize: 15 }}>
+            {computedSum === null && <span><span className="spinner" /> {t('w_computingSum')}</span>}
+            {computedSum === 'pending' && <span>{t('w_sumPending')}</span>}
+            {typeof computedSum === 'number' && <span>💰 {t('w_computedSum')}: <b>{formatMoney(computedSum)}</b></span>}
+          </div>
+        </div>
       )}
       {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 14 }}>⚠️ {error}</div>}
 

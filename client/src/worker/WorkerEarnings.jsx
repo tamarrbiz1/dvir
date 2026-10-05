@@ -3,7 +3,8 @@ import { workHours } from '../utils/field.js';
 // ============================================================
 // "הרווחים שלי" — פילטר טווח + גרף + טבלה
 // ============================================================
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { useAutoRefresh } from '../utils/live.js';
 import { formatMoney, formatNumber } from '../utils/format.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
@@ -24,12 +25,11 @@ export default function WorkerEarnings({ api, worker }) {
   const [dTo, setDTo] = useState('');
   const [granularity, setGranularity] = useState('day'); // day | week | month
 
-  useEffect(() => {
-    api.get('עבודות עובדים', '?maxRecords=2000')
-      .then((d) => setRecords(Array.isArray(d) ? d : []))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  const load = useCallback(() => api.get('עבודות עובדים', '?maxRecords=2000')
+    .then((d) => setRecords(Array.isArray(d) ? d : []))
+    .catch(() => {}), [api]);
+  useEffect(() => { load().finally(() => setLoading(false)); }, [load]);
+  useAutoRefresh(load); // הסכום נכתב ע"י אוטומציה ב-Airtable אחרי הדיווח — מתעדכן בלי רענון ידני
 
   const workerId = worker?.id || userRecordId();
   const mine = records.filter((r) => {

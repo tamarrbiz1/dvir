@@ -6,7 +6,7 @@
 // כמות דינמית לפי יחידת התמחור, פעולת "רענן מחיר" (עדכון מחיר
 // false → true → המתנה לאוטומציה → קריאה מחדש), יצירה/עריכה/מחיקה.
 // ============================================================
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { t, monthShort, workerStatusDisplay, workerTypeDisplay, translateStructureName, translateVariety } from '../i18n.js';
 import { sortStructures } from '../utils/structures.js';
@@ -16,6 +16,7 @@ import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import PageHeader from '../components/PageHeader.jsx';
+import HebrewNote from '../components/HebrewNote.jsx';
 import { toast } from '../utils/ui.js';
 import { exportCsv, fileStamp, inDateRange } from '../utils/table.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell } from 'recharts';
@@ -266,6 +267,12 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
   const totalPaid = filtered.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0);
   const totalHours = filtered.reduce((s, r) => s + workHours(r), 0);
   const hasFilters = search || fWorker || from || to;
+  // לאיזו תקופה מתייחסים כרטיסי הסיכום — לפי פילטר התאריכים (כמו בלוח הבקרה)
+  const periodLabel = from && to ? `${formatDate(from)} – ${formatDate(to)}`
+    : from ? `מ-${formatDate(from)}`
+      : to ? `עד ${formatDate(to)}`
+        : 'כל התקופה';
+  const periodSub = fWorker ? `${periodLabel} · עובד נבחר` : periodLabel;
 
   // "רענן מחיר" (סעיף 15): עדכון מחיר=false → true → המתנה לאוטומציה → קריאה מחדש.
   // אין חישוב מחיר ב-Zite — הערך המעודכן נקרא מ-Airtable בלבד.
@@ -303,9 +310,9 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
     <div>
       {/* KPI קטן על המסונן */}
       <div className="kpi-grid" style={{ marginBottom: 16 }}>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--workers-soft)' }}>📋</div><span className="kpi-label">{t('m_jobs')}</span></div><div className="kpi-value" style={{ color: 'var(--workers)' }}>{formatNumber(filtered.length)}</div><div style={{ height: 12 }} /></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--hours-soft)' }}>⏱️</div><span className="kpi-label">{t('w_hours')}</span></div><div className="kpi-value" style={{ color: 'var(--hours)' }}>{formatNumber(Math.round(totalHours * 10) / 10)}</div><div style={{ height: 12 }} /></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">{t('m_pay')}</span></div><div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(totalPaid)}</div><div style={{ height: 12 }} /></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--workers-soft)' }}>📋</div><span className="kpi-label">{t('m_jobs')}</span></div><div className="kpi-value" style={{ color: 'var(--workers)' }}>{formatNumber(filtered.length)}</div><div className="kpi-sub">{periodSub}</div></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--hours-soft)' }}>⏱️</div><span className="kpi-label">{t('w_hours')}</span></div><div className="kpi-value" style={{ color: 'var(--hours)' }}>{formatNumber(Math.round(totalHours * 10) / 10)}</div><div className="kpi-sub">{periodSub}</div></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">{t('m_pay')}</span></div><div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(totalPaid)}</div><div className="kpi-sub">{periodSub}</div></div>
       </div>
 
       <div className="filter-bar no-print">
@@ -337,7 +344,8 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
               </thead>
               <tbody>
                 {filtered.slice(0, limit).map((r) => (
-                  <tr key={r.id}>
+                  <Fragment key={r.id}>
+                  <tr>
                     <td>{formatDate(r['תאריך'])}</td>
                     <td>{workerName(r) ? <span className="obj-chip static">👤 {workerName(r)}</span> : t('c_notAvailable')}</td>
                     <td>{structName(r) ? <span className="obj-chip static">🏗️ {structName(r)}</span> : '—'}</td>
@@ -366,6 +374,14 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
                       </td>
                     )}
                   </tr>
+                  {r['הערות'] && (
+                    <tr className="note-row">
+                      <td colSpan={canEdit ? 10 : 9} style={{ paddingTop: 0, background: 'var(--bg-secondary)', fontSize: 12 }}>
+                        <HebrewNote text={r['הערות']} />
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
