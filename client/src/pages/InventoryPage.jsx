@@ -201,6 +201,9 @@ export default function InventoryPage() {
               const min = Number(item['מלאי מינימום']) || 0;
               const st = itemStatus(item);
               const denom = Math.max(cur, min * 2, 1);
+              // אחוז מילוי חסום ל-0..100: מלאי שלילי או ערך לא-סופי לא ישברו את הפס
+              const ratio = (cur / denom) * 100;
+              const pct = Number.isFinite(ratio) ? Math.min(100, Math.max(0, Math.round(ratio))) : 0;
               return (
                 <div key={item.id} className="card clickable" {...activatable(() => setDrawer(item), `פתיחת פריט ${item['קטגוריה'] || ''}`)}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
@@ -218,7 +221,7 @@ export default function InventoryPage() {
                     )}
                   </div>
                   <div className="progress" style={{ marginBottom: 12 }} aria-hidden="true">
-                    <span style={{ width: `${Math.min(100, Math.round((cur / denom) * 100))}%`, background: st.color }} />
+                    <span style={{ width: `${pct}%`, background: st.color }} />
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <button className="btn btn-sm btn-success" onClick={(e) => { e.stopPropagation(); setEditItem({ item, mode: 'add' }); }}>+ הוספת מלאי</button>

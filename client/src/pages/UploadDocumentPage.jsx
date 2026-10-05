@@ -48,6 +48,8 @@ const TARGETS = {
 
 const POLL_MS = 6000;            // תדירות בדיקה של הרשומה שנוצרה
 const POLL_MAX_MS = 4 * 60 * 1000; // מפסיקים לבדוק אחרי 4 דקות
+const HISTORY_POLL_MS = 15000;              // רענון שקט של ההיסטוריה כל עוד יש "ממתין לעיבוד"
+const HISTORY_POLL_MAX_MS = 10 * 60 * 1000; // ...עד 10 דקות מהכניסה למסך / מההעלאה האחרונה
 
 /** האם ה-Automation כבר מילאה לפחות שדה ניתוח אחד */
 function isAnalyzed(rec, target) {
@@ -121,13 +123,15 @@ export default function UploadDocumentPage() {
   const [createdRec, setCreatedRec] = useState(null);
   const [tracking, setTracking] = useState('idle'); // idle | polling | analyzed | timeout
   const fileRef = useRef(null);
+  const historyPollFrom = useRef(Date.now()); // נקודת ההתחלה של חלון הרענון העצמי
 
   const week = useMemo(() => weekOf(weekStart), [weekStart]);
   const needsWeek = topic === 'income' || topic === 'delivery';
   const topicMeta = TOPICS.find((t) => t.key === topic);
 
-  const loadHistory = () => {
-    setHistLoading(true);
+  // silent — רענון ברקע בלי להחליף את הטבלה בשלד (כדי שלא יהבהב כל 15 שניות)
+  const loadHistory = (opts = {}) => {
+    if (opts.silent !== true) setHistLoading(true);
     Promise.all(Object.entries(TARGETS).map(([key, t]) =>
       app.api.get(t.table, '?maxRecords=60&raw=1').then((d) => (Array.isArray(d) ? d : [])
         .filter((r) => Array.isArray(r[t.field]) && r[t.field].length)
@@ -146,7 +150,19 @@ export default function UploadDocumentPage() {
       setHistLoading(false);
     });
   };
-  useEffect(loadHistory, []);
+  useEffect(() => { loadHistory(); }, []);
+
+  // ההיסטוריה מתרעננת מעצמה כל עוד יש בה מסמך "ממתין לעיבוד" — גם אם ההעלאה
+  // נעשתה בביקור קודם במסך (המעקב שלמעלה חי רק בביקור שבו הועלה הקובץ).
+  const pendingCount = history.filter((h) => !h.analyzed).length;
+  useEffect(() => {
+    if (!pendingCount) return undefined;
+    const timer = setInterval(() => {
+      if (Date.now() - historyPollFrom.current > HISTORY_POLL_MAX_MS) { clearInterval(timer); return; }
+      loadHistory({ silent: true });
+    }, HISTORY_POLL_MS);
+    return () => clearInterval(timer);
+  }, [pendingCount]);
 
   // ---------- מעקב אחרי הרשומה שנוצרה (סעיף "לאחר ההעלאה" באיפיון) ----------
   // קוראים מחדש את הרשומה עצמה (לא את כל הטבלה) עד שה-Automation ממלאת נתונים,
@@ -222,6 +238,7 @@ export default function UploadDocumentPage() {
       setCreatedRec(data.record);
       setCreated({ key: topic, table: target.table, id: recId, name: file.name, at: Date.now() });
       setFile(null);
+      historyPollFrom.current = Date.now();
       loadHistory();
     } catch (e) {
       setStatus('error');
