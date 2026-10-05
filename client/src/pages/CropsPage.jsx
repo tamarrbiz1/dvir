@@ -369,6 +369,7 @@ function PricesTab({ prices, crops, api, canEdit, onChanged }) {
             { name: 'מחיר משוער לקג', label: 'מחיר משוער לק"ג (₪)', type: 'number' },
             { name: 'מתאריך', label: 'מתאריך', type: 'date' },
             { name: 'עד תאריך', label: 'עד תאריך', type: 'date' },
+            { name: 'ברירת מחדל שנתית', label: 'ברירת מחדל שנתית', type: 'checkbox', hint: 'המחיר לשבועות בשנה זו שאין להם מחיר לפי טווח תאריכים' },
           ]}
           onClose={() => setForm(null)}
           onSaved={async () => { setForm(null); await onChanged(); toast('המחיר נשמר בהצלחה'); }}
@@ -450,7 +451,7 @@ function CropLinkedForm({ api, table, crops, record, title, fields, onClose, onS
     fields.forEach((f) => {
       let cur = record?.[f.name];
       if (f.type === 'date' && cur) cur = String(cur).slice(0, 10);
-      v[f.name] = cur ?? '';
+      v[f.name] = f.type === 'checkbox' ? !!cur : (cur ?? '');
     });
     return v;
   });
@@ -477,6 +478,7 @@ function CropLinkedForm({ api, table, crops, record, title, fields, onClose, onS
     const body = { 'גידול': [cropId] };
     fields.forEach((f) => {
       const v = values[f.name];
+      if (f.type === 'checkbox') { body[f.name] = !!v; return; } // תיבת סימון: תמיד true/false מפורש
       if (v === '' || v == null) { if (record?.id) body[f.name] = null; return; }
       body[f.name] = f.type === 'number' ? Number(v) : v;
     });
@@ -509,6 +511,11 @@ function CropLinkedForm({ api, table, crops, record, title, fields, onClose, onS
                   <option value="">בחר...</option>
                   {(options[f.name] || (values[f.name] ? [values[f.name]] : [])).map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
+              ) : f.type === 'checkbox' ? (
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minHeight: 40 }}>
+                  <input type="checkbox" checked={!!values[f.name]} onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.checked }))} />
+                  <span>{f.hint || 'כן'}</span>
+                </label>
               ) : (
                 <input className="input" style={{ width: '100%' }} type={f.type === 'number' ? 'number' : f.type}
                   step={f.type === 'number' ? 'any' : undefined}

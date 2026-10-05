@@ -874,7 +874,6 @@ export default function PlantingPlanPage() {
       <div className="tabs" style={{ marginBottom: 18 }}>
         {[
           { key: 'sheet', label: 'גיליון שבועי' },
-          { key: 'daily', label: 'לוח שנה יומי' },
           { key: 'dash', label: 'דשבורד' },
           { key: 'month', label: 'חודש' },
           { key: 'week', label: 'שבוע' },
@@ -980,21 +979,8 @@ export default function PlantingPlanPage() {
         </div>
       )}
 
-      {/* ================= לוח שנה יומי (ב) ================= */}
-      {screen === 'daily' && (
-        weeks.length === 0 ? (
-          <div className="card empty-state">אין נתוני תחזית לשנה או לפילטרים שנבחרו.</div>
-        ) : (
-          <ExecWeekView
-            weeks={weeks} execWeek={execWeek} execWeekIdx={execWeekIdx}
-            mode={execMode} onMode={setExecMode}
-            onStep={stepExecWeek} onPick={setExecWeekKey}
-            weekTotals={weekTotals} dayRowsForWeek={dayRowsForWeek}
-            nonWorkByKey={nonWorkByKey}
-            onOpenPlan={openPlanCard} onOpenWeek={() => setWeekDrawer(execWeek)}
-          />
-        )
-      )}
+      {/* "לוח שנה יומי" הוסר מהניווט לבקשת הלקוחה (5.10.2026) — הרכיב ExecWeekView
+          נשאר בקובץ כדי שאפשר יהיה להחזירו בשורה אחת אם יידרש. */}
 
       {/* ================= דשבורד ================= */}
       {screen === 'dash' && (
