@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { formatMoney, formatNumber, formatDate, yearProgressLabel } from '../utils/format.js';
+import { PERIOD_PRESETS as PRESETS, periodRange } from '../utils/period.js';
 import { useAutoRefresh } from '../utils/live.js';
 import { expenseCategory , workHours } from '../utils/field.js';
 import {
@@ -27,40 +28,7 @@ import {
   CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps,
 } from '../utils/chart.js';
 
-const PRESETS = [
-  { key: 'today', label: 'היום' },
-  { key: 'week', label: 'השבוע' },
-  { key: 'month', label: 'החודש' },
-  { key: 'prevMonth', label: 'חודש קודם' },
-  { key: 'year', label: 'השנה' },
-  { key: 'all', label: 'הכל' },
-  { key: 'custom', label: 'טווח מותאם' },
-];
-
-// תחום תאריכים [start, end] לפי הבחירה; null = ללא סינון
-function periodRange(preset, from, to) {
-  const now = new Date();
-  const day0 = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const end0 = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59);
-  if (preset === 'today') return [day0(now), end0(now)];
-  if (preset === 'week') {
-    // שבוע עסקי: שבת עד חמישי (לפי האיפיון)
-    const s = day0(now);
-    const back = (s.getDay() + 1) % 7; // שבת=6 → 0 ימים אחורה
-    s.setDate(s.getDate() - back);
-    const e = new Date(s); e.setDate(s.getDate() + 5); e.setHours(23, 59, 59);
-    return [s, e];
-  }
-  if (preset === 'month') return [new Date(now.getFullYear(), now.getMonth(), 1), end0(new Date(now.getFullYear(), now.getMonth() + 1, 0))];
-  if (preset === 'prevMonth') return [new Date(now.getFullYear(), now.getMonth() - 1, 1), end0(new Date(now.getFullYear(), now.getMonth(), 0))];
-  if (preset === 'year') return [new Date(now.getFullYear(), 0, 1), end0(new Date(now.getFullYear(), 11, 31))];
-  if (preset === 'custom') {
-    const s = from ? new Date(`${from}T00:00:00`) : null;
-    const e = to ? new Date(`${to}T23:59:59`) : null;
-    return (s || e) ? [s || new Date(2000, 0, 1), e || new Date(2100, 0, 1)] : null;
-  }
-  return null;
-}
+// הגדרות התקופה (PRESETS, periodRange) — ב-utils/period.js, משותף עם טאב "עבודות"
 
 const parseAny = (v) => {
   if (v === null || v === undefined || v === '') return null;

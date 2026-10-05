@@ -17,8 +17,9 @@ import { displayName, firstId } from '../utils/resolve.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import HebrewNote from '../components/HebrewNote.jsx';
+import { PERIOD_PRESETS, periodRange, inPeriod, periodDisclosure } from '../utils/period.js';
 import { toast } from '../utils/ui.js';
-import { exportCsv, fileStamp, inDateRange } from '../utils/table.js';
+import { exportCsv, fileStamp } from '../utils/table.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
@@ -235,6 +236,8 @@ const WORKER_FORM_FIELDS = [
 function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew }) {
   const [search, setSearch] = useState('');
   const [fWorker, setFWorker] = useState('');
+  // תקופה — אותו בורר כמו בלוח הבקרה (היום/השבוע/החודש/חודש קודם/השנה/הכל/טווח מותאם)
+  const [preset, setPreset] = useState('month');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [limit, setLimit] = useState(30);
@@ -253,26 +256,26 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
   const workType = (r) => workTypeName(r);
   const unit = (r) => r['יחידת תמחור (from תמחור עבודות)'];
 
+  const range = periodRange(preset, from, to);
   const filtered = useMemo(() => works.filter((r) => {
     if (fWorker && String(firstId(r['עובד']) || '') !== fWorker) return false;
-    if (!inDateRange(r['תאריך'], from, to)) return false;
+    if (!inPeriod(r['תאריך'], range)) return false;
     if (search) {
       const hay = [workerName(r), structName(r), workType(r), r['זן (from תמחור עבודות)'], r['הערות']]
         .filter(Boolean).join(' ').toLowerCase();
       if (!hay.includes(search.toLowerCase())) return false;
     }
     return true;
-  }).sort((a, b) => String(b['תאריך'] || '').localeCompare(String(a['תאריך'] || ''))), [works, search, fWorker, from, to]);
+  }).sort((a, b) => String(b['תאריך'] || '').localeCompare(String(a['תאריך'] || ''))), [works, search, fWorker, preset, from, to]);
 
   const totalPaid = filtered.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0);
   const totalHours = filtered.reduce((s, r) => s + workHours(r), 0);
-  const hasFilters = search || fWorker || from || to;
-  // לאיזו תקופה מתייחסים כרטיסי הסיכום — לפי פילטר התאריכים (כמו בלוח הבקרה)
-  const periodLabel = from && to ? `${formatDate(from)} – ${formatDate(to)}`
-    : from ? `מ-${formatDate(from)}`
-      : to ? `עד ${formatDate(to)}`
-        : 'כל התקופה';
-  const periodSub = fWorker ? `${periodLabel} · עובד נבחר` : periodLabel;
+  const hasFilters = search || fWorker || preset !== 'month' || from || to;
+  // ציון התקופה בכרטיסי הסיכום — בדיוק כמו בלוח הבקרה ("השנה" כולל כמה מהשנה נאסף בפועל)
+  const periodText = preset === 'custom' && (from || to)
+    ? [from ? `מ-${formatDate(from)}` : '', to ? `עד ${formatDate(to)}` : ''].filter(Boolean).join(' ')
+    : periodDisclosure(preset);
+  const periodSub = fWorker ? `${periodText} · עובד נבחר` : periodText;
 
   // "רענן מחיר" (סעיף 15): עדכון מחיר=false → true → המתנה לאוטומציה → קריאה מחדש.
   // אין חישוב מחיר ב-Zite — הערך המעודכן נקרא מ-Airtable בלבד.
@@ -321,9 +324,16 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
           <option value="">{t('m_allWorkers')}</option>
           {workers.map((w) => <option key={w.id} value={w.id}>{`${w['שם פרטי'] || ''} ${w['שם משפחה'] || ''}`.trim() || w.id}</option>)}
         </select>
-        <label className="date-field">{t('c_from')}<input type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
-        <label className="date-field">{t('c_to')}<input type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} /></label>
-        {hasFilters && <button className="btn btn-ghost" onClick={() => { setSearch(''); setFWorker(''); setFrom(''); setTo(''); }}>{t('c_clearFilters')}</button>}
+        <select className="select" aria-label="בחירת תקופה" value={preset} onChange={(e) => setPreset(e.target.value)}>
+          {PERIOD_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+        </select>
+        {preset === 'custom' && (
+          <>
+            <label className="date-field">{t('c_from')}<input type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
+            <label className="date-field">{t('c_to')}<input type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} /></label>
+          </>
+        )}
+        {hasFilters && <button className="btn btn-ghost" onClick={() => { setSearch(''); setFWorker(''); setPreset('month'); setFrom(''); setTo(''); }}>{t('c_clearFilters')}</button>}
         <span style={{ marginInlineStart: 'auto', display: 'flex', gap: 8 }}>
           <button type="button" className="btn btn-ghost" onClick={() => window.print()}>🖨️ {t('c_print')}</button>
           <button type="button" className="btn btn-ghost" onClick={doExport} disabled={!filtered.length}>⬇️ {t('c_export')}</button>
