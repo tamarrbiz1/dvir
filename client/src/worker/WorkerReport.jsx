@@ -27,7 +27,7 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
     Promise.all([
       api.get('מבנים', '?maxRecords=200'),
       api.get('תמחור עבודות', '?maxRecords=800&raw=1'),
-      api.get('תוכניות שתילה', '?maxRecords=500&raw=1'),
+      api.get('תוכניות שתילה', '?maxRecords=500&raw=1').catch(() => []), // כשל כאן לא מפיל את הטופס — רק מבטל את הסינון
     ])
       .then(([s, p, pl]) => {
         setStructures(Array.isArray(s) ? s : []);
