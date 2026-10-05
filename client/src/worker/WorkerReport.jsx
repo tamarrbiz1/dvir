@@ -3,11 +3,12 @@
 // ============================================================
 import { useEffect, useState } from 'react';
 import { t, translateStructureName } from '../i18n.js';
-import { workTypeName, pricingForStructure } from '../utils/field.js';
+import { workTypeName, pricingForStructureOnDate } from '../utils/field.js';
 
 export default function WorkerReport({ api, worker, approvedDate = null, onDone, onAskDateChange }) {
   const [structures, setStructures] = useState([]);
   const [pricing, setPricing] = useState([]);
+  const [plans, setPlans] = useState([]);
   // כלל סופי באיפיון: תאריך העבודה הוא תמיד היום ואינו ניתן לעריכה —
   // אלא אם המנהל אישר בקשה שמאפשרת הזנה לתאריך אחר.
   const [date, setDate] = useState(approvedDate || today());
@@ -26,30 +27,32 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
     Promise.all([
       api.get('מבנים', '?maxRecords=200'),
       api.get('תמחור עבודות', '?maxRecords=800&raw=1'),
+      api.get('תוכניות שתילה', '?maxRecords=500&raw=1'),
     ])
-      .then(([s, p]) => {
+      .then(([s, p, pl]) => {
         setStructures(Array.isArray(s) ? s : []);
         setPricing(Array.isArray(p) ? p : []);
+        setPlans(Array.isArray(pl) ? pl : []);
       })
       .catch(() => {});
   }, []);
 
   // סוג העבודה נבחר מרשומות "תמחור עבודות" — הקישור נכתב ל-Airtable
   // כדי ש"סכום לתשלום" יחושב לפי המחיר (בלי להציג את המחיר לעובד).
-  // מסוננות לפי הגידול של המבנה הנבחר (סעיף 2026-10-05.1) — אם אין
-  // למבנה גידול כרגע, מוצגות כל האפשרויות עם רמז למשתמש.
-  const selectedStructure = structures.find((s) => s.id === structure);
-  const { options: relevantPricing, noCrop } = pricingForStructure(pricing, selectedStructure);
+  // מסוננות לפי הגידול של תוכנית השתילה הפעילה במבנה בתאריך הדיווח
+  // (סעיף 2026-10-05.1, תיקון מתמר) — אין תוכנית פעילה → כל האפשרויות
+  // עם רמז למשתמש.
+  const { options: relevantPricing, noActivePlan } = pricingForStructureOnDate(pricing, plans, structure, date);
   const pricingOptions = relevantPricing.map((p) => ({
     id: p.id,
     label: [workTypeName(p) || p['סוג עבודה'], p['זן']].filter(Boolean).join(' · ') || p.id,
     unit: p['יחידת תמחור'],
   })).filter((p) => p.label !== p.id);
 
-  // איפוס סוג העבודה כשהוא כבר לא ברשימה המסוננת (למשל אחרי החלפת מבנה)
+  // איפוס סוג העבודה כשהוא כבר לא ברשימה המסוננת (למשל אחרי החלפת מבנה/תאריך)
   useEffect(() => {
     if (workType && !pricingOptions.some((p) => p.id === workType)) setWorkType('');
-  }, [structure, pricing]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [structure, date, pricing, plans]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectedPricing = pricingOptions.find((p) => p.id === workType);
   const amountLabel = dynamicUnitLabel(selectedPricing?.unit);
@@ -125,7 +128,7 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
               <option key={s.id} value={s.id}>{translateStructureName(s['מספר מבנה'] || s['סוג מבנה'] || s.id)}</option>
             ))}
           </select>
-          {structure && noCrop && (
+          {structure && noActivePlan && (
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>ℹ️ {t('w_noCropHint')}</div>
           )}
         </div>

@@ -11,7 +11,7 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import { t, monthShort, workerStatusDisplay, workerTypeDisplay, translateStructureName, translateVariety } from '../i18n.js';
 import { sortStructures } from '../utils/structures.js';
 import { useApp } from '../App.jsx';
-import { workHours , workTypeName, pricingForStructure } from '../utils/field.js';
+import { workHours , workTypeName, pricingForStructureOnDate } from '../utils/field.js';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
@@ -406,6 +406,7 @@ function WorkForm({ api, workers, record, onClose, onSaved }) {
   };
   const [structures, setStructures] = useState([]);
   const [pricing, setPricing] = useState([]);
+  const [plans, setPlans] = useState([]);
   const [date, setDate] = useState(record?.['תאריך'] ? String(record['תאריך']).slice(0, 10) : todayStr());
   const [worker, setWorker] = useState(firstId(record?.['עובד']) || '');
   const [structure, setStructure] = useState(firstId(record?.['מבנה']) || '');
@@ -422,20 +423,22 @@ function WorkForm({ api, workers, record, onClose, onSaved }) {
     Promise.all([
       api.get('מבנים', '?maxRecords=200'),
       api.get('תמחור עבודות', '?maxRecords=800&raw=1'),
-    ]).then(([s, p]) => {
+      api.get('תוכניות שתילה', '?maxRecords=500&raw=1'),
+    ]).then(([s, p, pl]) => {
       setStructures(Array.isArray(s) ? s : []);
       setPricing(Array.isArray(p) ? p : []);
+      setPlans(Array.isArray(pl) ? pl : []);
     }).catch(() => {});
   }, [api]);
 
-  // תמחור מסונן לפי הגידול של המבנה הנבחר (סעיף 2026-10-05.1) — אותו
-  // כלל כמו בדיווח העצמי של העובד (WorkerReport.jsx).
-  const selectedStructure = structures.find((s) => s.id === structure);
-  const { options: relevantPricing, noCrop } = pricingForStructure(pricing, selectedStructure);
+  // תמחור מסונן לפי הגידול של תוכנית השתילה הפעילה במבנה בתאריך
+  // הרשומה (סעיף 2026-10-05.1, תיקון מתמר) — אותו כלל כמו בדיווח
+  // העצמי של העובד (WorkerReport.jsx).
+  const { options: relevantPricing, noActivePlan } = pricingForStructureOnDate(pricing, plans, structure, date);
 
   useEffect(() => {
     if (priceId && !relevantPricing.some((p) => p.id === priceId)) setPriceId('');
-  }, [structure, pricing]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [structure, date, pricing, plans]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selected = pricing.find((p) => p.id === priceId);
   const amtLabel = unitLabel(selected?.['יחידת תמחור']);
@@ -498,8 +501,8 @@ function WorkForm({ api, workers, record, onClose, onSaved }) {
                 <option value="">בחר מבנה...</option>
                 {sortStructures(structures).map((s) => <option key={s.id} value={s.id}>{s['מספר מבנה'] || s['סוג מבנה'] || s.id}</option>)}
               </select>
-              {structure && noCrop && (
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>ℹ️ למבנה זה אין תוכנית שתילה — מוצגות כל העבודות</div>
+              {structure && noActivePlan && (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>ℹ️ אין תוכנית שתילה פעילה למבנה זה בתאריך — מוצגות כל העבודות</div>
               )}</div>
             <div className="form-group"><label>סוג עבודה (תמחור)</label>
               <select className="select" style={{ width: '100%' }} value={priceId} onChange={(e) => setPriceId(e.target.value)}>

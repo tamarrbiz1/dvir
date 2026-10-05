@@ -60,19 +60,35 @@ export function workHours(r) {
 
 // פריטי "תמחור עבודות" רלוונטיים למבנה נתון, לפי הגידול שלו (lookup
 // "סוג גידול (from תוכניות שתילה)" — שמות גידול, לא מזהי רשומה).
-// כלל (משימה 2026-10-05 סעיף 1): יש למבנה גידול/ים → רק זן תואם +
-// זן="שונות" תמיד. אין למבנה גידול (המצב ברוב המבנים כרגע) → הכל,
-// עם noCrop=true כדי שמסך הטופס יציג רמז למשתמש.
-export function pricingForStructure(pricing, structure) {
-  const crops = [...new Set((structure?.['סוג גידול (from תוכניות שתילה)'] || [])
-    .map((c) => String(c || '').trim())
-    .filter(Boolean))];
-  if (!crops.length) return { options: pricing || [], noCrop: true };
+// כלל מדויק (משימה 2026-10-05 סעיף 1, תיקון מתמר 10:50): לא לפי lookup
+// "גידולים"/"סוג גידול" של המבנה (כל הגידולים שהיו אי-פעם) — לפי
+// תוכנית השתילה ה-**פעילה** במבנה **בתאריך שרשום בטופס**. תוכנית
+// נחשבת פעילה אם יש לה "מבנה" כולל המבנה הנבחר, ו-D נופל בתוך
+// [תחילת שתילה מעודכנת..סוף קטיף מעודכן] (נפילה לשדות ה"מקורית/י"
+// כשהמעודכן ריק). יש תוכנית/ות פעילה/ות → רק תמחור ש"זן" שלו תואם
+// אחד מערכי "סוג גידול" שלהן, + זן="שונות" תמיד. אין תוכנית פעילה
+// בתאריך הזה → הכל, עם noActivePlan=true לרמז למשתמש.
+const linkedIds = (v) => (Array.isArray(v) ? v.map((x) => (x && typeof x === 'object' ? x.id : x)) : []);
+export function pricingForStructureOnDate(pricing, plans, structureId, dateStr) {
+  const target = dateStr ? new Date(dateStr) : null;
+  const activePlans = structureId && target && !Number.isNaN(target.getTime())
+    ? (plans || []).filter((p) => {
+      if (!linkedIds(p?.['מבנה']).includes(structureId)) return false;
+      const start = p['תחילת שתילה מעודכנת'] || p['תחילת שתילה מקורית'];
+      const end = p['סוף קטיף מעודכן'] || p['סוף קטיף מקורי'];
+      if (!start || !end) return false;
+      const s = new Date(start), e = new Date(end);
+      return !Number.isNaN(s.getTime()) && !Number.isNaN(e.getTime()) && target >= s && target <= e;
+    })
+    : [];
+  const crops = [...new Set(activePlans.flatMap((p) =>
+    (p['סוג גידול'] || []).map((c) => String(c || '').trim()).filter(Boolean)))];
+  if (!crops.length) return { options: pricing || [], noActivePlan: true };
   const options = (pricing || []).filter((p) => {
     const zan = String(p?.['זן'] || '').trim();
     return crops.includes(zan) || zan === 'שונות';
   });
-  return { options, noCrop: false };
+  return { options, noActivePlan: false };
 }
 
 // סוג העבודה לתצוגה — בתאילנדית משתמשים בתרגום הקיים ב-Airtable
