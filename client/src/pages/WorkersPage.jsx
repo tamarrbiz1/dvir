@@ -11,7 +11,7 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import { t, monthShort, workerStatusDisplay, workerTypeDisplay, translateStructureName, translateVariety } from '../i18n.js';
 import { sortStructures } from '../utils/structures.js';
 import { useApp } from '../App.jsx';
-import { workHours , workTypeName } from '../utils/field.js';
+import { workHours , workTypeName, pricingForStructure } from '../utils/field.js';
 import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
@@ -428,6 +428,15 @@ function WorkForm({ api, workers, record, onClose, onSaved }) {
     }).catch(() => {});
   }, [api]);
 
+  // תמחור מסונן לפי הגידול של המבנה הנבחר (סעיף 2026-10-05.1) — אותו
+  // כלל כמו בדיווח העצמי של העובד (WorkerReport.jsx).
+  const selectedStructure = structures.find((s) => s.id === structure);
+  const { options: relevantPricing, noCrop } = pricingForStructure(pricing, selectedStructure);
+
+  useEffect(() => {
+    if (priceId && !relevantPricing.some((p) => p.id === priceId)) setPriceId('');
+  }, [structure, pricing]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const selected = pricing.find((p) => p.id === priceId);
   const amtLabel = unitLabel(selected?.['יחידת תמחור']);
 
@@ -488,11 +497,14 @@ function WorkForm({ api, workers, record, onClose, onSaved }) {
               <select className="select" style={{ width: '100%' }} value={structure} onChange={(e) => setStructure(e.target.value)}>
                 <option value="">בחר מבנה...</option>
                 {sortStructures(structures).map((s) => <option key={s.id} value={s.id}>{s['מספר מבנה'] || s['סוג מבנה'] || s.id}</option>)}
-              </select></div>
+              </select>
+              {structure && noCrop && (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>ℹ️ למבנה זה אין תוכנית שתילה — מוצגות כל העבודות</div>
+              )}</div>
             <div className="form-group"><label>סוג עבודה (תמחור)</label>
               <select className="select" style={{ width: '100%' }} value={priceId} onChange={(e) => setPriceId(e.target.value)}>
                 <option value="">בחר תמחור...</option>
-                {pricing.map((p) => <option key={p.id} value={p.id}>{priceLabel(p)}</option>)}
+                {relevantPricing.map((p) => <option key={p.id} value={p.id}>{priceLabel(p)}</option>)}
               </select></div>
             <div className="form-group"><label>{amtLabel}</label>
               <input type="number" step="any" min="0" className="input" style={{ width: '100%' }} value={amount} onChange={(e) => setAmount(e.target.value)} /></div>

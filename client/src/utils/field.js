@@ -58,6 +58,23 @@ export function workHours(r) {
   return Number.isFinite(h) ? h : 0;
 }
 
+// פריטי "תמחור עבודות" רלוונטיים למבנה נתון, לפי הגידול שלו (lookup
+// "סוג גידול (from תוכניות שתילה)" — שמות גידול, לא מזהי רשומה).
+// כלל (משימה 2026-10-05 סעיף 1): יש למבנה גידול/ים → רק זן תואם +
+// זן="שונות" תמיד. אין למבנה גידול (המצב ברוב המבנים כרגע) → הכל,
+// עם noCrop=true כדי שמסך הטופס יציג רמז למשתמש.
+export function pricingForStructure(pricing, structure) {
+  const crops = [...new Set((structure?.['סוג גידול (from תוכניות שתילה)'] || [])
+    .map((c) => String(c || '').trim())
+    .filter(Boolean))];
+  if (!crops.length) return { options: pricing || [], noCrop: true };
+  const options = (pricing || []).filter((p) => {
+    const zan = String(p?.['זן'] || '').trim();
+    return crops.includes(zan) || zan === 'שונות';
+  });
+  return { options, noCrop: false };
+}
+
 // סוג העבודה לתצוגה — בתאילנדית משתמשים בתרגום הקיים ב-Airtable
 // ("סוג עבודה - תאילנדית"), לא בתרגום חדש (כלל האיפיון)
 const firstOf = (v) => (Array.isArray(v) ? v[0] : v);
