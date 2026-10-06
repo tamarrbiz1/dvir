@@ -346,7 +346,7 @@ function PricesTab({ prices, crops, api, canEdit, onChanged }) {
       </div>
       {chart.length > 0 && (
         <div className="card" style={{ marginTop: 16 }}>
-          <div className="section-title" style={{ marginTop: 0 }}>מחיר משוער לאורך זמן</div>
+          <div className="section-title" style={{ marginTop: 0 }}>מחיר משוער לאורך זמן · {crop || 'כל הגידולים'} · {year || 'כל השנים'}</div>
           <div style={{ direction: 'ltr' }}>
             <ResponsiveContainer width="100%" height={220}>
               <LineChart data={chart} margin={CHART_MARGIN_ROTATED}>
@@ -606,7 +606,10 @@ function ForecastTab({ rows, api, canEdit, onChanged }) {
       </div>
       {chart.length > 0 && (
         <div className="card" style={{ marginTop: 16 }}>
-          <div className="section-title" style={{ marginTop: 0 }}>ק"ג צפוי מול בפועל</div>
+          <div className="section-title" style={{ marginTop: 0 }}>
+            ק"ג צפוי מול בפועל · {fCrop || 'כל הגידולים'} · {fStructure || 'כל המבנים'}
+            {filtered.length > 30 && <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 12 }}> · מוצגות 30 השורות הראשונות מתוך {formatNumber(filtered.length)}</span>}
+          </div>
           <div style={{ direction: 'ltr' }}>
             <ResponsiveContainer width="100%" height={240}>
               <BarChart data={chart} margin={CHART_MARGIN_ROTATED}>

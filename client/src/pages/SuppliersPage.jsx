@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
-import { formatMoney, formatDate, formatNumber } from '../utils/format.js';
+import { formatMoney, formatDate, formatNumber, kpiValueClass } from '../utils/format.js';
 import { pick, num } from '../utils/field.js';
 import PageHeader from '../components/PageHeader.jsx';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
@@ -248,7 +248,8 @@ function ExpensesTab({ list }) {
     <div>
       <div className="kpi-card" style={{ marginBottom: 14, padding: '14px 14px 0' }}>
         <div className="kpi-top"><span className="kpi-label">סה"כ הוצאות</span></div>
-        <div className="kpi-value" style={{ color: 'var(--expense)' }}>{formatMoney(total)}</div>
+        <div className={kpiValueClass(formatMoney(total))} style={{ color: 'var(--expense)' }}>{formatMoney(total)}</div>
+        <div className="kpi-sub">כל התקופה</div>
       </div>
       <div className="table-wrap">
         <table className="data-table">
@@ -275,7 +276,8 @@ function ChecksList({ list, onAllChecks }) {
     <div>
       <div className="kpi-card" style={{ marginBottom: 14, padding: '14px 14px 0' }}>
         <div className="kpi-top"><span className="kpi-label">סה"כ צ'קים ({list.length})</span></div>
-        <div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(total)}</div>
+        <div className={kpiValueClass(formatMoney(total))} style={{ color: 'var(--revenue)' }}>{formatMoney(total)}</div>
+        <div className="kpi-sub">כל התקופה</div>
       </div>
       <div className="table-wrap">
         <table className="data-table">

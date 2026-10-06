@@ -90,3 +90,10 @@ export function paginate(rows, page, pageSize) {
   const start = (current - 1) * pageSize;
   return { rows: rows.slice(start, start + pageSize), total, pages, current, start, end: Math.min(start + pageSize, total) };
 }
+
+// תקציר שורות לעימוד — "מציג X–Y מתוך Z" רק כשיש יותר מעמוד אחד;
+// כשהכול נכנס בעמוד אחד — "N רשומות" פשוט, בלי טווח מבלבל
+export function pagerSummary(paged, formatNumber) {
+  if (paged.pages <= 1) return `${formatNumber(paged.total)} ${paged.total === 1 ? 'רשומה' : 'רשומות'}`;
+  return `מציג ${formatNumber(paged.start + 1)}–${formatNumber(paged.end)} מתוך ${formatNumber(paged.total)}`;
+}

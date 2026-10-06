@@ -16,7 +16,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
-import { formatNumber, formatDate, formatWeight, formatPercent } from '../utils/format.js';
+import { formatNumber, formatDate, formatWeight, formatPercent, kpiValueClass } from '../utils/format.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 import {
@@ -160,7 +160,7 @@ function NotePanel({ note, push, canEdit, onEdit, onDelete }) {
         {kpis.map((k) => (
           <div key={k.l} className="kpi-card" style={{ padding: '14px 14px 0' }}>
             <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>{k.l}</span></div>
-            <div className="kpi-value" style={{ fontSize: 17, color: k.c }}>{k.v}</div>
+            <div className={kpiValueClass(k.v)} style={{ fontSize: 17, color: k.c }}>{k.v}</div>
           </div>
         ))}
       </div>
@@ -361,14 +361,14 @@ function NotesMiniTable({ list, push, empty = 'אין תעודות משלוח' }
   );
 }
 
-function Totals({ list }) {
+function Totals({ list, sub }) {
   const cartons = list.reduce((s, n) => s + (noteCartons(n) ?? 0), 0);
   const weight = list.reduce((s, n) => s + (noteWeight(n) ?? 0), 0);
   return (
     <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(3,1fr)' }}>
-      <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>תעודות</span></div><div className="kpi-value" style={{ fontSize: 17 }}>{list.length}</div></div>
-      <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>קרטונים</span></div><div className="kpi-value" style={{ fontSize: 17, color: 'var(--cartons)' }}>{list.length ? formatNumber(cartons) : 'אין נתונים'}</div></div>
-      <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>משקל</span></div><div className="kpi-value" style={{ fontSize: 17, color: 'var(--weight)' }}>{list.length ? formatWeight(weight) : 'אין נתונים'}</div></div>
+      <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>תעודות</span></div><div className={kpiValueClass(list.length)} style={{ fontSize: 17 }}>{formatNumber(list.length)}</div>{sub && <div className="kpi-sub">{sub}</div>}</div>
+      <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>קרטונים</span></div><div className={kpiValueClass(list.length ? formatNumber(cartons) : 'אין נתונים')} style={{ fontSize: 17, color: 'var(--cartons)' }}>{list.length ? formatNumber(cartons) : 'אין נתונים'}</div>{sub && <div className="kpi-sub">{sub}</div>}</div>
+      <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>משקל</span></div><div className={kpiValueClass(list.length ? formatWeight(weight) : 'אין נתונים')} style={{ fontSize: 17, color: 'var(--weight)' }}>{list.length ? formatWeight(weight) : 'אין נתונים'}</div>{sub && <div className="kpi-sub">{sub}</div>}</div>
     </div>
   );
 }
@@ -420,8 +420,8 @@ function MarketerPanel({ entry, notes, api, push }) {
         </div>
       </div>
       <div className="card" style={{ marginTop: 14 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>תעודות משלוח</div>
-        <Totals list={list} />
+        <div className="section-title" style={{ marginTop: 0 }}>תעודות משלוח · כל התקופה</div>
+        <Totals list={list} sub="כל התקופה" />
         <div style={{ marginTop: 12 }}><NotesMiniTable list={list} push={push} empty="אין תעודות משלוח למשווק זה" /></div>
       </div>
     </div>
@@ -455,8 +455,8 @@ function StructurePanel({ entry, notes, api, push }) {
         </div>
       </div>
       <div className="card" style={{ marginTop: 14 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>תעודות משלוח של המבנה</div>
-        <Totals list={list} />
+        <div className="section-title" style={{ marginTop: 0 }}>תעודות משלוח של המבנה · כל התקופה</div>
+        <Totals list={list} sub="כל התקופה" />
         <div style={{ marginTop: 12 }}><NotesMiniTable list={list} push={push} empty="אין תעודות משלוח משויכות למבנה זה" /></div>
       </div>
     </div>

@@ -7,7 +7,7 @@ import { useAutoRefresh } from '../utils/live.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { exportCsv, fileStamp } from '../utils/table.js';
 import { formatMoney } from '../utils/format.js';
-import { formatDate, formatNumber } from '../utils/format.js';
+import { formatDate, formatNumber, kpiValueClass } from '../utils/format.js';
 import { pick } from '../utils/field.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import PageHeader from '../components/PageHeader.jsx';
@@ -414,14 +414,15 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       {tab === 'calendar' && <>
       <div className="kpi-grid" style={{ marginBottom: 16 }}>
         {[
-          { l: 'מספר טיפולים', v: kpi.total, c: 'var(--spray)', i: '🧴' },
+          { l: 'מספר טיפולים', v: kpi.total, c: 'var(--spray)', i: '🧴', sub: 'כל התקופה' },
           { l: 'טיפולים השבוע', v: kpi.week, c: 'var(--irrigation)', i: '🗓️' },
           { l: 'טיפולים היום', v: kpi.today, c: TODAY_BORDER, i: '⭐' },
-          { l: 'טיפולים שהושלמו', v: kpi.done, c: 'var(--ok)', i: '✅' },
+          { l: 'טיפולים שהושלמו', v: kpi.done, c: 'var(--ok)', i: '✅', sub: 'כל התקופה' },
         ].map((k) => (
           <div key={k.label || k.l} className="kpi-card">
             <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--spray-soft)' }}>{k.i}</div><span className="kpi-label">{k.l}</span></div>
-            <div className="kpi-value" style={{ color: k.c }}>{formatNumber(k.v, 0)}</div>
+            <div className={kpiValueClass(formatNumber(k.v, 0))} style={{ color: k.c }}>{formatNumber(k.v, 0)}</div>
+            {k.sub && <div className="kpi-sub">{k.sub}</div>}
           </div>
         ))}
       </div>

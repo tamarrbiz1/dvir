@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { useAutoRefresh } from '../utils/live.js';
 import DeliveryNoteDrawer from '../components/DeliveryNoteDrawer.jsx';
-import { formatNumber, formatMoney, formatDate } from '../utils/format.js';
+import { formatNumber, formatMoney, formatDate, kpiMoney, kpiValueClass } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
 import { BarChart, Bar, Line, LineChart, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps, yCategoryProps } from '../utils/chart.js';
@@ -121,6 +121,14 @@ export default function WeeklySummaryPage() {
   const totalExpenses = expenses.reduce((s, e) => s + num(e['סכום כולל-AI']), 0);
   const missingDocs = shown.filter((w) => String(w[F.docStatus] || '').includes('חסר')).length;
 
+  // כיתוב התקופה המסוננת — כמו בלוח הבקרה: כל מספר תלוי-זמן מציין את
+  // הטווח שהוא מחושב ממנו. כאן הסינון הוא לפי שנה/חודש/שבוע (ולא
+  // today/month/year הגנרי) כי הטבלה עצמה היא שבועית — זה המדויק יותר.
+  const periodCaption = fWeek
+    ? `שבוע ${fWeek.slice(6, 8)}/${fWeek.slice(4, 6)} – ${fWeek.slice(15, 17)}/${fWeek.slice(13, 15)}`
+    : [fYear && `שנת ${fYear}`, fMonth && `חודש ${Number(fMonth)}`].filter(Boolean).join(' · ') || 'כל התקופה';
+  const periodSub = `${periodCaption} · ${shown.length} ${shown.length === 1 ? 'שבוע' : 'שבועות'}`;
+
   // חלוקת הוצאות לשבועות לפי טווח תאריכים
   function getWeekForDate(dateStr) {
     if (!dateStr) return null;
@@ -188,25 +196,25 @@ export default function WeeklySummaryPage() {
 
           {/* ------ KPI Cards ------ */}
           <div className="kpi-grid">
-            <Kpi icon="💰" bg="var(--revenue-soft)" color="var(--revenue)" label='סה"כ פדיון נטו' value={formatMoney(totalNeto)} />
-            <Kpi icon="🧾" bg="var(--expense-soft)" color="var(--expense)" label='סה"כ הוצאות' value={formatMoney(totalExpenses)} />
-            <Kpi icon="📈" bg="var(--profit-soft)" color="var(--profit)" label="רווח" value={formatMoney(totalNeto - totalExpenses)} />
-            <Kpi icon="🧺" bg="var(--harvest-soft)" color="var(--harvest)" label='סה"כ משקל' value={`${formatNumber(totalWeight)} ק"ג`} />
-            <Kpi icon="📂" bg="var(--warning-soft)" color={missingDocs ? 'var(--warning)' : 'var(--ok)'} label="שבועות עם מסמכים חסרים" value={formatNumber(missingDocs)} sub={`מתוך ${weeks.length} שבועות`} />
+            <Kpi icon="💰" bg="var(--revenue-soft)" color="var(--revenue)" label='סה"כ פדיון נטו' value={kpiMoney(totalNeto)} sub={periodSub} />
+            <Kpi icon="🧾" bg="var(--expense-soft)" color="var(--expense)" label='סה"כ הוצאות' value={kpiMoney(totalExpenses)} sub={periodSub} />
+            <Kpi icon="📈" bg="var(--profit-soft)" color="var(--profit)" label="רווח" value={kpiMoney(totalNeto - totalExpenses)} sub={periodSub} />
+            <Kpi icon="🧺" bg="var(--harvest-soft)" color="var(--harvest)" label='סה"כ משקל' value={`${formatNumber(totalWeight)} ק"ג`} sub={periodSub} />
+            <Kpi icon="📂" bg="var(--warning-soft)" color={missingDocs ? 'var(--warning)' : 'var(--ok)'} label="שבועות עם מסמכים חסרים" value={formatNumber(missingDocs)} sub={`מתוך ${formatNumber(shown.length)} שבועות מוצגים · ${periodCaption}`} />
           </div>
 
           {/* ------ Bar Charts ------ */}
           {chartData.length > 0 && (
             <div className="grid-2" style={{ marginTop: 20 }}>
-              <MiniBar title="הכנסות לפי שבוע" data={chartData} dataKey="פדיון" color="#08A878" money />
-              <MiniBar title="הוצאות לפי שבוע" data={chartData} dataKey="הוצאות" color="#F04444" money />
-              <MiniBar title="משקל לפי שבוע" data={chartData} dataKey="משקל" color="#6366F1" unit='ק"ג' />
+              <MiniBar title={`הכנסות לפי שבוע · ${periodCaption}`} data={chartData} dataKey="פדיון" color="#08A878" money />
+              <MiniBar title={`הוצאות לפי שבוע · ${periodCaption}`} data={chartData} dataKey="הוצאות" color="#F04444" money />
+              <MiniBar title={`משקל לפי שבוע · ${periodCaption}`} data={chartData} dataKey="משקל" color="#6366F1" unit='ק"ג' />
             </div>
           )}
 
           {/* ------ רשימת שבועות ------ */}
           <div className="card" style={{ marginTop: 20 }}>
-            <div className="section-title" style={{ marginTop: 0 }}>רשימת שבועות</div>
+            <div className="section-title" style={{ marginTop: 0 }}>רשימת שבועות · {periodCaption}</div>
             {shown.length === 0 ? <div className="empty-state">אין נתונים לתקופה זו</div> : (
               <div className="table-wrap">
                 <table className="data-table">
@@ -382,7 +390,7 @@ function OverviewTab({ week, p }) {
         {kpis.map((k) => (
           <div key={k.l} className="kpi-card" style={{ padding: '14px 14px 0' }}>
             <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>{k.l}</span></div>
-            <div className="kpi-value" style={{ fontSize: 17, color: k.c }}>{k.v}</div>
+            <div className={kpiValueClass(k.v)} style={{ color: k.c }}>{k.v}</div>
           </div>
         ))}
       </div>
@@ -903,13 +911,13 @@ function Kpi({ icon, bg, color, label, value, sub }) {
   return (
     <div className="kpi-card">
       <div className="kpi-top"><div className="kpi-icon" style={{ background: bg }}>{icon}</div><span className="kpi-label">{label}</span></div>
-      <div className="kpi-value" style={{ color }}>{value}</div>
+      <div className={kpiValueClass(value)} style={{ color }}>{value}</div>
       {sub && <div className="kpi-sub">{sub}</div>}
     </div>
   );
 }
 function MiniKpi({ l, v, c }) {
-  return <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>{l}</span></div><div className="kpi-value" style={{ fontSize: 18, color: c }}>{v}</div></div>;
+  return <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>{l}</span></div><div className={kpiValueClass(v)} style={{ color: c }}>{v}</div></div>;
 }
 function MiniBar({ title, data, dataKey, color, money, unit }) {
   const fmt = money ? (v) => formatMoney(v) : (v) => `${formatNumber(v)}${unit ? ` ${unit}` : ''}`;

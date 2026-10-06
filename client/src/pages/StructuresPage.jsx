@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { useAutoRefresh } from '../utils/live.js';
-import { formatNumber, formatMoney, formatDate, safeValue } from '../utils/format.js';
+import { formatNumber, formatMoney, formatDate, safeValue, kpiValueClass } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
 import { sortStructures } from '../utils/structures.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
@@ -467,13 +467,13 @@ function TabYield({ harvests }) {
   return (
     <div>
       <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(2,1fr)' }}>
-        <div className="kpi-card"><div className="kpi-top"><span className="kpi-label">ק"ג בפועל</span></div><div className="kpi-value">{formatNumber(harvests.reduce((s, h) => s + (Number(h['כמות ק"ג']) || 0), 0))}</div></div>
-        <div className="kpi-card"><div className="kpi-top"><span className="kpi-label">קרטונים</span></div><div className="kpi-value">{formatNumber(harvests.reduce((s, h) => s + (Number(h['מספר קרטונים']) || 0), 0))}</div></div>
+        <div className="kpi-card"><div className="kpi-top"><span className="kpi-label">ק"ג בפועל</span></div><div className={kpiValueClass(formatNumber(harvests.reduce((s, h) => s + (Number(h['כמות ק"ג']) || 0), 0)))}>{formatNumber(harvests.reduce((s, h) => s + (Number(h['כמות ק"ג']) || 0), 0))}</div><div className="kpi-sub">כל התקופה</div></div>
+        <div className="kpi-card"><div className="kpi-top"><span className="kpi-label">קרטונים</span></div><div className={kpiValueClass(formatNumber(harvests.reduce((s, h) => s + (Number(h['מספר קרטונים']) || 0), 0)))}>{formatNumber(harvests.reduce((s, h) => s + (Number(h['מספר קרטונים']) || 0), 0))}</div><div className="kpi-sub">כל התקופה</div></div>
       </div>
 
       {pieData.length > 0 && (
         <div className="card" style={{ marginTop: 16 }}>
-          <div className="section-title" style={{ marginTop: 0 }}>התפלגות קטיף לפי סוג</div>
+          <div className="section-title" style={{ marginTop: 0 }}>התפלגות קטיף לפי סוג · כל התקופה</div>
           <div style={{ direction: 'ltr', display: 'flex', justifyContent: 'center' }}>
             <ResponsiveContainer width="100%" height={200}>
               <PieChart>
@@ -491,7 +491,7 @@ function TabYield({ harvests }) {
 
       {data.length ? (
         <div className="card" style={{ marginTop: 16 }}>
-          <div className="section-title" style={{ marginTop: 0 }}>גרף ק"ג לאורך זמן</div>
+          <div className="section-title" style={{ marginTop: 0 }}>גרף ק"ג לאורך זמן · כל התקופה</div>
           <div style={{ direction: 'ltr' }}>
             <ResponsiveContainer width="100%" height={200}>
               <BarChart data={data} margin={CHART_MARGIN_ROTATED}>
@@ -536,13 +536,13 @@ function TabFinance({ works, weeksJson, structName }) {
       <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(2,1fr)' }}>
         <div className="kpi-card">
           <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">הכנסה נטו של המבנה</span></div>
-          <div className="kpi-value" style={{ color: 'var(--revenue)' }}>{net ? formatMoney(net) : 'אין נתונים'}</div>
-          <div className="kpi-sub">{weeks ? `מ-${weeks} שבועות` : ''}</div>
+          <div className={kpiValueClass(net ? formatMoney(net) : 'אין נתונים')} style={{ color: 'var(--revenue)' }}>{net ? formatMoney(net) : 'אין נתונים'}</div>
+          <div className="kpi-sub">{weeks ? `כל התקופה · מ-${weeks} שבועות` : 'כל התקופה'}</div>
         </div>
         <div className="kpi-card">
           <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--workers-soft)' }}>👷</div><span className="kpi-label">עלות עבודה במבנה</span></div>
-          <div className="kpi-value" style={{ color: 'var(--workers)' }}>{formatMoney(labor)}</div>
-          <div className="kpi-sub">{works.length} עבודות</div>
+          <div className={kpiValueClass(formatMoney(labor))} style={{ color: 'var(--workers)' }}>{formatMoney(labor)}</div>
+          <div className="kpi-sub">כל התקופה · {works.length} עבודות</div>
         </div>
       </div>
       {net > 0 && (
@@ -574,9 +574,9 @@ function TabDocuments({ structure, notes, allNotes, api }) {
         ) : (
           <>
             <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(3,1fr)' }}>
-              <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>תעודות</span></div><div className="kpi-value" style={{ fontSize: 17 }}>{notes.length}</div></div>
-              <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>קרטונים</span></div><div className="kpi-value" style={{ fontSize: 17, color: 'var(--cartons)' }}>{formatNumber(cartons)}</div></div>
-              <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>משקל</span></div><div className="kpi-value" style={{ fontSize: 17, color: 'var(--weight)' }}>{formatNumber(weight)} ק"ג</div></div>
+              <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>תעודות</span></div><div className={kpiValueClass(notes.length)}>{formatNumber(notes.length)}</div><div className="kpi-sub">כל התקופה</div></div>
+              <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>קרטונים</span></div><div className={kpiValueClass(formatNumber(cartons))} style={{ color: 'var(--cartons)' }}>{formatNumber(cartons)}</div><div className="kpi-sub">כל התקופה</div></div>
+              <div className="kpi-card" style={{ padding: '14px 14px 0' }}><div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>משקל</span></div><div className={kpiValueClass(`${formatNumber(weight)} ק"ג`)} style={{ color: 'var(--weight)' }}>{formatNumber(weight)} ק"ג</div><div className="kpi-sub">כל התקופה</div></div>
             </div>
             <div className="table-wrap" style={{ marginTop: 12 }}>
               <table className="data-table compact">

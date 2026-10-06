@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { authFetch } from '../utils/authFetch.js';
-import { formatNumber, formatDate } from '../utils/format.js';
+import { formatNumber, formatDate, kpiValueClass } from '../utils/format.js';
 import { displayName } from '../utils/resolve.js';
 import PageHeader from '../components/PageHeader.jsx';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
@@ -245,7 +245,7 @@ export default function InventoryPage() {
           {/* גרף מלאי לפי קטגוריה */}
           {chartData.length > 0 && (
             <div className="card" style={{ marginTop: 20 }}>
-              <div className="section-title" style={{ marginTop: 0 }}>מלאי לפי קטגוריה</div>
+              <div className="section-title" style={{ marginTop: 0 }}>מלאי לפי קטגוריה · כרגע</div>
               <div style={{ direction: 'ltr' }}>
                 <ResponsiveContainer width="100%" height={260}>
                   <BarChart data={chartData} margin={CHART_MARGIN_ROTATED}>
@@ -305,8 +305,8 @@ function Kpi({ icon, soft, color, label, value, active, onClick }) {
       {...(onClick ? { role: 'button', tabIndex: 0, onClick, onKeyDown: (e) => { if (e.key === 'Enter') onClick(); } } : {})}
       style={active && onClick ? { outline: `2px solid ${color.startsWith('var') ? color : color}`, outlineOffset: -2 } : undefined}>
       <div className="kpi-top"><div className="kpi-icon" style={{ background: soft }}>{icon}</div><span className="kpi-label">{label}</span></div>
-      <div className="kpi-value" style={{ color }}>{formatNumber(value)}</div>
-      <div style={{ height: 12 }} />
+      <div className={kpiValueClass(formatNumber(value))} style={{ color }}>{formatNumber(value)}</div>
+      <div className="kpi-sub">כרגע</div>
     </div>
   );
 }

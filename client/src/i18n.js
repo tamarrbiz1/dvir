@@ -188,6 +188,7 @@ export const translations = {
   m_newJob: { he: '+ עבודה חדשה', th: '+ เพิ่มงาน' },
   m_hoursMonth: { he: 'שעות החודש', th: 'ชั่วโมงเดือนนี้' },
   m_jobs: { he: 'עבודות', th: 'งาน' },
+  m_jobsMonth: { he: 'עבודות החודש', th: 'งานเดือนนี้' },
   m_earnedMonth: { he: 'הרוויח החודש', th: 'รายได้เดือนนี้' },
   m_prevMonth: { he: 'חודש קודם', th: 'เดือนก่อน' },
   m_worker: { he: 'עובד', th: 'พนักงาน' },

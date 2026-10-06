@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { authFetch } from '../utils/authFetch.js';
-import { formatDate } from '../utils/format.js';
+import { formatDate, formatNumber, kpiValueClass } from '../utils/format.js';
 import { holidayInfo, jewishHolidaysOfYear, thaiHolidaysOfYear, kindOf, KIND_STYLE, toISO } from '../utils/holidays.js';
 import { confirmDialog, toast } from '../utils/ui.js';
 import { useAutoRefresh } from '../utils/live.js';
@@ -321,12 +321,12 @@ export default function NonWorkDaysPage() {
         {[['jewish', counts.jewish], ['thai', counts.thai]].map(([k, v]) => (
           <div key={k} className="kpi-card">
             <div className="kpi-top"><div className="kpi-icon" style={{ background: KIND_STYLE[k].bg }}>{k === 'jewish' ? '✡️' : '🇹🇭'}</div><span className="kpi-label">{KIND_STYLE[k].label} — {year}</span></div>
-            <div className="kpi-value" style={{ color: KIND_STYLE[k].border }}>{v}</div>
+            <div className={kpiValueClass(formatNumber(v))} style={{ color: KIND_STYLE[k].border }}>{formatNumber(v)}</div>
           </div>
         ))}
         <div className="kpi-card">
-          <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--bg-secondary)' }}>🗓️</div><span className="kpi-label">סה"כ ימי אי עבודה</span></div>
-          <div className="kpi-value">{visible.length}</div>
+          <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--bg-secondary)' }}>🗓️</div><span className="kpi-label">סה"כ ימי אי עבודה — {year}</span></div>
+          <div className={kpiValueClass(formatNumber(visible.length))}>{formatNumber(visible.length)}</div>
         </div>
       </div>
 

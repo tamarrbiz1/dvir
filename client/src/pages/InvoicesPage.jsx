@@ -23,7 +23,7 @@ import RecordForm from '../components/RecordForm.jsx';
 import InvoiceDrawer, { ObjChip, StatusBadge, CheckBadgeValue } from '../components/InvoiceDrawer.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
-import { exportCsv, fileStamp, paginate, sortRows, dateValue } from '../utils/table.js';
+import { exportCsv, fileStamp, paginate, pagerSummary, sortRows, dateValue } from '../utils/table.js';
 import { periodRange, inPeriod, periodCaption } from '../utils/period.js';
 import PeriodSelect from '../components/PeriodSelect.jsx';
 import {
@@ -395,16 +395,20 @@ export default function InvoicesPage() {
 
             {/* עימוד */}
             <div className="pager no-print">
-              <span className="pager-info">מציג {formatNumber(paged.start + 1)}–{formatNumber(paged.end)} מתוך {formatNumber(paged.total)}</span>
+              <span className="pager-info">{pagerSummary(paged, formatNumber)}</span>
               <div className="pager-controls">
                 <label>שורות בעמוד
                   <select className="select" style={{ minHeight: 34, padding: '4px 8px', minWidth: 70, marginRight: 6 }} value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))} aria-label="שורות בעמוד">
                     {PAGE_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </label>
-                <button type="button" className="btn btn-ghost btn-sm" disabled={paged.current <= 1} onClick={() => setPage(paged.current - 1)} aria-label="עמוד קודם">‹ הקודם</button>
-                <span>עמוד {paged.current} מתוך {paged.pages}</span>
-                <button type="button" className="btn btn-ghost btn-sm" disabled={paged.current >= paged.pages} onClick={() => setPage(paged.current + 1)} aria-label="עמוד הבא">הבא ›</button>
+                {paged.pages > 1 && (
+                  <>
+                    <button type="button" className="btn btn-ghost btn-sm" disabled={paged.current <= 1} onClick={() => setPage(paged.current - 1)} aria-label="עמוד קודם">‹ הקודם</button>
+                    <span>עמוד {paged.current} מתוך {paged.pages}</span>
+                    <button type="button" className="btn btn-ghost btn-sm" disabled={paged.current >= paged.pages} onClick={() => setPage(paged.current + 1)} aria-label="עמוד הבא">הבא ›</button>
+                  </>
+                )}
               </div>
             </div>
           </>
