@@ -779,6 +779,26 @@ await test('הורדת מלאי: קריאת סמן [מלאי-AI] מ"הערות" 
   if (readState('הערה רגילה בלי שום סמן') !== null) throw new Error('ציפייה ל-null כשאין סמן בכלל');
 });
 
+await test('אבטחה: נתיבי /api/expenses/:id/analyze-inventory - owner בלבד', async () => {
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  const results2 = [];
+  if (manager) {
+    const mLogin = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
+    try { await apiAs(mLogin.token, 'POST', 'expenses/recFAKE00000001/analyze-inventory'); results2.push('manager POST עבר - לא תקין!'); }
+    catch (e) { if (!String(e.message).startsWith('403')) results2.push(`manager POST שגיאה לא-צפויה: ${e.message}`); }
+  }
+  if (w) {
+    const wLogin = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    try { await apiAs(wLogin.token, 'GET', 'expenses/recFAKE00000001/analyze-inventory'); results2.push('worker GET עבר - לא תקין!'); }
+    catch (e) { if (!String(e.message).startsWith('403')) results2.push(`worker GET שגיאה לא-צפויה: ${e.message}`); }
+  }
+  try { await apiAs(null, 'POST', 'expenses/recFAKE00000001/analyze-inventory'); results2.push('בלי טוקן עבר - לא תקין!'); }
+  catch (e) { if (!String(e.message).startsWith('401')) results2.push(`בלי טוקן שגיאה לא-צפויה: ${e.message}`); }
+  if (results2.length) throw new Error(results2.join('; '));
+  return 'manager/worker נחסמו (403), בלי טוקן נחסם (401)';
+});
+
 await test('הוצאה אמיתית → ניתוח מלאי מקצה-לקצה (קובץ אמיתי, אידמפוטנטי)', async () => {
   if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
   const rec = await createWithFile('הוצאות', 'חשבונית', { 'הערות': MARK });
