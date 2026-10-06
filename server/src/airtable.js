@@ -70,6 +70,26 @@ export function getBase() {
 }
 
 // ============================================================
+// עטיפת fetch עם ניסיון חוזר ל-429/503 — החבילה הרשמית (base(..).select
+// וכו') עושה את זה לבד עם backoff+jitter, אבל getMeta/uploadAttachment
+// קוראות ל-fetch הגולמי (אין SDK ל-Metadata API / upload endpoint) ולכן
+// לא נהנות מזה. getMeta בפרט נקראת בתדירות גבוהה (כל פספוס במטמון
+// 5-דקות של knownTableNames ב-server.js) — בלי ניסיון חוזר, חריקת-קצב
+// חולפת הייתה הופכת מיד לשגיאה למשתמש במקום שהשרת יספוג אותה בשקט,
+// בדיוק כמו שאר הקריאות דרך ה-SDK.
+async function fetchWithRetry(url, options, maxAttempts = 4) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const res = await fetch(url, options);
+    if ((res.status === 429 || res.status === 503) && attempt < maxAttempts - 1) {
+      const delayMs = Math.min(1000 * 2 ** attempt, 8000) * (0.5 + Math.random() * 0.5); // exponential + jitter
+      await new Promise((r) => setTimeout(r, delayMs));
+      continue;
+    }
+    return res;
+  }
+}
+
+// ============================================================
 // מטא-נתונים: רשימת טבלאות ושדות — דרך ה-API הרשמי
 // (מחזיר רק שמות ומבנה; אינו חושף את הסוד)
 // ============================================================
@@ -77,7 +97,7 @@ export async function getMeta() {
   if (!PAT || !BASE_ID) {
     throw new Error('סודות חסרים — בדוק את קובץ .env');
   }
-  const res = await fetch(`https://api.airtable.com/v0/meta/bases/${BASE_ID}/tables`, {
+  const res = await fetchWithRetry(`https://api.airtable.com/v0/meta/bases/${BASE_ID}/tables`, {
     headers: { Authorization: `Bearer ${PAT}` },
   });
   if (!res.ok) {
@@ -128,7 +148,7 @@ export async function updateRecord(tableName, recordId, fields) {
 // העלאת קובץ לרשומה קיימת — נקודת הקצה הרשמית של Airtable לקבצים.
 // (יצירת רשומה עם content מוטבע אינה נתמכת ונדחית ב-"Invalid attachment object".)
 export async function uploadAttachmentToRecord(recordId, fieldName, { filename, contentType, base64 }) {
-  const res = await fetch(
+  const res = await fetchWithRetry(
     `https://content.airtable.com/v0/${BASE_ID}/${recordId}/${encodeURIComponent(fieldName)}/uploadAttachment`,
     {
       method: 'POST',

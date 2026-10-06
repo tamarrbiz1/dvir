@@ -51,7 +51,7 @@ export default function WorkerRequests({ api, worker, onEnterWork, initialOpen =
     if (busy) return;
     setBusy(true);
     try { await api.update(REQUEST_TABLE, r.id, { [REQUEST_FIELDS.hidden]: true }); await load(); }
-    catch (e) { setError(e.message || 'שגיאה'); }
+    catch (e) { setError(e.message || t('w_saveError')); }
     setBusy(false);
   };
 
@@ -144,7 +144,7 @@ function RequestForm({ api, workerId, onClose, onSaved, initialType = '' }) {
     if (isDateChange) fields[REQUEST_FIELDS.workerNotes] = `${DATE_CHANGE_MARK}${notes ? ` ${notes}` : ''}`;
     else if (notes) fields[REQUEST_FIELDS.workerNotes] = notes;
     try { await api.create(REQUEST_TABLE, fields); await onSaved(); }
-    catch (err) { setError(err.message || 'שגיאה'); }
+    catch (err) { setError(err.message || t('w_saveError')); }
     setSaving(false);
   };
 

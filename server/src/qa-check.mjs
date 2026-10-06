@@ -18,7 +18,7 @@ import { readFile } from 'node:fs/promises';
 // /api/admin-login עצמו בצד השרת. לעולם לא נכתב כאן ערך קבוע/גלוי —
 // הקוד/הדרכון תמיד נקראים חי מהטבלה בזמן ריצה, לא מוטמעים בקובץ.
 import { fetchRecords as directFetchRecords } from './airtable.js';
-import { LOGIN_CODES_TABLE } from './auth.js';
+import { LOGIN_CODES_TABLE, canReadTable, canWriteTable } from './auth.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
@@ -634,6 +634,49 @@ await test('אבטחה: טוקן מנהל עבודה לא יכול לכתוב מ
   if (!created?.id) throw new Error('הכתיבה לחריג המותר (מלאי) נכשלה');
   cleanup.push({ table: 'מלאי בסיסי', id: created.id });
   return 'כתיבה מחוץ לחריגים נחסמה, כתיבה בתוך חריג (מלאי) עברה';
+});
+
+await test('אבטחה: מטריצת הרשאות מלאה לעובד על כל הטבלאות (GET+POST מול auth.js)', async () => {
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  if (!w) return 'דולג — אין עובד עם מייל+דרכון';
+  const wLogin = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+  let mismatches = 0;
+  for (const t of tables) {
+    const table = t.name;
+    const expectRead = canReadTable('worker', table);
+    const expectWrite = canWriteTable('worker', table);
+    let gotBlocked;
+    try { await apiAs(wLogin.token, 'GET', enc(table)); gotBlocked = false; }
+    catch (e) { gotBlocked = String(e.message).startsWith('403'); }
+    if (gotBlocked === expectRead) { mismatches++; console.log(`  ✗ GET ${table}: צפוי ${expectRead ? 'מותר' : 'חסום'}, בפועל ${gotBlocked ? 'חסום' : 'מותר'}`); }
+    try { await apiAs(wLogin.token, 'POST', enc(table), {}); gotBlocked = false; }
+    catch (e) { gotBlocked = String(e.message).startsWith('403'); }
+    // POST עם גוף ריק לטבלה מותרת-כתיבה עשוי להיכשל מסיבות אחרות (500/400) —
+    // זה עדיין "לא נחסם ב-403", בדיוק מה שאנחנו בודקים (גבול ההרשאה, לא הצלחת הכתיבה)
+    if (gotBlocked === expectWrite) { mismatches++; console.log(`  ✗ POST ${table}: צפוי ${expectWrite ? 'מותר (לא 403)' : 'חסום (403)'}, בפועל ${gotBlocked ? 'חסום' : 'מותר'}`); }
+  }
+  if (mismatches) throw new Error(`${mismatches} אי-התאמות מול auth.js`);
+  return `${tables.length * 2} בדיקות (GET+POST לכל טבלה), כולן תואמות ל-auth.js`;
+});
+
+await test('אבטחה: עובד לא יכול PATCH/DELETE רשומת עבודה של עובד אחר', async () => {
+  const w1 = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  const w2 = workers.find((x) => x['מייל'] && x['מספר דרכון'] && x.id !== w1?.id);
+  if (!w1 || !w2) return 'דולג — צריך שני עובדים עם מייל+דרכון';
+  const w1Login = await apiAs(null, 'POST', 'worker-login', { email: w1['מייל'], passport: w1['מספר דרכון'] });
+  // נוצר עם טוקן הבעלים (לא ניתן ליצור עם טוקן עובד בשם עובד אחר — השרת כופה בעלות על POST)
+  const created = await api('POST', enc('עבודות עובדים'), { 'תאריך': '2026-10-06', 'עובד': [w2.id], 'כמות': 1, 'הערות': MARK });
+  if (!created?.id) throw new Error('יצירת רשומת הבדיקה נכשלה');
+  cleanup.push({ table: 'עבודות עובדים', id: created.id });
+  try {
+    await apiAs(w1Login.token, 'PATCH', `${enc('עבודות עובדים')}/${created.id}`, { 'כמות': 999 });
+    throw new Error('עובד הצליח לעדכן רשומה של עובד אחר!');
+  } catch (e) { if (!String(e.message).startsWith('403')) throw e; }
+  try {
+    await apiAs(w1Login.token, 'DELETE', `${enc('עבודות עובדים')}/${created.id}`);
+    throw new Error('עובד הצליח למחוק רשומה של עובד אחר!');
+  } catch (e) { if (!String(e.message).startsWith('403')) throw e; }
+  return 'PATCH ו-DELETE שניהם נחסמו (403) כנדרש';
 });
 
 // ============ 4. ניקוי מלא ============
