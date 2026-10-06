@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { authFetch } from '../utils/authFetch.js';
 import {
@@ -253,6 +253,15 @@ export default function PlantingPlanPage() {
   const [showNonWork, setShowNonWork] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState('');
+
+  // ------------------------------------------------------------
+  // "רענן תחזית" — preflight + מודאל-אזהרה + watchdog (תוספת 2026-10-06,
+  // סעיף E). preflightByPlan: planId -> { loading, data, error } —
+  // נטען lazily רק כשכרטיס התוכנית נפתח, לא לכל התוכניות בגיליון
+  // (Airtable משותף, עד 5 בקשות/שנייה — אין לבדוק מאות תוכניות בבת-אחת).
+  // ------------------------------------------------------------
+  const [preflightByPlan, setPreflightByPlan] = useState({});
+  const [preflightModal, setPreflightModal] = useState(null); // { planId, missing }
 
   // ============================================================
   // טעינת נתונים
@@ -565,6 +574,64 @@ export default function PlantingPlanPage() {
     .update(table, id, { [field]: false })
     .then(() => app.api.update(table, id, { [field]: true }));
 
+  // ------------------------------------------------------------
+  // preflight ל"רענן תחזית" (סעיף E, 2026-10-06) — בדיקה read-only בצד
+  // השרת (GET /api/plans/:id/forecast-preflight) שמחזירה רשימת חוסרים
+  // בעברית (תפוקה רבעונית / מחיר גידול משוער חסרים). משמשת גם לצ'יפ-
+  // הסטטוס על כרטיס התוכנית וגם למודאל-האזהרה לפני הפעלת האוטומציה.
+  // ------------------------------------------------------------
+  const fetchPreflight = useCallback(async (planId) => {
+    setPreflightByPlan((m) => ({ ...m, [planId]: { ...(m[planId] || {}), loading: true, error: '' } }));
+    try {
+      const r = await authFetch(`/api/plans/${planId}/forecast-preflight`);
+      const data = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(data?.error || 'שגיאת שרת');
+      setPreflightByPlan((m) => ({ ...m, [planId]: { loading: false, data, error: '' } }));
+      return data;
+    } catch (e) {
+      const error = e.message || 'לא ניתן היה לבדוק את מוכנות התחזית';
+      setPreflightByPlan((m) => ({ ...m, [planId]: { loading: false, data: null, error } }));
+      return null;
+    }
+  }, []);
+
+  // "בפועל" חי של forecasts לשימוש בתוך ה-watchdog (setTimeout) בלי closure תקוע על ערך ישן
+  const forecastsRef = useRef(forecasts);
+  useEffect(() => { forecastsRef.current = forecasts; }, [forecasts]);
+
+  // watchdog: אם 3 דקות אחרי הפעלת "רענן תחזית" אין שורת-תחזית חדשה
+  // לתוכנית הזו — ייתכן שהאוטומציה "נתקעה בשקט" על נתוני-בסיס חסרים
+  // (בדיוק התקרית שגרמה למשימה הזו). רק התרעה — לא פעולה אוטומטית נוספת.
+  const startRefreshWatchdog = useCallback((planId, beforeCount) => {
+    setTimeout(() => {
+      const afterCount = forecastsRef.current.filter((f) => firstId(f['תוכנית שתילה']) === planId).length;
+      if (afterCount <= beforeCount) {
+        toast('הרענון לא הצליח — ייתכן שחסרים נתונים, בדוק preflight', 'warn');
+      }
+    }, 3 * 60 * 1000);
+  }, []);
+
+  const doRefreshForecast = async (planId) => {
+    const beforeCount = forecasts.filter((f) => firstId(f['תוכנית שתילה']) === planId).length;
+    const ok = await runAction(() => forceTrigger('תוכניות שתילה', planId, 'רענן תחזית'));
+    if (ok) {
+      toast('הרענון הופעל — התחזית תתעדכן בעוד רגע');
+      startRefreshWatchdog(planId, beforeCount);
+      fetchPreflight(planId);
+    }
+  };
+
+  // כפתור "רענן תחזית": בודק preflight קודם; אם יש חוסרים — מודאל-אזהרה
+  // לפני ההפעלה בפועל (המשתמש יכול להמשיך בכל זאת), אחרת מפעיל ישירות.
+  const refreshForecast = async (planId) => {
+    const pf = await fetchPreflight(planId);
+    if (pf && Array.isArray(pf.missing) && pf.missing.length > 0) {
+      setPreflightModal({ planId, missing: pf.missing });
+      return;
+    }
+    await doRefreshForecast(planId);
+  };
+
   // ============================================================
   // כתיבה ל-Airtable (סעיף 44 — Loading, נטרול כפתור, רענון)
   // ============================================================
@@ -809,6 +876,12 @@ export default function PlantingPlanPage() {
     if (plan) { setActionError(''); setPlanDrawer(plan); }
   };
 
+  // צ'יפ-הסטטוס על כרטיס התוכנית נטען lazily ברגע שהכרטיס נפתח — לא לכל
+  // התוכניות בגיליון יחד (ר' הערה למעלה על preflightByPlan)
+  useEffect(() => {
+    if (planDrawer?.id) fetchPreflight(planDrawer.id);
+  }, [planDrawer, fetchPreflight]);
+
   if (loading) {
     return (
       <div>
@@ -1008,6 +1081,8 @@ export default function PlantingPlanPage() {
           forecasts={forecasts.filter((f) => firstId(f['תוכנית שתילה']) === planDrawer.id)}
           periods={periods.filter((p) => firstId(p['תוכנית שתילה']) === planDrawer.id)}
           canWrite={canEdit}
+          preflight={preflightByPlan[planDrawer.id]}
+          onRefreshForecast={() => refreshForecast(planDrawer.id)}
           onDeletePeriod={async (p) => {
             const yes = await confirmDialog({
               title: 'מחיקת תקופה',
@@ -1046,6 +1121,37 @@ export default function PlantingPlanPage() {
             });
           }}
         />
+      )}
+
+      {/* ================= אזהרת חוסרי-נתונים לפני "רענן תחזית" (סעיף E) ================= */}
+      {preflightModal && (
+        <div className="modal-overlay" onClick={() => !busy && setPreflightModal(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>⚠ חוסרי נתונים לפני רענון תחזית</h3>
+            <div style={{ marginBottom: 12, color: 'var(--text-secondary)', fontSize: 13 }}>
+              נמצאו נתוני-בסיס חסרים בגידולים/מחירים — "רענן תחזית" עשוי לא ליצור שורות
+              תחזית חדשות עד שהחוסרים האלה יתוקנו ב-Airtable (ע"י תמר). ניתן להפעיל בכל
+              זאת, אבל סביר שלא תתקבל תוצאה.
+            </div>
+            <ul style={{ margin: '0 0 16px', paddingInlineStart: 20 }}>
+              {preflightModal.missing.map((m, i) => (
+                <li key={i} style={{ marginBottom: 4 }}>{m}</li>
+              ))}
+            </ul>
+            <div className="form-actions">
+              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setPreflightModal(null)}>
+                ביטול
+              </button>
+              <button type="button" className="btn btn-primary" disabled={busy} onClick={async () => {
+                const planId = preflightModal.planId;
+                setPreflightModal(null);
+                await doRefreshForecast(planId);
+              }}>
+                {busy ? 'מפעיל...' : 'הפעל בכל זאת'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ================= פרטי שבוע ================= */}
@@ -1318,7 +1424,26 @@ function CalendarGrid({ days, leadingBlanks, tall, eventsOnDate, nonWorkByKey, o
 // ============================================================
 // כרטיס תוכנית (סעיפים 14–15)
 // ============================================================
-function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate, onDeletePeriod, canWrite = true }) {
+/** צ'יפ-סטטוס קטן על כרטיס התוכנית — תוצאת preflight ל"רענן תחזית" (סעיף E) */
+function ForecastReadinessChip({ preflight }) {
+  if (!preflight || preflight.loading) {
+    return <span className="badge" style={{ background: 'var(--bg-secondary)', fontSize: 11 }}>בודק מוכנות...</span>;
+  }
+  if (preflight.error) {
+    return <span className="badge badge-error" style={{ fontSize: 11 }} title={preflight.error}>⚠ לא ניתן לבדוק</span>;
+  }
+  const missing = preflight.data?.missing || [];
+  if (missing.length === 0) {
+    return <span className="badge" style={{ background: '#E5F7EE', color: '#0F3D22', fontSize: 11 }}>✓ מוכן</span>;
+  }
+  return (
+    <span className="badge badge-warn" style={{ fontSize: 11 }} title={missing.join('\n')}>
+      ⚠ חוסר נתונים ({missing.length})
+    </span>
+  );
+}
+
+function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate, onDeletePeriod, onRefreshForecast, preflight, canWrite = true }) {
   useEscapeClose(onClose, !busy); // סגירה במקש Escape
   const [openWeek, setOpenWeek] = useState(null); // מזהה רשומת תחזית שפתוחה לפירוט יומי
   const pairs = [
@@ -1339,7 +1464,10 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
     <div className="drawer-overlay" onClick={onClose}>
       <div className="drawer struct-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
-          <span>{info.icon} כרטיס תוכנית — תוכנית {info.number ?? 'חדשה'}</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {info.icon} כרטיס תוכנית — תוכנית {info.number ?? 'חדשה'}
+            <ForecastReadinessChip preflight={preflight} />
+          </span>
           <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
         </div>
         <div className="drawer-body">
@@ -1523,6 +1651,9 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
             <button className="btn btn-ghost" disabled={busy} onClick={onShift}>הזז תוכנית</button>
             <button className="btn btn-ghost" disabled={busy} onClick={onPeriod}>שינוי תקופה</button>
             <button className="btn btn-ghost" disabled={busy} onClick={onDuplicate}>שכפול תוכנית</button>
+            <button className="btn btn-ghost" disabled={busy || preflight?.loading} onClick={onRefreshForecast}>
+              🔄 רענן תחזית
+            </button>
           </div>}
         </div>
       </div>

@@ -1136,6 +1136,31 @@ await test('computeSuggestions: ארבע הקבוצות (הוצאות/צ\'קים
   return `${sug.expenses.length} הוצאות, ${sug.checks.length} צ'קים, ${sug.invoices.length} חשבוניות, ${sug.deliveryNotes.length} תעודות`;
 });
 
+// ============================================================
+// חלק C — preflight ל"רענן תחזית" (תוספת 2026-10-06, סעיף E)
+// ------------------------------------------------------------
+// GET בלבד (fetchRecords ב-forecast-preflight.js, שום כתיבה) מול
+// תוכנית אמיתית עם חוסרים ידועים מראש (תוכנית 42, שדוח תמר דיווח
+// שנשארת ריקה) — מאמת שהרשימה שמוחזרת סבירה, לא שמתקנים את החוסר.
+// ============================================================
+await test('forecast-preflight: תוכנית 42 (ידועה כריקה בדוח) מחזירה רשימת חוסרים סבירה', async () => {
+  const plansAll = await directFetchRecords('תוכניות שתילה', {});
+  const plan42 = plansAll.find((p) => Number(p['מספר תוכנית']) === 42);
+  if (!plan42) return 'דולג — תוכנית 42 לא נמצאה (ייתכן שתוקנה/נמחקה מאז)';
+  const result = await api('GET', `plans/${plan42.id}/forecast-preflight`);
+  if (!Array.isArray(result.missing)) throw new Error('"missing" אינו מערך');
+  if (result.ok !== (result.missing.length === 0)) throw new Error('"ok" לא תואם את אורך "missing"');
+  if (!result.missing.every((m) => typeof m === 'string' && m.trim())) throw new Error('יש רשומת-חוסר ריקה/לא-טקסטואלית ברשימה');
+  if (result.missing.length === 0) return 'אין חוסרים — ok=true (ייתכן שתוקן בינתיים ב-Airtable)';
+  return `${result.missing.length} חוסרים, לדוגמה: ${result.missing[0]}`;
+}, READ_WARN_MS);
+
+await test('forecast-preflight: תוכנית שלא קיימת מחזירה ok=false בלי לקרוס (500)', async () => {
+  const result = await api('GET', 'plans/recNONEXISTENT00000000/forecast-preflight');
+  if (result.ok !== false) throw new Error('"ok" צפוי false לתוכנית לא-קיימת');
+  if (!Array.isArray(result.missing) || !result.missing.length) throw new Error('צפויה הודעת-חוסר לתוכנית לא-קיימת');
+}, READ_WARN_MS);
+
 // ⚠️ ניסיתי לכתוב כאן בדיקת-קצה-לקצה חיה (כמו ל-reverseInventoryDeduction
 // למעלה) שמדמה "כמות קרטונים"/"מספר משטחים" ע"י patch ישיר, ואז קוראת
 // ל-analyzeLogisticsInventory על רשומות אמיתיות. היא נכשלה באופן שחשף

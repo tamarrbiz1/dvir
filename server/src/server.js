@@ -18,6 +18,7 @@ import { fixFilenameEncoding } from './filename-utils.js';
 import { sweep as sweepWeeklySync, INVOICES_TABLE, NOTES_TABLE } from './weekly-sync.js';
 import { runAutoLink, SUPPLIERS_TABLE, MARKETERS_TABLE, EXPENSES_TABLE, CHECKS_TABLE, DELIVERY_TABLE } from './supplier-linking.js';
 import { importSprayReport, sprayReportsHistory, scheduleSprayReportImport, startSprayImportSweep, REPORTS_TABLE as SPRAY_REPORTS_TABLE } from './spray-report-import.js';
+import { checkForecastPreflight } from './forecast-preflight.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -428,6 +429,24 @@ app.post('/api/spray-reports/:id/import', authenticate, requireOwner, async (req
     const dryRun = req.query.dryRun === '1';
     const result = await importSprayReport(req.params.id, { dryRun });
     if (!dryRun) onSprayImported();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// preflight ל"רענן תחזית" (תוספת 2026-10-06, סעיף E) — בדיקה read-only
+// בלבד (fetchRecords, בלי שום כתיבה) שבודקת אם לתוכנית-שתילה מסוימת
+// יש את כל נתוני-הבסיס שהאוטומציה "רענן תחזית" ב-Airtable צריכה כדי
+// להצליח (תפוקה רבעונית + מחיר גידול משוער). מוגדר כאן, *לפני* ה-
+// middleware הכללי '/api/:table' למטה — אחרת '/api/plans/...' היה
+// מתפרש כטבלה בשם "plans" שלא קיימת ונכשל ב-404, בדיוק כמו שההערה
+// מעל '/api/upload-document' מסבירה.
+// ============================================================
+app.get('/api/plans/:id/forecast-preflight', authenticate, async (req, res) => {
+  try {
+    const result = await checkForecastPreflight(req.params.id);
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
