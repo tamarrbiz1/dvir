@@ -12,7 +12,7 @@ import {
 } from './auth.js';
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
-import { analyzeExpenseInventory, approvePendingDeduction, readState, reverseInventoryDeduction, createManualExpense } from './inventory-deduction.js';
+import { analyzeExpenseInventory, approvePendingDeduction, readState, reverseInventoryDeduction, createManualExpense, validateManualExpenseInput } from './inventory-deduction.js';
 import { analyzeLogisticsInventory } from './logistics-deduction.js';
 
 const app = express();
@@ -302,18 +302,65 @@ app.post('/api/expenses/:id/analyze-inventory/approve', authenticate, requireOwn
 });
 
 // ============================================================
-// מסמך הוצאה ידני (תוספת 2026-10-06, סעיף E) — owner בלבד, בלי קובץ.
+// מסמך הוצאה ידני (תוספת 2026-10-06, סעיף E; עודכן סעיף J — אפשרות
+// לצרף קובץ באותו חלון, וולידציית-שרת מלאה) — owner בלבד.
 // אותם שדות -AI שהניתוח האוטומטי כותב אליהם, הורדת מלאי מיידית.
+//
+// קובץ (אופציונלי): אם מצורף (multipart/form-data, 'file') — נקודת
+// הקצה הקיימת הורחבה (upload.single('file'), במקום נתיב-העלאה נפרד),
+// כדי שהטופס יישאר פעולה אחת אטומית מבחינת המשתמש. אחרי שהרשומה
+// נוצרה (כולל הורדת המלאי כצעד-לוואי) קוראים ל-uploadAttachmentToRecord
+// בדיוק כמו ב-/api/upload-document. בניגוד לשם — כאן *אין* מחיקה
+// של הרשומה אם העלאת הקובץ נכשלת: ב-upload-document הרשומה ריקה-לגמרי
+// לפני ההעלאה, כך שמחיקה "מנקה" בלי תופעות לוואי; כאן המלאי כבר ירד
+// כחלק מהיצירה — מחיקת הרשומה הייתה משאירה הורדת-מלאי בלי רשומה
+// שמצביעה עליה. במקום זאת מחזירים 207 עם fieldError כדי שהלקוח יודיע
+// למשתמש שההוצאה נשמרה אך הקובץ לא עלה, בלי לאבד את ההורדה שבוצעה.
 // ============================================================
-app.post('/api/expenses/manual', authenticate, requireOwner, async (req, res) => {
+app.post('/api/expenses/manual', authenticate, requireOwner, upload.single('file'), async (req, res) => {
   try {
-    const { supplier, date, total, category, notes, lines } = req.body || {};
-    if (!supplier && !total) return res.status(400).json({ error: 'יש למלא לפחות ספק או סכום' });
+    let { supplier, date, total, category, notes, lines } = req.body || {};
+    if (typeof lines === 'string') {
+      try { lines = JSON.parse(lines); } catch { return res.status(400).json({ error: 'פורמט שורות הפריטים אינו תקין' }); }
+    }
+    // ולידציה עצמאית בשרת — לא מסתמכים על הלקוח (ר' validateManualExpenseInput)
+    try {
+      validateManualExpenseInput({ supplier, date, total, category, lines });
+    } catch (ve) {
+      if (ve.statusCode === 400) return res.status(400).json({ error: ve.message });
+      throw ve;
+    }
+
+    if (req.file) {
+      if (req.file.size > 5 * 1024 * 1024) {
+        return res.status(400).json({ error: 'הקובץ גדול מ-5MB. יש להעלות קובץ קטן יותר (תמונות מוקטנות אוטומטית).' });
+      }
+      if (!isValidDocumentFile(req.file.buffer)) {
+        return res.status(400).json({ error: 'הקובץ אינו תקין. יש להעלות PDF, JPG או PNG תקין.', invalidFile: true });
+      }
+    }
+
     const created = await createManualExpense({ supplier, date, total, category, notes, lines });
+
+    if (req.file) {
+      try {
+        await uploadAttachmentToRecord(created.id, 'חשבונית', {
+          filename: req.file.originalname,
+          contentType: req.file.mimetype,
+          base64: req.file.buffer.toString('base64'),
+        });
+      } catch (uploadErr) {
+        invalidateReads('הוצאות');
+        invalidateReads('מלאי בסיסי');
+        return res.status(207).json({ ...created, fileError: `ההוצאה נשמרה אך העלאת הקובץ נכשלה: ${uploadErr.message}` });
+      }
+    }
+
     invalidateReads('הוצאות');
     invalidateReads('מלאי בסיסי');
     res.status(201).json(created);
   } catch (e) {
+    if (e.statusCode === 400) return res.status(400).json({ error: e.message });
     res.status(500).json({ error: e.message });
   }
 });

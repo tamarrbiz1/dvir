@@ -447,10 +447,36 @@ function InventoryAiSection({ expense, onChanged }) {
   );
 }
 
+// יחידות מידה שכיחות למלאי + "אחר" לטקסט חופשי
+const UNIT_OPTIONS = ['יחידות', 'קרטונים', 'ק"ג', 'ליטר', 'שקיות', 'משטחים', 'אחר'];
+const MANUAL_FILE_MAX_MB = 15;
+
+// תמונות גדולות מוקטנות בצד הלקוח לפני השליחה (בדיוק כמו ב-UploadDocumentPage) —
+// מקצר זמן העלאה ועוזר לעמוד במגבלת 5MB של Airtable; PDF לא משתנה.
+async function shrinkManualExpenseImage(f, maxDim = 2000, quality = 0.85) {
+  if (!f.type.startsWith('image/') || f.size < 1.2 * 1024 * 1024) return f;
+  try {
+    const bmp = await createImageBitmap(f);
+    const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bmp.width * scale));
+    canvas.height = Math.max(1, Math.round(bmp.height * scale));
+    canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
+    if (!blob || blob.size >= f.size) return f;
+    return new File([blob], f.name.replace(/\.(png|jpe?g)$/i, '.jpg'), { type: 'image/jpeg' });
+  } catch { return f; }
+}
+
+const emptyLine = () => ({ description: '', quantity: '', unit: 'יחידות', unitOther: '' });
+
 // ============================================================
-// הוצאה ידנית (תוספת 2026-10-06) — טופס להזנת הוצאה בלי קובץ,
-// שנשמרת בדיוק כמו הוצאה שהועלתה ונותחה אוטומטית (ידני?=true,
-// אותם שדות -AI, אותה הורדת מלאי ואותה לוגיקת ביטול במחיקה).
+// הוצאה ידנית (תוספת 2026-10-06; עודכן סעיף J) — טופס להזנת הוצאה
+// עם או בלי קובץ מצורף, שנשמרת בדיוק כמו הוצאה שהועלתה ונותחה
+// אוטומטית (ידני?=true, אותם שדות -AI, אותה הורדת מלאי ואותה
+// לוגיקת ביטול במחיקה). כל 4 שדות הראש (ספק/תאריך/סכום/קטגוריה)
+// חובה, ושורת פריט שאינה ריקה-לגמרי חייבת למלא את שלושת שדותיה —
+// הוולידציה חוזרת גם בשרת (ר' validateManualExpenseInput), לא רק כאן.
 // ============================================================
 function ManualExpenseModal({ categories, onClose, onSaved }) {
   const [supplier, setSupplier] = useState('');
@@ -458,29 +484,103 @@ function ManualExpenseModal({ categories, onClose, onSaved }) {
   const [total, setTotal] = useState('');
   const [category, setCategory] = useState('');
   const [notes, setNotes] = useState('');
-  const [lines, setLines] = useState([{ description: '', quantity: '', unit: '' }]);
+  const [lines, setLines] = useState([emptyLine()]);
+  const [file, setFile] = useState(null);
+  const [fileError, setFileError] = useState('');
+  const [itemOptions, setItemOptions] = useState([]);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [lineErrs, setLineErrs] = useState({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   useEscapeClose(onClose, !saving);
 
+  // רשימת-בחירה ל"מה נקנה" — קטגוריות המלאי הקיימות בפועל (datalist,
+  // עדיין עם טקסט חופשי). אלו גם הקטגוריות ש-matchLinesToInventory
+  // מתאים אליהן בפועל, כך שבחירה מהרשימה מבטיחה הורדת מלאי תקינה.
+  useEffect(() => {
+    let cancelled = false;
+    authFetch(`/api/select-options/${encodeURIComponent('מלאי בסיסי')}/${encodeURIComponent('קטגוריה')}`)
+      .then((r) => (r.ok ? r.json() : { choices: [] }))
+      .then((d) => { if (!cancelled) setItemOptions(Array.isArray(d.choices) ? d.choices : []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   const setLine = (i, patch) => setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
-  const addLine = () => setLines((ls) => [...ls, { description: '', quantity: '', unit: '' }]);
+  const addLine = () => setLines((ls) => [...ls, emptyLine()]);
   const removeLine = (i) => setLines((ls) => ls.filter((_, idx) => idx !== i));
+
+  const pickFile = async (f) => {
+    if (!f) return;
+    const okType = /\.(pdf|jpe?g|png)$/i.test(f.name) || ['application/pdf', 'image/jpeg', 'image/png'].includes(f.type);
+    if (!okType) { setFileError('סוג קובץ לא נתמך. יש להעלות PDF, JPG או PNG.'); return; }
+    if (f.size > MANUAL_FILE_MAX_MB * 1024 * 1024) { setFileError(`הקובץ גדול מדי (מקסימום ${MANUAL_FILE_MAX_MB}MB).`); return; }
+    const small = await shrinkManualExpenseImage(f);
+    if (small.size > 5 * 1024 * 1024) { setFileError('הקובץ גדול מ-5MB גם לאחר כיווץ — יש להעלות קובץ קטן יותר.'); return; }
+    setFile(small); setFileError('');
+  };
+
+  // בדיקה מקומית לפני שליחה — אותם כללים שהשרת אוכף גם כן (לא תחליף
+  // לבדיקת השרת, רק כדי להציג הודעה ליד השדה בלי סיבוב-שרת מיותר)
+  const validate = () => {
+    const fe = {
+      supplier: !supplier.trim(),
+      date: !date,
+      total: total === '' || total == null || Number.isNaN(Number(total)),
+      category: !category.trim(),
+    };
+    const le = {};
+    lines.forEach((l, i) => {
+      const desc = l.description.trim();
+      const hasQty = l.quantity !== '';
+      const unitVal = l.unit === 'אחר' ? l.unitOther.trim() : l.unit;
+      if (!desc && !hasQty) return; // שורה ריקה-לגמרי — מתעלמים
+      const missing = [];
+      if (!desc) missing.push('מה נקנה');
+      if (!hasQty || Number.isNaN(Number(l.quantity))) missing.push('כמות');
+      if (!unitVal) missing.push('יחידה');
+      if (missing.length) le[i] = `שורה ${i + 1}: חסר/ה ${missing.join(', ')}`;
+    });
+    const ok = !Object.values(fe).some(Boolean) && !Object.keys(le).length;
+    return { fe, le, ok };
+  };
 
   const save = async () => {
     if (saving) return;
-    if (!supplier.trim() && !total.trim()) { setError('יש למלא לפחות ספק או סכום'); return; }
+    const { fe, le, ok } = validate();
+    setFieldErrors(fe); setLineErrs(le);
+    if (!ok) { setError('יש להשלים את השדות המסומנים'); return; }
     setSaving(true); setError('');
     try {
       const cleanLines = lines
-        .filter((l) => l.description.trim())
-        .map((l) => ({ description: l.description.trim(), quantity: l.quantity === '' ? null : Number(l.quantity), unit: l.unit.trim() || null }));
-      const r = await authFetch('/api/expenses/manual', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ supplier: supplier.trim() || null, date: date || null, total: total === '' ? null : Number(total), category: category.trim() || null, notes: notes.trim() || null, lines: cleanLines }),
-      });
+        .filter((l) => l.description.trim() || l.quantity !== '')
+        .map((l) => ({
+          description: l.description.trim(),
+          quantity: l.quantity === '' ? null : Number(l.quantity),
+          unit: (l.unit === 'אחר' ? l.unitOther.trim() : l.unit) || null,
+        }));
+
+      let r;
+      if (file) {
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('supplier', supplier.trim());
+        fd.append('date', date);
+        fd.append('total', total);
+        fd.append('category', category.trim());
+        if (notes.trim()) fd.append('notes', notes.trim());
+        fd.append('lines', JSON.stringify(cleanLines));
+        r = await authFetch('/api/expenses/manual', { method: 'POST', body: fd });
+      } else {
+        r = await authFetch('/api/expenses/manual', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ supplier: supplier.trim(), date, total: Number(total), category: category.trim(), notes: notes.trim() || null, lines: cleanLines }),
+        });
+      }
       const data = await r.json().catch(() => ({}));
+      if (data.invalidFile) { setError(data.error || 'הקובץ אינו תקין.'); setSaving(false); return; }
       if (!r.ok) throw new Error(data.error || 'שגיאה');
+      if (data.fileError) toast(data.fileError, 'error');
       await onSaved();
     } catch (e) {
       setError(`השמירה נכשלה: ${e.message || e}`);
@@ -488,39 +588,99 @@ function ManualExpenseModal({ categories, onClose, onSaved }) {
     }
   };
 
+  const errText = (msg) => <div style={{ color: 'var(--error)', fontSize: 12, marginTop: 4 }}>{msg}</div>;
+
   return (
     <div className="modal-overlay" onClick={() => !saving && onClose()}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 620 }}>
         <h3 style={{ textAlign: 'center' }}>➕ הוצאה ידנית</h3>
         <div className="muted" style={{ textAlign: 'center', marginBottom: 12, fontSize: 13 }}>
-          ללא קובץ מצורף — לשימוש כשאין חשבונית סרוקה. הנתונים נכנסים לכל הדוחות בדיוק כמו הוצאה שהועלתה.
+          ניתן להזין הוצאה עם או בלי קובץ מצורף — הנתונים נכנסים לכל הדוחות בדיוק כמו הוצאה שהועלתה.
         </div>
         {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12 }}>⚠️ {error}</div>}
 
         <div className="form-grid-2" style={{ gap: '0 12px' }}>
-          <label>ספק<input className="input" value={supplier} onChange={(e) => setSupplier(e.target.value)} /></label>
-          <label>תאריך<input type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} /></label>
-          <label>סכום כולל (₪)<input type="number" className="input" value={total} onChange={(e) => setTotal(e.target.value)} /></label>
-          <label>קטגוריה
+          <div className="form-group">
+            <label>ספק<span className="required" /></label>
+            <input className="input" value={supplier} onChange={(e) => setSupplier(e.target.value)} />
+            {fieldErrors.supplier && errText('שדה חובה')}
+          </div>
+          <div className="form-group">
+            <label>תאריך<span className="required" /></label>
+            <input type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} />
+            {fieldErrors.date && errText('שדה חובה')}
+          </div>
+          <div className="form-group">
+            <label>סכום כולל (₪)<span className="required" /></label>
+            <input type="number" className="input" value={total} onChange={(e) => setTotal(e.target.value)} />
+            {fieldErrors.total && errText('שדה חובה')}
+          </div>
+          <div className="form-group">
+            <label>קטגוריה<span className="required" /></label>
             <input className="input" list="manual-expense-categories" value={category} onChange={(e) => setCategory(e.target.value)} />
             <datalist id="manual-expense-categories">{categories.map((c) => <option key={c} value={c} />)}</datalist>
-          </label>
+            {fieldErrors.category && errText('שדה חובה')}
+          </div>
         </div>
         <label style={{ display: 'block', marginTop: 10 }}>הערות<textarea className="input" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
 
-        <div className="section-title" style={{ marginTop: 16 }}>פריטים למלאי (אופציונלי)</div>
-        <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-          כמות ויחידה שהוזנו כאן נחשבות סופיות — יורדות מהמלאי אוטומטית (ללא "דורש אישור"), בכפוף להתאמת קטגוריה קיימת.
+        <div className="section-title" style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 6 }}>
+          פריטים שיורדים מהמלאי (לא חובה)
+          <span className="muted" style={{ fontSize: 13, cursor: 'help' }} title={'כמות ויחידה שהוזנו כאן נחשבות סופיות — יורדות מהמלאי אוטומטית (ללא "דורש אישור"), בכפוף להתאמת קטגוריה קיימת.'}>ⓘ</span>
         </div>
+        <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
+          רשמי מה נקנה במסמך הזה. כל שורה תוריד את הכמות מהמלאי לפי הקטגוריה המתאימה.
+        </div>
+
+        <div style={{ display: 'flex', gap: 6, marginBottom: 2, fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
+          <span style={{ flex: 2 }}>מה נקנה</span>
+          <span style={{ flex: 1 }}>כמות</span>
+          <span style={{ flex: 1 }}>יחידה</span>
+          <span style={{ width: 30 }} />
+        </div>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 8, color: 'var(--text-muted)', fontSize: 13, fontStyle: 'italic' }}>
+          <span style={{ flex: 2 }}>לדוגמה: שקיות ניילון</span>
+          <span style={{ flex: 1 }}>500</span>
+          <span style={{ flex: 1 }}>יחידות</span>
+          <span style={{ width: 30 }} />
+        </div>
+
         {lines.map((l, i) => (
-          <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
-            <input className="input" style={{ flex: 2 }} placeholder="תיאור (למשל: שקיות ניילון)" value={l.description} onChange={(e) => setLine(i, { description: e.target.value })} />
-            <input type="number" className="input" style={{ flex: 1 }} placeholder="כמות" value={l.quantity} onChange={(e) => setLine(i, { quantity: e.target.value })} />
-            <input className="input" style={{ flex: 1 }} placeholder="יחידה" value={l.unit} onChange={(e) => setLine(i, { unit: e.target.value })} />
-            <button type="button" className="btn btn-sm btn-ghost" aria-label="הסרת שורה" onClick={() => removeLine(i)} disabled={lines.length === 1}>✕</button>
+          <div key={i} style={{ marginBottom: 6 }}>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <input className="input" style={{ flex: 2 }} aria-label="מה נקנה" list="manual-expense-items"
+                value={l.description} onChange={(e) => setLine(i, { description: e.target.value })} />
+              <input type="number" className="input" style={{ flex: 1 }} aria-label="כמות"
+                value={l.quantity} onChange={(e) => setLine(i, { quantity: e.target.value })} />
+              <select className="select" style={{ flex: 1 }} aria-label="יחידה"
+                value={l.unit} onChange={(e) => setLine(i, { unit: e.target.value })}>
+                {UNIT_OPTIONS.map((u) => <option key={u} value={u}>{u}</option>)}
+              </select>
+              <button type="button" className="btn btn-sm btn-ghost" aria-label="הסרת שורה" onClick={() => removeLine(i)} disabled={lines.length === 1}>✕</button>
+            </div>
+            {l.unit === 'אחר' && (
+              <input className="input" style={{ marginTop: 6 }} placeholder="יחידה אחרת..." value={l.unitOther} onChange={(e) => setLine(i, { unitOther: e.target.value })} />
+            )}
+            {lineErrs[i] && errText(lineErrs[i])}
           </div>
         ))}
-        <button type="button" className="btn btn-sm btn-ghost" onClick={addLine}>+ שורה</button>
+        <datalist id="manual-expense-items">{itemOptions.map((c) => <option key={c} value={c} />)}</datalist>
+        <button type="button" className="btn btn-sm btn-ghost" onClick={addLine}>+ הוספת פריט נוסף</button>
+
+        <div className="section-title" style={{ marginTop: 16 }}>קובץ המסמך (לא חובה)</div>
+        {!file ? (
+          <label className="btn btn-ghost" style={{ display: 'inline-flex', cursor: 'pointer' }}>
+            📎 בחירת קובץ
+            <input type="file" accept="image/*,.pdf" style={{ display: 'none' }} onChange={(e) => { pickFile(e.target.files?.[0]); e.target.value = ''; }} />
+          </label>
+        ) : (
+          <div className="card" style={{ background: 'var(--bg-main)', display: 'flex', alignItems: 'center', gap: 10, padding: 10 }}>
+            <span style={{ fontSize: 22 }}>📄</span>
+            <span style={{ flex: 1, overflowWrap: 'anywhere', fontSize: 13 }}>{file.name}</span>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setFile(null)}>✕ הסר</button>
+          </div>
+        )}
+        {fileError && errText(fileError)}
 
         <div className="form-actions" style={{ marginTop: 16 }}>
           <button className="btn btn-ghost" disabled={saving} onClick={onClose}>ביטול</button>

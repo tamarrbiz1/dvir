@@ -919,6 +919,92 @@ await test('הורדת מלאי: ביטול הורדה במחיקת הוצאה (
 });
 
 // ============================================================
+// תוספת 2026-10-06 (לילה, סעיף J) — ManualExpenseModal: אפשרות לצרף
+// קובץ באותו חלון + ולידציית-שרת מלאה (לא רק בלקוח, כי הבקשה יכולה
+// לבוא גם ישירות מה-API). שתי בדיקות הוולידציה הראשונות בטוחות
+// להרצה תמיד (גם בלי RUN_UPLOAD_TESTS) — הן נדחות ב-400 *לפני*
+// שנוצרת רשומה כלשהי (ר' validateManualExpenseInput/createManualExpense
+// ב-inventory-deduction.js), כך שאין שום סיכון מול Make.
+// הבדיקה השלישית (יצירה מוצלחת) *כן* יוצרת רשומה אמיתית ב"הוצאות" —
+// מצורף אליה מהרגע הראשון קובץ אמיתי (REAL_FIXTURE_PATH), בדיוק
+// כנדרש בכלל הקבוע. היא מדולגת כברירת מחדל ורצה רק עם
+// RUN_UPLOAD_TESTS=1.
+// "גם ללא קובץ — עובד כמו קודם" מכוסה חלקית: הנתיב/הוולידציה-ברמת-
+// השדות כשאין קובץ זהים לדיוק לקוד שרץ עם קובץ (upload.single('file')
+// הוא no-op על בקשת JSON רגילה — ר' הערה ב-server.js), ובדיקות ה-400
+// למטה אכן שולחות בלי קובץ. אבל *יצירה מוצלחת בלי קובץ בכלל* בטבלת
+// "הוצאות" החיה לא נבדקת כאן בכוונה — זו בדיוק התבנית שגרמה לתקרית
+// 2026-09-02 (רשומה חשופה בטבלה מנוטרת ע"י Make), ור' ההערה המתועדת
+// למעלה (שורות ~862-869): דורש אישור מפורש של תמר לפני שתיווצר הוצאה
+// ידנית בלי קובץ בטבלה האמיתית, גם דרך הבדיקה האוטומטית.
+// ============================================================
+
+await test('הוצאה ידנית: שדה חובה חסר (API ישיר) → 400, אין רשומה נוצרת', async () => {
+  let threw = null;
+  try {
+    // חסרים: תאריך, סכום, קטגוריה
+    await api('POST', 'expenses/manual', { supplier: MARK });
+  } catch (e) { threw = e; }
+  if (!threw) throw new Error('היה צפוי 400 — הבקשה לא נדחתה');
+  if (!/^400:/.test(threw.message)) throw threw;
+  if (!/חסר שדה חובה/.test(threw.message)) throw new Error(`הודעת השגיאה לא כללה "חסר שדה חובה": ${threw.message}`);
+});
+
+await test('הוצאה ידנית: שורת פריט חלקית (רק "מה נקנה", בלי כמות/יחידה) → 400, אין רשומה', async () => {
+  let threw = null;
+  try {
+    await api('POST', 'expenses/manual', {
+      supplier: MARK, date: today, total: 10, category: MARK,
+      lines: [{ description: 'שקיות ניילון' }], // חסרה כמות ויחידה
+    });
+  } catch (e) { threw = e; }
+  if (!threw) throw new Error('היה צפוי 400 — הבקשה לא נדחתה');
+  if (!/^400:/.test(threw.message)) throw threw;
+  if (!/שורת פריט/.test(threw.message)) throw new Error(`הודעת השגיאה לא כללה "שורת פריט": ${threw.message}`);
+});
+
+await test('הוצאה ידנית + קובץ אמיתי: נוצרת, הקובץ מצורף, ידני?=true, שורת פריט מורידה מלאי, מחיקה מחזירה אותו', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
+  const opts = await api('GET', `select-options/${enc('מלאי בסיסי')}/${enc('קטגוריה')}`);
+  const item = await create('מלאי בסיסי', { 'קטגוריה': opts.choices[0], 'מלאי נוכחי': 50, 'הערות': MARK });
+  const before = Number(item['מלאי נוכחי']);
+
+  const fileBuf = await readFile(REAL_FIXTURE_PATH);
+  const fd = new FormData();
+  fd.append('file', new Blob([fileBuf], { type: 'application/pdf' }), REAL_FIXTURE_NAME);
+  fd.append('supplier', MARK);
+  fd.append('date', today);
+  fd.append('total', '123');
+  fd.append('category', MARK);
+  fd.append('lines', JSON.stringify([
+    { description: item['קטגוריה'], quantity: 3, unit: 'יחידות' },
+    { description: '', quantity: '' }, // שורה ריקה-לגמרי — צפוי להתעלם, לא שגיאה
+  ]));
+  const rec = await api('POST', 'expenses/manual', fd, true);
+  if (!rec?.id) throw new Error('לא נוצרה רשומת הוצאה');
+  cleanup.push({ table: 'הוצאות', id: rec.id });
+
+  if (rec['ידני?'] !== true) throw new Error('"ידני?" לא סומן true');
+  if (rec['ספק-AI'] !== MARK) throw new Error(`שדה ספק-AI לא נכתב כצפוי מהערך שהוזן ידנית (${rec['ספק-AI']})`);
+
+  const full = await api('GET', `${enc('הוצאות')}/${rec.id}?raw=1`);
+  if (!Array.isArray(full['חשבונית']) || !full['חשבונית'].length) throw new Error('הקובץ לא מצורף לשדה "חשבונית"');
+
+  const afterRec = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
+  const after = Number(afterRec['מלאי נוכחי']);
+  if (before - after !== 3) throw new Error(`ירידת מלאי ${before - after}, צפוי בדיוק 3 (לא כולל השורה הריקה)`);
+
+  await del('הוצאות', rec.id); // מפעיל reverseInventoryDeduction בצד השרת (ר' server.js, מחיקת "הוצאות")
+  const idx = cleanup.findIndex((c) => c.table === 'הוצאות' && c.id === rec.id);
+  if (idx >= 0) cleanup.splice(idx, 1);
+
+  const afterDelete = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
+  if (Number(afterDelete['מלאי נוכחי']) !== before) throw new Error(`מחיקה לא החזירה מלאי ל-${before}, התקבל ${afterDelete['מלאי נוכחי']}`);
+
+  return `נוצרה עם קובץ, ירידת מלאי 3 (לא 4 — השורה הריקה דולגה), מחיקה החזירה מלאי ל-${before}`;
+});
+
+// ============================================================
 // תוספת 2026-10-06 — הורדת מלאי נגזרת מתעודת משלוח/חשבונית (סעיף D)
 // בדיקות על הפונקציות הטהורות (deriveDeductions/computeDeviation/
 // findCounterpart) בלי שום כתיבה ל-Airtable — אין צורך ליצור רשומות
