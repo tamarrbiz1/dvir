@@ -1005,14 +1005,25 @@ await test('הורדה נגזרת: תעודה+חשבונית תואמות (קר�
   return `4 קטגוריות נגזרו נכון, הצלבה עברה (${(cartonsCrossCheck.deviation * 100).toFixed(1)}% סטייה)`;
 });
 
-await test(`הורדה נגזרת: סטייה מעל הסף (${(DEVIATION_THRESHOLD * 100)}%) → קרטונים/נילונים/כובעים/משטחים דורשים אישור, לא נגזרים בפועל`, () => {
+// ============================================================
+// תוספת 2026-10-06 (אחה"צ) — ממצא-אמת מול Airtable חי: סטייה מעל הסף
+// לא אמורה לחסום קרטונים/נילונים/כובעים (התעודה היא עדות ישירה לכמות
+// שיצאה פיזית — מורידים, רק מסמנים אזהרה), אבל *כן* חוסמת משטחי-עץ
+// (נגזרים מהחשבונית בלבד, בלי "תעודה" ישירה לאמת אותם).
+// ============================================================
+await test(`הורדה נגזרת: סטייה מעל הסף (${(DEVIATION_THRESHOLD * 100)}%) → קרטונים/נילונים/כובעים יורדים עם אזהרה, רק משטחים דורשים אישור`, () => {
   const note = { id: 'recN2', 'קוד שבוע': 'W2', 'כמות קרטונים': '100', 'מספר תעודה': 2 };
   const invoice = { id: 'recI2', 'קוד שבוע': 'W2', 'כמות קרטונים': '140', 'מספר משטחים': '5', 'מספר חשבונית': 2 }; // 28.5% סטייה
   const { cartonsCrossCheck, deductions } = deriveDeductions({ note, invoice });
   if (cartonsCrossCheck.ok) throw new Error('סטייה גדולה — ההצלבה לא הייתה אמורה לעבור');
-  if (!deductions.every((d) => d.needsApproval)) throw new Error('כל הקטגוריות (כולל משטחים) אמורות לדרוש אישור כשיש חריגה בהצלבה');
-  if (!deductions.every((d) => d.reason)) throw new Error('כל שורה דורשת-אישור חייבת הסבר עם שני המספרים');
-  return `סטייה ${(cartonsCrossCheck.deviation * 100).toFixed(1)}% זוהתה, כל 4 הקטגוריות סומנו דורש-אישור עם הסבר`;
+  const byCategory = Object.fromEntries(deductions.map((d) => [d.category, d]));
+  for (const cat of ['קרטונים', 'נילונים', 'כובעים']) {
+    if (byCategory[cat].needsApproval) throw new Error(`${cat}: לא אמור לדרוש אישור — התעודה מוסמכת להוריד בכל מקרה`);
+    if (!byCategory[cat].reason || !byCategory[cat].reason.includes('%')) throw new Error(`${cat}: חייב להכיל אזהרת-סטייה עם האחוז`);
+  }
+  if (!byCategory['משטחי עץ'].needsApproval) throw new Error('משטחים: אמור לדרוש אישור כשיש חריגה בהצלבה (אין "תעודה" ישירה לאמת אותם)');
+  if (!byCategory['משטחי עץ'].reason) throw new Error('משטחים דורשי-אישור חייבים הסבר');
+  return `סטייה ${(cartonsCrossCheck.deviation * 100).toFixed(1)}% זוהתה: קרטונים/נילונים/כובעים ירדו עם אזהרה, משטחים נחסמו`;
 });
 
 await test('הורדה נגזרת: רק תעודה קיימת (אין חשבונית מקבילה לשבוע) → נגזר עם אזהרת "בלי הצלבה", לא חוסם', () => {
@@ -1023,6 +1034,42 @@ await test('הורדה נגזרת: רק תעודה קיימת (אין חשבונ
   if (!deductions.every((d) => d.softWarning)) throw new Error('כל השורות צפויות softWarning=true (בלי הצלבה)');
   if (deductions.find((d) => d.category === 'משטחי עץ')) throw new Error('בלי חשבונית — אין "מספר משטחים" לגזור ממנו');
   return `3 קטגוריות (קרטונים/נילונים/כובעים) נגזרו עם אזהרה רכה, בלי חסימה`;
+});
+
+await test('הורדה נגזרת: שדה "כמות קרטונים"/"מספר משטחים" ריק עדיין (Make לא סיים) → pending, לא skipped סתמי, בלי קטגוריה', () => {
+  const note = { id: 'recN4', 'קוד שבוע': 'W4', 'מספר תעודה': 4 }; // אין "כמות קרטונים" בכלל
+  const invoice = { id: 'recI4', 'קוד שבוע': 'W4', 'כמות קרטונים': '', 'מספר משטחים': '0', 'מספר חשבונית': 4 }; // ריק/0
+  const { deductions } = deriveDeductions({ note, invoice });
+  if (deductions.length !== 2) throw new Error(`צפויות 2 שורות pending (תעודה+חשבונית), התקבלו ${deductions.length}`);
+  if (!deductions.every((d) => d.pending)) throw new Error('כל השורות צפויות pending=true כש"כמות קרטונים"/"מספר משטחים" עדיין ריקים');
+  if (deductions.some((d) => d.category)) throw new Error('שורת pending לא אמורה לכלול category (אין קטגוריה לגזור כל עוד אין נתון)');
+  return 'שני הצדדים (תעודה+חשבונית) חזרו pending בלי קטגוריה, כצפוי';
+});
+
+// ============================================================
+// תוספת 2026-10-06 (אחה"צ) — הצלבה שבועית: ממצא-אמת מהיום (4 תעודות
+// אמיתיות של תמר באותו שבוע 20260926-20261001, 328+450+328+450=1556
+// קרטונים, מול חשבונית #61 עם 1648 קרטונים — 5.6% סטייה). בלי אגרגציה
+// שבועית, תעודה בודדת מול חשבונית-שבועית-מלאה "נכשלת" בהצלבה באופן
+// מובנה גם כששום דבר לא שגוי (328 מול 1648 = 80% סטייה!).
+// ============================================================
+await test('הורדה נגזרת: הצלבה שבועית מצליבה את סכום כל תעודות השבוע מול החשבונית, לא תעודה בודדת', () => {
+  const note1 = { id: 'recN5a', 'קוד שבוע': 'W5', 'כמות קרטונים': '328', 'מספר תעודה': 44 };
+  const invoice = { id: 'recI5', 'קוד שבוע': 'W5', 'כמות קרטונים': '1648', 'מספר משטחים': '27', 'מספר חשבונית': 61 };
+  // בלי אגרגציה שבועית (ברירת מחדל זוג-בודד) — 328 מול 1648 נכשל קשות
+  const single = deriveDeductions({ note: note1, invoice });
+  if (single.cartonsCrossCheck.ok) throw new Error('בדיקת-יסוד: 328 מול 1648 חייב להיכשל כזוג בודד (ממחיש למה האגרגציה דרושה)');
+  // עם אגרגציה שבועית (סכום 4 התעודות של השבוע, כמו שהיה בפועל היום) — 5.6% בלבד
+  const weekTotal = 328 + 450 + 328 + 450; // 1556 — סכום 4 התעודות האמיתיות
+  const agg = deriveDeductions({ note: note1, invoice, weekNoteCartonsTotal: weekTotal, weekInvoiceCartonsTotal: 1648 });
+  const dev = agg.cartonsCrossCheck.deviation;
+  if (Math.abs(dev - Math.abs(weekTotal - 1648) / 1648) > 1e-9) throw new Error('הסטייה צפויה להיות מחושבת מהסכומים השבועיים, לא מהזוג הבודד');
+  if (dev <= DEVIATION_THRESHOLD) throw new Error(`הסטייה בפועל (${(dev * 100).toFixed(1)}%) צפויה להיות מעל הסף — זה המקרה האמיתי מהיום`);
+  const byCategory = Object.fromEntries(agg.deductions.map((d) => [d.category, d]));
+  if (byCategory['קרטונים'].quantity !== 328) throw new Error('קרטונים: עדיין נגזר מהתעודה הבודדת (328), לא מהסכום השבועי');
+  if (byCategory['קרטונים'].needsApproval) throw new Error('קרטונים לא אמורים להיחסם גם בסטייה שבועית אמיתית (5.6%)');
+  if (!byCategory['משטחי עץ'].needsApproval) throw new Error('משטחים אמורים להיחסם — 5.6% מעל הסף של 5%');
+  return `זוג-בודד: ${(single.cartonsCrossCheck.deviation * 100).toFixed(0)}% (שגוי), אגרגציה שבועית: ${(dev * 100).toFixed(1)}% (נכון, כמו הנתון האמיתי מהיום)`;
 });
 
 await test('findCounterpart: מוצא רשומה תואמת-שבוע בדיוק, לא מתאים שבוע שונה', () => {
