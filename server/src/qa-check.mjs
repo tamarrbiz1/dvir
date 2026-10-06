@@ -809,6 +809,52 @@ await test('הוצאה אמיתית → ניתוח מלאי מקצה-לקצה (�
   return `סטטוס: ${r1.status}, ${(r1.results || []).length} שורות (קובץ אמיתי לא בהכרח מכיל פריטי מלאי — זו בדיקת-צנרת, לא בדיקת-זיהוי)`;
 });
 
+await test('הורדת מלאי: החלמה מכשל-באמצע (restart מדומה) ממשיכה בלי הורדה כפולה', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
+  const opts = await api('GET', `select-options/${enc('מלאי בסיסי')}/${enc('קטגוריה')}`);
+  const item = await create('מלאי בסיסי', { 'קטגוריה': opts.choices[0], 'מלאי נוכחי': 100, 'הערות': MARK });
+  const before = Number(item['מלאי נוכחי']);
+  const exp = await createWithFile('הוצאות', 'חשבונית', {});
+  // קריאה/כתיבה ישירה (import, לא HTTP) מכאן ואילך בכוונה: נמצא בפועל
+  // שעיכוב-שכפול קצר של Airtable בין כתיבה מתהליך אחד לקריאה הבאה
+  // מבקשת-HTTP נפרדת הופך בדיקת-timing כזו לפלקית (לא קשור ללוגיקה —
+  // אומת בנפרד שהלוגיקה עצמה תקינה). קריאה/כתיבה מאותו מופע-SDK לא
+  // סובלת מהבעיה הזו.
+  const { analyzeExpenseInventory, readState: readState2 } = await import('./inventory-deduction.js');
+  const { fetchRecords: dfr, updateRecord: upd } = await import('./airtable.js');
+  // ממתינים שהטריגר האוטומטי-אחרי-העלאה (fire-and-forget בשרת, עם
+  // backoff פנימי שיכול לקחת עד ~18 שנ' אם ניסיון ראשון לא מצא קובץ)
+  // יסיים בפועל לפני שמזריקים state מדומה — אחרת יש מרוץ אמיתי בין
+  // שתי כתיבות ל"הערות".
+  let settled = false;
+  for (let i = 0; i < 20 && !settled; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const cur = (await dfr('הוצאות', {})).find((r) => r.id === exp.id);
+    if (readState2(cur?.['הערות'])) settled = true;
+  }
+  if (!settled) throw new Error('הטריגר האוטומטי לא הסתיים תוך 20 שניות — לא ניתן להמשיך בבדיקה בבטחה');
+  // מדמים "נפילה באמצע" — state עם שורה אחת שכבר ירדה (לא לגעת שוב!)
+  // ושורה אחת שנכשלה ב-429 מדומה (אמורה להינסות שוב ולהצליח עכשיו)
+  const fakeState = {
+    status: 'partial', analyzedAt: new Date().toISOString(), supplier: 'QA', date: '2026-10-06',
+    results: [
+      { description: `${MARK}-already`, quantity: 3, unit: 'יחידה', category: item['קטגוריה'], itemId: item.id, confidence: 0.95, deducted: true, deductedAt: new Date().toISOString() },
+      { description: `${MARK}-retry`, quantity: 5, unit: 'יחידה', category: item['קטגוריה'], itemId: item.id, confidence: 0.95, deducted: false, error: 'סימולציה: כשל-באמצע (429)' },
+    ],
+  };
+  await upd('הוצאות', exp.id, { 'הערות': `${MARK}\n[מלאי-AI]${JSON.stringify(fakeState)}` });
+  const resumed = await analyzeExpenseInventory(exp.id);
+  if (resumed.status !== 'done') throw new Error(`צפוי status:done אחרי החלמה, התקבל ${resumed.status}`);
+  const retryLine = resumed.results.find((r) => r.description === `${MARK}-retry`);
+  if (!retryLine?.deducted) throw new Error('השורה שנכשלה לא ירדה בניסיון החוזר');
+  const afterRec = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
+  const after = Number(afterRec['מלאי נוכחי']);
+  // רק ה-5 של "retry" אמורים לרדת כאן — ה-3 של "already" כבר "ירדו" לפני
+  // הבדיקה (לא באמת, זו הזרקת state מדומה) ולכן לא אמורים לרדת שוב
+  if (before - after !== 5) throw new Error(`ירידה בפועל ${before - after}, צפוי בדיוק 5 (לא 8 — זה היה אומר הורדה כפולה)`);
+  return `ירידה של 5 בדיוק (לא 8) — אין הורדה כפולה לשורה שכבר הושלמה`;
+});
+
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
 // שרדה את הניקוי בריצה קודמת ונשארה בטבלה החיה עד שאותרה ידנית למחרת —
