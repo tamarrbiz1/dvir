@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { useAutoRefresh } from '../utils/live.js';
-import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
+import { formatMoney, formatNumber, formatDate, kpiMoney, kpiValueClass } from '../utils/format.js';
 import { pick, num, expenseCategory } from '../utils/field.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import PageHeader from '../components/PageHeader.jsx';
+import PeriodSelect from '../components/PeriodSelect.jsx';
+import { periodRange, inPeriod, periodCaption } from '../utils/period.js';
 import ChecksTab from '../components/ChecksTab.jsx';
 import ExpensesTab from '../components/ExpensesTab.jsx';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
@@ -91,11 +93,6 @@ export default function FinancePage() {
   useEffect(() => { loadAll().finally(() => setLoading(false)); }, [loadAll]);
   useAutoRefresh(loadAll);
 
-  const bruto = weekly.reduce((s, w) => s + (Number(w['סכום ברוטו Rollup (from חשבוניות)']) || 0), 0);
-  const neto = weekly.reduce((s, w) => s + (Number(w['סכום נטוRollup (from חשבוניות)']) || 0), 0);
-  const expSum = expenses.reduce((s, e) => s + num(e, ['סכום כולל-AI', 'סכום', 'סכום כולל']), 0);
-  const profit = neto - expSum;
-
   return (
     <div>
       <PageHeader icon="💰" title="כספים" />
@@ -107,7 +104,7 @@ export default function FinancePage() {
       {loading ? (
         <div className="skeleton skeleton-card" />
       ) : tab === 'סקירה' ? (
-        <Overview weekly={weekly} expenses={expenses} invoices={invoices} checks={checks} bruto={bruto} neto={neto} expSum={expSum} profit={profit} />
+        <Overview weekly={weekly} expenses={expenses} invoices={invoices} checks={checks} />
       ) : tab === 'הוצאות' ? (
         <ExpensesTab app={app} expenses={expenses} suppliers={suppliers} onChanged={reloadExpenses} />
       ) : tab === "צ'קים" ? (
@@ -126,17 +123,36 @@ export default function FinancePage() {
 // חשבוניות (תוקן — קודם חושב מ-קג בפועל × מחיר, הערכה נגזרת). expSum
 // = "סכום כולל-AI" מהוצאות. checks/expSum בגרף "צפי הוצאות" = צ'קים
 // שטרם נפרעו, לפי תאריך הפירעון.
-function Overview({ weekly, expenses, invoices, checks, bruto, neto, expSum, profit }) {
+// תקופה: אותו בורר כמו בלוח הבקרה; ברירת מחדל — החודש. כל ה-KPI והגרפים
+// (למעט צפי הצ'קים, שהוא צופה קדימה) מחושבים מאותו סינון שהכיתוב מציין.
+function Overview({ weekly, expenses, invoices, checks }) {
+  const [preset, setPreset] = useState('month');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const range = useMemo(() => periodRange(preset, from, to), [preset, from, to]);
+  const caption = periodCaption(preset, from, to);
+
   const monthLabel = (k) => `${Number(k.slice(5, 7))}/${k.slice(0, 4)}`;
   const expDate = (e) => pick(e, ['תאריך חשבונית-AI', 'תאריך העלאת החשבונית', 'תאריך']);
   // תאריך החשבונית — קודם התאריך שחולץ ע"י ה-AI מהמסמך עצמו, ואם עדיין
   // לא נותחה: תאריך ההעלאה (אותו סדר עדיפות שכבר קיים למעלה עבור הוצאות)
   const invDate = (inv) => pick(inv, ['תאריך-AI', 'העלאה אחרונה של החשבונית', 'תאריך העלאת קובץ']);
+  // שבוע בסיכום השבועי נספר לפי תאריך ההתחלה שלו
+  const weekDate = (w) => w['תאריך התחלה'] || w['תאריך סיום'];
+
+  const fWeekly = useMemo(() => weekly.filter((w) => inPeriod(weekDate(w), range)), [weekly, range]);
+  const fExpenses = useMemo(() => expenses.filter((e) => inPeriod(expDate(e), range)), [expenses, range]);
+  const fInvoices = useMemo(() => invoices.filter((inv) => inPeriod(invDate(inv), range)), [invoices, range]);
+
+  const bruto = fWeekly.reduce((s, w) => s + (Number(w['סכום ברוטו Rollup (from חשבוניות)']) || 0), 0);
+  const neto = fWeekly.reduce((s, w) => s + (Number(w['סכום נטוRollup (from חשבוניות)']) || 0), 0);
+  const expSum = fExpenses.reduce((s, e) => s + num(e, ['סכום כולל-AI', 'סכום', 'סכום כולל']), 0);
+  const profit = neto - expSum;
 
   // הכנסות בפועל — סכום נטו מטבלת החשבוניות (לא הערכה לפי ק"ג×מחיר)
   const chartData = useMemo(() => {
     const inc = {};
-    invoices.forEach((inv) => {
+    fInvoices.forEach((inv) => {
       const net = Number(inv['סכום נטו']);
       if (!net) return;
       const d = new Date(invDate(inv));
@@ -145,7 +161,7 @@ function Overview({ weekly, expenses, invoices, checks, bruto, neto, expSum, pro
       inc[k] = (inc[k] || 0) + net;
     });
     const exp = {};
-    expenses.forEach((e) => {
+    fExpenses.forEach((e) => {
       const d = new Date(expDate(e));
       if (Number.isNaN(d.getTime())) return;
       const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -157,7 +173,7 @@ function Overview({ weekly, expenses, invoices, checks, bruto, neto, expSum, pro
       'הכנסות בפועל': Math.round(inc[k] || 0),
       'הוצאות': Math.round(exp[k] || 0),
     }));
-  }, [invoices, expenses]);
+  }, [fInvoices, fExpenses]);
 
   // צפי הוצאות לפי חודש — צ'קים שטרם נפרעו, לפי תאריך הפירעון
   const expenseForecast = useMemo(() => {
@@ -176,7 +192,7 @@ function Overview({ weekly, expenses, invoices, checks, bruto, neto, expSum, pro
   }, [checks]);
 
   const cat = {};
-  expenses.forEach((e) => {
+  fExpenses.forEach((e) => {
     const c = expenseCategory(e);
     cat[c] = (cat[c] || 0) + num(e, ['סכום כולל-AI', 'סכום', 'סכום כולל']);
   });
@@ -184,15 +200,22 @@ function Overview({ weekly, expenses, invoices, checks, bruto, neto, expSum, pro
 
   return (
     <>
+      <div className="filter-bar no-print" style={{ marginBottom: 16 }}>
+        <PeriodSelect preset={preset} from={from} to={to} onPreset={setPreset} onFrom={setFrom} onTo={setTo} />
+        {(preset !== 'month' || from || to) && (
+          <button type="button" className="btn btn-ghost" onClick={() => { setPreset('month'); setFrom(''); setTo(''); }}>נקה פילטרים</button>
+        )}
+      </div>
+
       <div className="kpi-grid">
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">פדיון ברוטו</span></div><div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(bruto)}</div></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--profit-soft)' }}>💸</div><span className="kpi-label">פדיון נטו</span></div><div className="kpi-value" style={{ color: 'var(--profit)' }}>{formatMoney(neto)}</div></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--expense-soft)' }}>🧾</div><span className="kpi-label">הוצאות</span></div><div className="kpi-value" style={{ color: 'var(--expense)' }}>{formatMoney(expSum)}</div></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--profit-soft)' }}>📈</div><span className="kpi-label">רווח</span></div><div className="kpi-value" style={{ color: 'var(--profit)' }}>{formatMoney(profit)}</div></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">פדיון ברוטו</span></div><div className={kpiValueClass(kpiMoney(bruto))} style={{ color: 'var(--revenue)' }}>{kpiMoney(bruto)}</div><div className="kpi-sub">לפי סיכום שבועי · {caption}</div></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--profit-soft)' }}>💸</div><span className="kpi-label">פדיון נטו</span></div><div className={kpiValueClass(kpiMoney(neto))} style={{ color: 'var(--profit)' }}>{kpiMoney(neto)}</div><div className="kpi-sub">לפי סיכום שבועי · {caption}</div></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--expense-soft)' }}>🧾</div><span className="kpi-label">הוצאות</span></div><div className={kpiValueClass(kpiMoney(expSum))} style={{ color: 'var(--expense)' }}>{kpiMoney(expSum)}</div><div className="kpi-sub">{fExpenses.length} חשבוניות הוצאה · {caption}</div></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--profit-soft)' }}>📈</div><span className="kpi-label">רווח</span></div><div className={kpiValueClass(kpiMoney(profit))} style={{ color: 'var(--profit)' }}>{kpiMoney(profit)}</div><div className="kpi-sub">פדיון נטו − הוצאות · {caption}</div></div>
       </div>
 
       <div className="card" style={{ marginTop: 20 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>הכנסות בפועל מול הוצאות</div>
+        <div className="section-title" style={{ marginTop: 0 }}>הכנסות בפועל מול הוצאות · {caption}</div>
         {chartData.length ? (
           <div style={{ direction: 'ltr' }}>
             <ResponsiveContainer width="100%" height={280}>
@@ -212,7 +235,7 @@ function Overview({ weekly, expenses, invoices, checks, bruto, neto, expSum, pro
 
       <div className="grid-2" style={{ marginTop: 18 }}>
         <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>צפי הוצאות לפי חודש — צ'קים לפירעון</div>
+          <div className="section-title" style={{ marginTop: 0 }}>צפי הוצאות לפי חודש — צ'קים לפירעון · כל הממתינים לפירעון</div>
           {expenseForecast.length ? (
             <div style={{ direction: 'ltr' }}>
               <ResponsiveContainer width="100%" height={240}>
@@ -229,7 +252,7 @@ function Overview({ weekly, expenses, invoices, checks, bruto, neto, expSum, pro
         </div>
 
         <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>הוצאות לפי קטגוריה</div>
+          <div className="section-title" style={{ marginTop: 0 }}>הוצאות לפי קטגוריה · {caption}</div>
           {donut.length ? (
             <ResponsiveContainer width="100%" height={240}>
               <PieChart>
@@ -315,7 +338,7 @@ function MarketersTab({ marketers, invoices, deliveries = [], app, onChanged }) 
             <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 13 }}>
               <div><span className="kpi-label">חשבוניות</span><div className="kpi-value" style={{ fontSize: 18 }}>{invoiceCount}</div></div>
               <div><span className="kpi-label">תעודות משלוח</span><div className="kpi-value" style={{ fontSize: 18, color: 'var(--docs)' }}>{notesOfMarketer(deliveries, mk.id).length}</div></div>
-              <div><span className="kpi-label">פדיון בתקופה</span><div className="kpi-value" style={{ fontSize: 18, color: 'var(--revenue)' }}>{formatMoney(revenue)}</div></div>
+              <div><span className="kpi-label">פדיון · כל התקופה</span><div className="kpi-value" style={{ fontSize: 18, color: 'var(--revenue)' }}>{formatMoney(revenue)}</div></div>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
               <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); navigate(`/delivery-notes?marketer=${encodeURIComponent(mk.id)}`); }}>📄 תעודות משלוח</button>
@@ -338,7 +361,7 @@ function MarketersTab({ marketers, invoices, deliveries = [], app, onChanged }) 
             )}
             {active === mk.id && (
               <div style={{ marginTop: 12 }}>
-                <div className="section-title" style={{ marginTop: 0 }}>פדיון לאורך זמן</div>
+                <div className="section-title" style={{ marginTop: 0 }}>פדיון לאורך זמן · כל התקופה, לפי חודש</div>
                 {trend.length === 0 ? (
                   <div className="empty-state" style={{ padding: '14px 0' }}>אין נתוני פדיון למשווק זה</div>
                 ) : (

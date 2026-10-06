@@ -8,7 +8,7 @@
 // ============================================================
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { formatMoney, formatDate } from '../utils/format.js';
+import { formatMoney, formatDate, kpiMoney, kpiValueClass } from '../utils/format.js';
 import { pick, num, expenseCategory } from '../utils/field.js';
 import { firstId } from '../utils/resolve.js';
 import RecordForm from '../components/RecordForm.jsx';
@@ -16,7 +16,9 @@ import { removeRecord } from '../components/RecordForm.jsx';
 import { toast } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
-import { exportCsv, fileStamp, inDateRange } from '../utils/table.js';
+import { exportCsv, fileStamp } from '../utils/table.js';
+import { periodRange, inPeriod, periodCaption } from '../utils/period.js';
+import PeriodSelect from './PeriodSelect.jsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { authFetch } from '../utils/authFetch.js';
@@ -51,6 +53,8 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
   const [search, setSearch] = useState('');
   const [fSupplier, setFSupplier] = useState('');
   const [fCategory, setFCategory] = useState('');
+  // תקופה — אותו בורר כמו בלוח הבקרה; ברירת מחדל: החודש
+  const [preset, setPreset] = useState('month');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [limit, setLimit] = useState(25);
@@ -67,23 +71,22 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
   const categories = useMemo(() => [...new Set(expenses.map(expCategory).filter(Boolean))], [expenses]);
   const supplierNames = useMemo(() => [...new Set(expenses.map(supplierName).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'he')), [expenses]);
 
+  const range = useMemo(() => periodRange(preset, from, to), [preset, from, to]);
   const filtered = useMemo(() => expenses.filter((e) => {
     if (fSupplier && supplierName(e) !== fSupplier) return false;
     if (fCategory && expCategory(e) !== fCategory) return false;
-    if (!inDateRange(expDate(e), from, to)) return false;
+    if (!inPeriod(expDate(e), range)) return false;
     if (search) {
       const hay = [supplierName(e), expCategory(e), e['אמצעי תשלום'], e['הערות']].filter(Boolean).join(' ').toLowerCase();
       if (!hay.includes(search.toLowerCase())) return false;
     }
     return true;
-  }).sort((a, b) => String(expDate(b) || '').localeCompare(String(expDate(a) || ''))), [expenses, search, fSupplier, fCategory, from, to]);
+  }).sort((a, b) => String(expDate(b) || '').localeCompare(String(expDate(a) || ''))), [expenses, search, fSupplier, fCategory, range]);
 
   const total = filtered.reduce((s, e) => s + expAmount(e), 0);
-  const now = new Date();
-  const thisMonth = filtered.filter((e) => {
-    const d = new Date(expDate(e));
-    return !Number.isNaN(d.getTime()) && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-  }).reduce((s, e) => s + expAmount(e), 0);
+  // כיתוב התקופה בכרטיסים ובגרפים — בדיוק מה שהטבלה מסננת
+  const caption = periodCaption(preset, from, to);
+  const periodSub = (fSupplier || fCategory) ? `${caption} · לפי הסינון` : caption;
 
   const byMonth = useMemo(() => {
     const b = {};
@@ -102,7 +105,7 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
     return Object.entries(b).map(([k, v]) => ({ name: k, value: Math.round(v) })).filter((x) => x.value > 0);
   }, [filtered]);
 
-  const hasFilters = search || fSupplier || fCategory || from || to;
+  const hasFilters = search || fSupplier || fCategory || preset !== 'month' || from || to;
 
   const doExport = () => exportCsv(`הוצאות-${fileStamp()}`, [
     { label: 'תאריך', get: (e) => (expDate(e) ? formatDate(expDate(e)) : '') },
@@ -117,10 +120,9 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
     <div>
       {/* KPI (סעיף 25) */}
       <div className="kpi-grid">
-        <Kpi icon="🧾" soft="var(--expense-soft)" color="var(--expense)" label="סה&quot;כ הוצאות" value={filtered.length ? formatMoney(total) : 'אין נתונים'} />
-        <Kpi icon="📅" soft="var(--expense-soft)" color="var(--expense)" label="הוצאות החודש" value={formatMoney(thisMonth)} />
-        <Kpi icon="📄" soft="var(--docs-soft)" color="var(--docs)" label="מספר חשבוניות" value={filtered.length} />
-        <Kpi icon="🚚" soft="var(--inventory-soft)" color="var(--inventory)" label="מספר ספקים" value={new Set(filtered.map(supplierName).filter(Boolean)).size} />
+        <Kpi icon="🧾" soft="var(--expense-soft)" color="var(--expense)" label="סה&quot;כ הוצאות" value={filtered.length ? kpiMoney(total) : 'אין נתונים'} sub={periodSub} />
+        <Kpi icon="📄" soft="var(--docs-soft)" color="var(--docs)" label="מספר חשבוניות" value={filtered.length} sub={periodSub} />
+        <Kpi icon="🚚" soft="var(--inventory-soft)" color="var(--inventory)" label="מספר ספקים" value={new Set(filtered.map(supplierName).filter(Boolean)).size} sub={periodSub} />
       </div>
 
       {/* חיפוש + פילטרים */}
@@ -134,9 +136,8 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
           <option value="">כל הקטגוריות</option>
           {categories.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
-        <label className="date-field">מתאריך<input type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
-        <label className="date-field">עד תאריך<input type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} /></label>
-        {hasFilters && <button className="btn btn-ghost" onClick={() => { setSearch(''); setFSupplier(''); setFCategory(''); setFrom(''); setTo(''); }}>נקה פילטרים</button>}
+        <PeriodSelect preset={preset} from={from} to={to} onPreset={setPreset} onFrom={setFrom} onTo={setTo} />
+        {hasFilters && <button className="btn btn-ghost" onClick={() => { setSearch(''); setFSupplier(''); setFCategory(''); setPreset('month'); setFrom(''); setTo(''); }}>נקה פילטרים</button>}
         <span style={{ marginInlineStart: 'auto', display: 'flex', gap: 8 }}>
           <button type="button" className="btn btn-ghost" onClick={() => window.print()}>🖨️ הדפסה</button>
           <button type="button" className="btn btn-ghost" onClick={doExport} disabled={!filtered.length}>⬇️ ייצוא</button>
@@ -214,7 +215,7 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
       {/* גרפים */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px,1fr))', gap: 16, marginTop: 18 }}>
         <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>הוצאות לפי חודש</div>
+          <div className="section-title" style={{ marginTop: 0 }}>הוצאות לפי חודש · {caption}</div>
           {byMonth.length ? (
             <div style={{ direction: 'ltr' }}>
               <ResponsiveContainer width="100%" height={220}>
@@ -230,7 +231,7 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
           ) : <div className="empty-state">אין נתונים לתקופה זו</div>}
         </div>
         <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>הוצאות לפי ספק</div>
+          <div className="section-title" style={{ marginTop: 0 }}>הוצאות לפי ספק · {caption}</div>
           {bySupplier.length ? (
             <ResponsiveContainer width="100%" height={220}>
               <PieChart>
@@ -289,12 +290,12 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
   );
 }
 
-function Kpi({ icon, soft, color, label, value }) {
+function Kpi({ icon, soft, color, label, value, sub }) {
   return (
     <div className="kpi-card">
       <div className="kpi-top"><div className="kpi-icon" style={{ background: soft }}>{icon}</div><span className="kpi-label">{label}</span></div>
-      <div className="kpi-value" style={{ color }}>{value}</div>
-      <div style={{ height: 12 }} />
+      <div className={kpiValueClass(value)} style={{ color }}>{value}</div>
+      {sub ? <div className="kpi-sub">{sub}</div> : <div style={{ height: 12 }} />}
     </div>
   );
 }

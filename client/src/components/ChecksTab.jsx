@@ -21,6 +21,8 @@ import RecordForm, { removeRecord } from './RecordForm.jsx';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, xAxisProps, yAxisProps, TOOLTIP_STYLE, LEGEND_STYLE } from '../utils/chart.js';
 import { monthShort } from '../i18n.js';
+import { periodRange, inPeriod, periodCaption } from '../utils/period.js';
+import PeriodSelect from './PeriodSelect.jsx';
 import {
   CHECKS_TABLE, CHECK_FIELDS, STATUS,
   checkNumber, checkTitle, checkStatus, isCancelled, isPaid, isPending,
@@ -61,8 +63,8 @@ export default function ChecksTab({ checks, onRefresh }) {
 
   // ---- פילטרים וחיפוש (עובדים יחד, לא במקום זה את זה) ----
   const [search, setSearch] = useState('');
-  const [year, setYear] = useState('');
-  const [month, setMonth] = useState('');
+  // תקופת פירעון — אותו בורר כמו בלוח הבקרה; ברירת מחדל: החודש
+  const [preset, setPreset] = useState('month');
   const [dueFrom, setDueFrom] = useState('');
   const [dueTo, setDueTo] = useState('');
   const [exactDate, setExactDate] = useState('');
@@ -84,15 +86,9 @@ export default function ChecksTab({ checks, onRefresh }) {
   }, []);
 
   // איפוס העימוד בכל שינוי פילטר
-  useEffect(() => { setLimit(PAGE_SIZE); }, [search, year, month, dueFrom, dueTo, exactDate, supplier, status, showCancelled]);
+  useEffect(() => { setLimit(PAGE_SIZE); }, [search, preset, dueFrom, dueTo, exactDate, supplier, status, showCancelled]);
 
   // רשימות לבחירה — נגזרות מהנתונים עצמם
-  const years = useMemo(() => {
-    const s = new Set();
-    checks.forEach((c) => { const d = checkDueDate(c); if (d) s.add(d.getFullYear()); });
-    return [...s].sort((a, b) => b - a);
-  }, [checks]);
-
   const supplierNames = useMemo(() => {
     const s = new Set();
     checks.forEach((c) => { const n = checkSupplierName(c); if (n) s.add(n); });
@@ -106,17 +102,15 @@ export default function ChecksTab({ checks, onRefresh }) {
   }, [checks, statusChoices]);
 
   // ---- סינון (ללא מתג המבוטלים — כדי שה-KPI "מבוטלים" יישאר נכון) ----
+  const range = useMemo(() => periodRange(preset, dueFrom, dueTo), [preset, dueFrom, dueTo]);
+  const caption = periodCaption(preset, dueFrom, dueTo);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const from = dueFrom ? new Date(dueFrom) : null;
-    const to = dueTo ? endOfDay(new Date(dueTo)) : null;
     return checks.filter((c) => {
       const due = checkDueDate(c);
-      if (year && (!due || String(due.getFullYear()) !== year)) return false;
-      if (month && (!due || String(due.getMonth() + 1) !== month)) return false;
+      if (range && !due) return false;
+      if (due && !inPeriod(due, range)) return false;
       if (exactDate && (!due || dateKeyOf(due) !== exactDate)) return false;
-      if (from && (!due || due < from)) return false;
-      if (to && (!due || due > to)) return false;
       if (supplier && checkSupplierName(c) !== supplier) return false;
       if (status) {
         const st = checkStatus(c);
@@ -129,7 +123,7 @@ export default function ChecksTab({ checks, onRefresh }) {
       }
       return true;
     });
-  }, [checks, search, year, month, exactDate, dueFrom, dueTo, supplier, status]);
+  }, [checks, search, range, exactDate, supplier, status]);
 
   // מספר המבוטלים בתוצאות המסוננות (לשורת "X מבוטלים מוסתרים" מתחת לטבלה)
   const kpi = useMemo(() => {
@@ -166,8 +160,8 @@ export default function ChecksTab({ checks, onRefresh }) {
   );
   const shown = visible.slice(0, limit);
 
-  const hasFilters = Boolean(search || year || month || exactDate || dueFrom || dueTo || supplier || status);
-  const clearFilters = () => { setSearch(''); setYear(''); setMonth(''); setExactDate(''); setDueFrom(''); setDueTo(''); setSupplier(''); setStatus(''); };
+  const hasFilters = Boolean(search || preset !== 'month' || exactDate || dueFrom || dueTo || supplier || status);
+  const clearFilters = () => { setSearch(''); setPreset('month'); setExactDate(''); setDueFrom(''); setDueTo(''); setSupplier(''); setStatus(''); };
 
   const drawerCheck = drawerId ? checks.find((c) => c.id === drawerId) : null;
 
@@ -182,7 +176,7 @@ export default function ChecksTab({ checks, onRefresh }) {
       {/* ---- סיכום חודשי: כמה יצא (נפרע) וכמה עתיד לצאת (ממתין) בכל חודש ---- */}
       <div className="card" style={{ marginTop: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
-          <div className="section-title" style={{ margin: 0 }}>סיכום חודשי — נפרע מול ממתין</div>
+          <div className="section-title" style={{ margin: 0 }}>סיכום חודשי — נפרע מול ממתין · שנת {chartYear}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>סה"כ {chartYear}: {formatMoney(monthlyTotal)}</span>
             <select className="select" aria-label="שנה לסיכום החודשי" value={chartYear} onChange={(e) => setChartYear(e.target.value)}>
@@ -220,22 +214,7 @@ export default function ChecksTab({ checks, onRefresh }) {
           onChange={(e) => setSearch(e.target.value)}
           style={{ minWidth: 220 }}
         />
-        <select className="select" aria-label="שנה" value={year} onChange={(e) => setYear(e.target.value)}>
-          <option value="">כל השנים</option>
-          {years.map((y) => <option key={y} value={String(y)}>{y}</option>)}
-        </select>
-        <select className="select" aria-label="חודש" value={month} onChange={(e) => setMonth(e.target.value)}>
-          <option value="">כל החודשים</option>
-          {MONTHS.map((m, i) => <option key={m} value={String(i + 1)}>{m}</option>)}
-        </select>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-          פירעון מ־
-          <input className="input" type="date" aria-label="תאריך פירעון — מתאריך" value={dueFrom} onChange={(e) => setDueFrom(e.target.value)} />
-        </label>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-          עד
-          <input className="input" type="date" aria-label="תאריך פירעון — עד תאריך" value={dueTo} onChange={(e) => setDueTo(e.target.value)} />
-        </label>
+        <PeriodSelect preset={preset} from={dueFrom} to={dueTo} onPreset={setPreset} onFrom={setDueFrom} onTo={setDueTo} />
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
           תאריך מדויק
           <input className="input" type="date" aria-label="תאריך פירעון מדויק" value={exactDate} onChange={(e) => setExactDate(e.target.value)} />
@@ -262,7 +241,7 @@ export default function ChecksTab({ checks, onRefresh }) {
       {/* ---- טבלה ---- */}
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-          <div className="section-title" style={{ margin: 0 }}>רשימת צ'קים</div>
+          <div className="section-title" style={{ margin: 0 }}>רשימת צ'קים · לפי תאריך פירעון · {caption}</div>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
             מוצגים {shown.length} מתוך {visible.length}
             {!showCancelled && kpi.cancelled > 0 && ` (${kpi.cancelled} מבוטלים מוסתרים)`}

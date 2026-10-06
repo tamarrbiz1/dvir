@@ -41,12 +41,23 @@ export function formatNumber(n, digits) {
 }
 
 // פורמט כסף: ₪ + מפריד אלפים
-export function formatMoney(n) {
+export function formatMoney(n, { whole = false } = {}) {
   if (n === null || n === undefined || n === '' || Number.isNaN(Number(n))) return 'לא זמין';
   const num = Number(n);
-  // מקסימום 2 ספרות עשרוניות, בלי אפסים מיותרים
-  const str = num.toLocaleString('he-IL', { maximumFractionDigits: 2 });
+  // מקסימום 2 ספרות עשרוניות, בלי אפסים מיותרים; whole — שקלים שלמים מ-₪1,000 ומעלה
+  const digits = whole && Math.abs(num) >= 1000 ? 0 : 2;
+  const str = num.toLocaleString('he-IL', { maximumFractionDigits: digits });
   return `₪${str}`;
+}
+
+// סכום לכרטיס KPI — שקלים שלמים מ-₪1,000 ומעלה ("₪208,122" ולא "₪208,122.3")
+export function kpiMoney(n) {
+  return formatMoney(n, { whole: true });
+}
+
+// מחלקת CSS לערך KPI — ערך ארוך (מעל 9 תווים) מקבל גופן קטן יותר כדי לא להיחתך
+export function kpiValueClass(value) {
+  return String(value ?? '').length > 9 ? 'kpi-value kpi-value--long' : 'kpi-value';
 }
 
 // פורמט משקל: 5,756 ק"ג
