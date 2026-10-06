@@ -400,13 +400,18 @@ function StockModal({ api, item, mode, defaultAmount, onClose, onSaved }) {
 function ItemDrawer({ item, canEdit, onClose, onAdd, onEdit }) {
   useEscapeClose(onClose);
   const st = itemStatus(item);
+  // שורות "↓ ..." נוספות אוטומטית ע"י ניתוח מלאי-AI (ר' inventory-deduction.js)
+  // — מוצגות בנפרד כ"תנועות אחרונות", לא מעורבבות עם הערות חופשיות
+  const allNotes = String(item['הערות'] || '').split('\n');
+  const movements = allNotes.filter((l) => l.trim().startsWith('↓')).reverse();
+  const freeNotes = allNotes.filter((l) => !l.trim().startsWith('↓')).join('\n').trim();
   const rows = [
     ['קטגוריה', item['קטגוריה']],
     ['מלאי נוכחי', item['מלאי נוכחי'] != null ? formatNumber(item['מלאי נוכחי']) : null],
     ['מלאי מינימום', item['מלאי מינימום'] != null ? formatNumber(item['מלאי מינימום']) : null],
     ['תאריך עדכון', item['תאריך עדכון'] ? formatDate(item['תאריך עדכון']) : null],
     ['ספקים', displayName(item['ספקים'], '') || null],
-    ['הערות', item['הערות'] || null],
+    ['הערות', freeNotes || null],
   ].filter(([, v]) => v != null && v !== '');
 
   return (
@@ -430,6 +435,15 @@ function ItemDrawer({ item, canEdit, onClose, onAdd, onEdit }) {
               {canEdit && <button className="btn btn-ghost" onClick={onEdit}>✎ עריכה</button>}
             </div>
           </div>
+
+          {movements.length > 0 && (
+            <div className="card">
+              <div className="section-title" style={{ marginTop: 0 }}>📦 תנועות אחרונות</div>
+              {movements.map((line, i) => (
+                <div key={i} style={{ fontSize: 13, padding: '6px 0', borderBottom: i < movements.length - 1 ? '1px solid var(--border)' : 'none' }}>{line}</div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

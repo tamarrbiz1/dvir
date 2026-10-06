@@ -5,6 +5,7 @@ import { authFetch } from '../utils/authFetch.js';
 import { formatDate, formatMoney, formatNumber } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { confirmDialog, toast } from '../utils/ui.js';
+import { readInventoryAiState, inventoryAiSummary } from '../utils/inventoryAi.js';
 
 // ============================================================
 // העלאת מסמך — "גרסה סופית" באיפיון (שורות 3845–4118)
@@ -149,6 +150,7 @@ export default function UploadDocumentPage() {
           name: r[t.field][0]?.filename || 'קובץ',
           url: r[t.field][0]?.url || '',
           analyzed: isAnalyzed(r, t),
+          notes: r['הערות'] || '', // ליניתוח מלאי-AI בהוצאות בלבד (ר' inventoryAi.js) — ריק/לא רלוונטי בשאר הסוגים
         }))).catch(() => [])
     )).then((results) => {
       if (!isMounted.current) return;
@@ -436,10 +438,11 @@ export default function UploadDocumentPage() {
         ) : (
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>נושא</th><th>קובץ</th><th>תאריך העלאה</th><th>תאריך מסמך</th><th>שבוע</th><th>סטטוס</th>{canEdit && <th className="no-print" />}</tr></thead>
+              <thead><tr><th>נושא</th><th>קובץ</th><th>תאריך העלאה</th><th>תאריך מסמך</th><th>שבוע</th><th>סטטוס</th><th>מלאי</th>{canEdit && <th className="no-print" />}</tr></thead>
               <tbody>
                 {history.map((h, i) => {
                   const meta = TOPICS.find((t) => t.key === h.key);
+                  const aiSummary = h.key === 'expense' ? inventoryAiSummary(readInventoryAiState(h.notes)) : null;
                   return (
                     <tr key={i} style={{ cursor: 'default' }}>
                       <td><span className="badge" style={{ background: meta?.soft, color: meta?.color }}>{meta?.icon} {h.label}</span></td>
@@ -448,6 +451,13 @@ export default function UploadDocumentPage() {
                       <td>{h.date ? formatDate(h.date) : 'לא זמין'}</td>
                       <td style={{ direction: 'ltr', textAlign: 'right' }}>{h.week || '—'}</td>
                       <td>{h.analyzed ? <span className="badge badge-ok">נותח</span> : <span className="badge badge-warn">ממתין לעיבוד</span>}</td>
+                      <td>
+                        {aiSummary ? (
+                          <span className={`badge ${aiSummary.kind === 'ok' ? 'badge-ok' : aiSummary.kind === 'warn' ? 'badge-warn' : aiSummary.kind === 'error' ? 'badge-error' : ''}`} title={aiSummary.text}>
+                            📦 {aiSummary.text}
+                          </span>
+                        ) : h.key === 'expense' ? <span className="muted" style={{ fontSize: 12 }}>—</span> : null}
+                      </td>
                       {canEdit && (
                         <td className="no-print">
                           <button type="button" className="btn btn-sm btn-ghost" aria-label={`מחיקת ${h.label}`} title="מחיקה"

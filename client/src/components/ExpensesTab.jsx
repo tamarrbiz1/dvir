@@ -19,6 +19,8 @@ import { activatable } from '../utils/a11y.js';
 import { exportCsv, fileStamp, inDateRange } from '../utils/table.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+import { authFetch } from '../utils/authFetch.js';
+import { readInventoryAiState, inventoryAiSummary } from '../utils/inventoryAi.js';
 
 const TABLE = 'הוצאות';
 
@@ -147,11 +149,12 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
         {filtered.length === 0 ? <div className="empty-state"><div className="icon">🧾</div>אין נתונים לתקופה זו</div> : (
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>תאריך</th><th>ספק</th><th>קטגוריה</th><th>אמצעי תשלום</th><th>סכום</th><th>מסמך</th><th className="no-print">פעולות</th></tr></thead>
+              <thead><tr><th>תאריך</th><th>ספק</th><th>קטגוריה</th><th>אמצעי תשלום</th><th>סכום</th><th>מסמך</th><th>מלאי</th><th className="no-print">פעולות</th></tr></thead>
               <tbody>
                 {filtered.slice(0, limit).map((e) => {
                   const link = expSupplierLink(e);
                   const doc = expDoc(e);
+                  const aiSummary = inventoryAiSummary(readInventoryAiState(e['הערות']));
                   return (
                     <tr key={e.id} {...activatable(() => setDrawer(e), 'פתיחת פרטי ההוצאה')}>
                       <td>{expDate(e) ? formatDate(expDate(e)) : 'לא זמין'}</td>
@@ -170,6 +173,13 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
                       <td>{e['אמצעי תשלום'] || '—'}</td>
                       <td style={{ fontWeight: 700, color: 'var(--expense)' }}>{formatMoney(expAmount(e))}</td>
                       <td>{doc ? <a href={doc.url} target="_blank" rel="noopener noreferrer" onClick={(ev) => ev.stopPropagation()} aria-label="פתיחת המסמך">📎</a> : <span className="badge badge-warn">חסר</span>}</td>
+                      <td>
+                        {aiSummary ? (
+                          <span className={`badge ${aiSummary.kind === 'ok' ? 'badge-ok' : aiSummary.kind === 'warn' ? 'badge-warn' : aiSummary.kind === 'error' ? 'badge-error' : ''}`} title={aiSummary.text}>
+                            📦 {aiSummary.kind === 'ok' ? '✓' : aiSummary.kind === 'warn' ? '⚠' : aiSummary.kind === 'error' ? '✕' : '—'}
+                          </span>
+                        ) : <span className="muted" style={{ fontSize: 12 }}>—</span>}
+                      </td>
                       <td className="no-print">
                         <div style={{ display: 'flex', gap: 4 }}>
                           <button className="btn btn-sm btn-ghost" aria-label="פתח פרטים" title="פתח פרטים" onClick={(ev) => { ev.stopPropagation(); setDrawer(e); }}>👁</button>
@@ -241,6 +251,7 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
           onLink={() => setLinkFor(expenses.find((x) => x.id === drawer.id) || drawer)}
           onEdit={() => setForm(expenses.find((x) => x.id === drawer.id) || drawer)}
           onOpenSupplier={(id) => navigate(`/suppliers?supplier=${id}`)}
+          onChanged={onChanged}
         />
       )}
 
@@ -279,7 +290,7 @@ function Kpi({ icon, soft, color, label, value }) {
 }
 
 // כרטיס הוצאה — פרטים מלאים ללא שורות ריקות + פעולות
-function ExpenseDrawer({ expense, canEdit, onClose, onLink, onEdit, onOpenSupplier }) {
+function ExpenseDrawer({ expense, canEdit, onClose, onLink, onEdit, onOpenSupplier, onChanged }) {
   useEscapeClose(onClose);
   const link = expSupplierLink(expense);
   const doc = expDoc(expense);
@@ -337,7 +348,90 @@ function ExpenseDrawer({ expense, canEdit, onClose, onLink, onEdit, onOpenSuppli
               <a className="btn btn-ghost" href={doc.url} target="_blank" rel="noopener noreferrer">📎 פתח מסמך {doc.filename ? `(${doc.filename})` : ''}</a>
             </div>
           )}
+
+          {canEdit && <InventoryAiSection expense={expense} onChanged={onChanged} />}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// "המסמך גרם להורדה של: <כמות> ממלאי: <שם הסוג>" — תצוגת תוצאת
+// ניתוח המלאי האוטומטי + כפתור ניתוח/ניתוח-מחדש + אישור שורות
+// שסומנו "דורש אישור" (ביטחון נמוך/יחידת מידה לא ברורה).
+// ============================================================
+function InventoryAiSection({ expense, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const state = readInventoryAiState(expense['הערות']);
+  const results = Array.isArray(state?.results) ? state.results : [];
+
+  const run = async () => {
+    if (busy) return;
+    setBusy(true); setError('');
+    try {
+      const r = await authFetch(`/api/expenses/${expense.id}/analyze-inventory`, { method: 'POST' });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'שגיאה');
+      await onChanged?.();
+    } catch (e) {
+      setError(`הניתוח נכשל: ${e.message || e}`);
+    }
+    setBusy(false);
+  };
+
+  const approve = async (lineIndex) => {
+    if (busy) return;
+    setBusy(true); setError('');
+    try {
+      const r = await authFetch(`/api/expenses/${expense.id}/analyze-inventory/approve`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lineIndex }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'שגיאה');
+      await onChanged?.();
+    } catch (e) {
+      setError(`האישור נכשל: ${e.message || e}`);
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="card">
+      <div className="section-title" style={{ marginTop: 0 }}>📦 ניתוח מלאי אוטומטי</div>
+      {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 10 }}>⚠️ {error}</div>}
+
+      {!state && <div className="muted" style={{ marginBottom: 10 }}>המסמך עדיין לא נותח למלאי.</div>}
+      {state?.status === 'failed' && (
+        <div className="badge badge-error" style={{ width: '100%', marginBottom: 10 }}>✕ הניתוח נכשל: {state.error || 'שגיאה לא ידועה'}</div>
+      )}
+      {state && state.status !== 'failed' && !results.length && (
+        <div className="muted" style={{ marginBottom: 10 }}>לא נמצאו פריטי מלאי במסמך.</div>
+      )}
+
+      {results.map((r, i) => (
+        <div key={i} style={{ padding: '8px 0', borderBottom: i < results.length - 1 ? '1px solid var(--border)' : 'none' }}>
+          {r.deducted ? (
+            <div className="badge badge-ok" style={{ width: '100%' }}>
+              📦 המסמך גרם להורדה של: {r.quantity} ממלאי: {r.category}
+              {r.approvedManually && <span className="muted"> (אושר ידנית)</span>}
+            </div>
+          ) : r.error ? (
+            <div className="badge badge-error" style={{ width: '100%' }}>✕ {r.description} — {r.error}</div>
+          ) : r.needsApproval ? (
+            <div className="badge badge-warn" style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+              <span>⚠ {r.description} ({r.quantity ?? '?'} {r.unit || ''}) → {r.category} — {r.reason}</span>
+              <button type="button" className="btn btn-sm btn-success" disabled={busy} onClick={() => approve(i)}>✓ אשר הורדה</button>
+            </div>
+          ) : null}
+        </div>
+      ))}
+
+      <div style={{ marginTop: 10 }}>
+        <button type="button" className="btn btn-ghost" disabled={busy} onClick={run}>
+          {busy ? 'מנתח...' : state ? '🔄 נתח מחדש' : '🔍 נתח מלאי'}
+        </button>
       </div>
     </div>
   );
