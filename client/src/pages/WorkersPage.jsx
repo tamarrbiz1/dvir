@@ -12,7 +12,7 @@ import { t, monthShort, workerStatusDisplay, workerTypeDisplay, translateStructu
 import { sortStructures } from '../utils/structures.js';
 import { useApp } from '../App.jsx';
 import { workHours , workTypeName, pricingForStructureOnDate } from '../utils/field.js';
-import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
+import { formatMoney, formatNumber, formatDate, localDateTimeToISO, isoToLocalTime } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -29,12 +29,10 @@ import { activatable } from '../utils/a11y.js';
 const SHORT_MONTHS = ['ינו', 'פבר', 'מרץ', 'אפר', 'מאי', 'יונ', 'יול', 'אוג', 'ספט', 'אוק', 'נוב', 'דצמ'];
 const WORKS_TABLE = 'עבודות עובדים';
 
-// dateTime של Airtable (אזור זמן UTC) → "HH:mm" לשדה time בטופס
+// dateTime של Airtable (UTC אמיתי) → "HH:mm" מקומי לשדה time בטופס
+// (2026-10-06: תיקון באג שעות UTC — ר' utils/format.js isoToLocalTime/localDateTimeToISO)
 function timeOf(v) {
-  if (!v) return '';
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return '';
-  return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+  return isoToLocalTime(v);
 }
 
 // תווית כמות דינמית (סעיף 15): דונם → שורות · קרטון → קרטונים · גמלון → גמלונים
@@ -481,9 +479,11 @@ function WorkForm({ api, workers, record, onClose, onSaved }) {
       'מבנה': [structure],
       'תמחור עבודות': priceId ? [priceId] : null,
       'כמות': amount !== '' ? Number(amount) : null,
-      // השדות ב-Airtable הם dateTime (UTC) — נשלח תאריך+שעה מלאים
-      'שעת התחלה': startTime ? `${date}T${startTime}:00.000Z` : null,
-      'שעת סיום': endTime ? `${date}T${endTime}:00.000Z` : null,
+      // השדות ב-Airtable הם dateTime (UTC) — בונים Date מקומי ושולחים
+      // .toISOString() (UTC נכון), לא הדבקת מחרוזת עם "Z" (שמסמנת שעה
+      // מקומית כ-UTC בטעות — תיקון באג שעות UTC, 2026-10-06)
+      'שעת התחלה': localDateTimeToISO(date, startTime),
+      'שעת סיום': localDateTimeToISO(date, endTime),
       'הערות': notes || null,
     };
     if (!record) Object.keys(fields).forEach((k) => { if (fields[k] == null) delete fields[k]; });

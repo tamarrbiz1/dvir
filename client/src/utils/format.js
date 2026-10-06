@@ -96,3 +96,31 @@ export function safeValue(v) {
   if (v === null || v === undefined || v === '') return 'לא זמין';
   return v;
 }
+
+// ============================================================
+// תאריך+שעה מקומיים → ISO (UTC) לכתיבה ל-Airtable (שדה dateTime)
+// ------------------------------------------------------------
+// תיקון באג (2026-10-06): לפני כן נבנה המחרוזת ע"י הדבקה ישירה
+// `${date}T${time}:00.000Z` — ה-"Z" מתייג את השעה כ-UTC, אבל השעה
+// שהוזנה בטופס היא שעה **מקומית** (ישראל). זה גרם לסטייה (ההפרש
+// בין UTC למקומי) בתצוגת המנהל. התיקון: בונים אובייקט Date לפי
+// השעון המקומי של המכשיר המפעיל את הקוד (new Date(y, m-1, d, hh, mm) —
+// לא הדבקת מחרוזת!), ואז .toISOString() ממיר אותו ל-UTC נכון.
+// ============================================================
+export function localDateTimeToISO(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null;
+  const [y, m, d] = String(dateStr).split('-').map(Number);
+  const [hh, mm] = String(timeStr).split(':').map(Number);
+  if (!y || !m || !d || Number.isNaN(hh) || Number.isNaN(mm)) return null;
+  const dt = new Date(y, m - 1, d, hh, mm, 0, 0);
+  if (Number.isNaN(dt.getTime())) return null;
+  return dt.toISOString();
+}
+
+// הכיוון ההפוך: ערך dateTime (ISO, UTC אמיתי) → "HH:mm" מקומי לתצוגה/טופס
+export function isoToLocalTime(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}

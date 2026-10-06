@@ -127,6 +127,41 @@ async function test(name, fn, warnMs = WRITE_WARN_MS) {
 
 const today = new Date().toISOString().slice(0, 10);
 
+// ============ 0. בדיקה טהורה: תאריך/שעה מקומי → ISO (UTC) ============
+// לא נוגעת ברשת/שרת חי — בודקת רק את utils/format.js (localDateTimeToISO/
+// isoToLocalTime), בהן WorkerReport.jsx ו-WorkersPage.jsx (WorkForm) בונים
+// את "שעת התחלה"/"שעת סיום". תיקון באג (2026-10-06): לפני כן נבנתה
+// המחרוזת ע"י הדבקה ישירה `${date}T${time}:00.000Z` — ה-"Z" סימן שעה
+// **מקומית** (ישראל) כ-UTC בטעות, מה שגרם לסטייה של שעות בתצוגת המנהל.
+await test('תאריך/שעה: בניית ISO מקומי (לא הדבקת מחרוזת עם Z)', async () => {
+  const { localDateTimeToISO, isoToLocalTime } = await import('../../client/src/utils/format.js');
+  const date = '2026-10-06', start = '08:30', end = '12:00';
+  const isoStart = localDateTimeToISO(date, start);
+  const isoEnd = localDateTimeToISO(date, end);
+  if (!isoStart || !isoEnd) throw new Error('localDateTimeToISO החזיר null');
+
+  // 1) round-trip: ISO → זמן מקומי מחזיר את מה שהוזן
+  if (isoToLocalTime(isoStart) !== start) throw new Error(`round-trip נכשל: ${isoToLocalTime(isoStart)} != ${start}`);
+  if (isoToLocalTime(isoEnd) !== end) throw new Error('round-trip נכשל (end)');
+
+  // 2) התיקון בפועל משנה את התוצאה מול התבנית הבאגית הישנה — אלא אם
+  //    אזור הזמן המקומי של התהליך הוא UTC עצמו (offset=0, אין הבדל)
+  const buggy = `${date}T${start}:00.000Z`;
+  const offsetMin = new Date(`${date}T${start}:00`).getTimezoneOffset();
+  if (offsetMin !== 0 && isoStart === buggy) throw new Error('התיקון לא משנה את התוצאה — עדיין מתנהג כמו הבאג הישן');
+  if (offsetMin === 0 && isoStart !== buggy) throw new Error('באופסט 0 התוצאה אמורה להיות זהה לתבנית הישנה');
+
+  // 3) ה"הפרש" בין שתי שעות (הבסיס לחישוב "סכום שעות" ב-Airtable) לא
+  //    נפגע מהתיקון — שתי השעות מוזזות באותו כיוון/גודל
+  const diffNewMs = new Date(isoEnd) - new Date(isoStart);
+  const diffOldMs = new Date(`${date}T${end}:00.000Z`) - new Date(buggy);
+  if (diffNewMs !== diffOldMs) throw new Error(`ההפרש בין שעות השתנה: חדש=${diffNewMs} ישן=${diffOldMs}`);
+  const expectedHours = 3.5; // 12:00 - 08:30
+  if (Math.abs(diffNewMs / 3600000 - expectedHours) > 1e-9) throw new Error('הפרש השעות שגוי');
+
+  return `offset=${offsetMin}min, ISO=${isoStart}`;
+}, READ_WARN_MS);
+
 // ============ 1. קריאת כל הטבלאות + זמני תגובה ============
 const tables = await api('GET', 'tables');
 for (const t of tables) {
