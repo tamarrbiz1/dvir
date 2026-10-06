@@ -60,8 +60,11 @@ const SORTERS = {
 };
 
 // שדות שניתן לערוך ידנית (Formula / Lookup / AI אינם ניתנים לעריכה)
+// "משווק" נוסף 2026-10-06 (סעיף C) — שדה קישור (link) לטבלת "משווקים",
+// היה חסר מהטופס לגמרי (ר' RecordForm.jsx type:'link'), כמו שהיה ב"תעודות משלוח".
 const EDIT_FIELDS = [
   { name: 'סטטוס תשלום', label: 'סטטוס תשלום', type: 'select' },
+  { name: 'משווק', label: 'משווק', type: 'link', linkTable: 'משווקים', linkNameField: 'שם משווק' },
   { name: 'תאריך-AI', label: 'תאריך', type: 'date' },
   { name: 'קוד שבוע', label: 'קוד שבוע (YYYYMMDD-YYYYMMDD)', type: 'text' },
   { name: 'עלות הובלה', label: 'עלות הובלה (₪)', type: 'text' },

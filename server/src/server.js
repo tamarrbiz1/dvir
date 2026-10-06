@@ -16,6 +16,7 @@ import { analyzeExpenseInventory, approvePendingDeduction, readState, reverseInv
 import { analyzeLogisticsInventory } from './logistics-deduction.js';
 import { fixFilenameEncoding } from './filename-utils.js';
 import { sweep as sweepWeeklySync, INVOICES_TABLE, NOTES_TABLE } from './weekly-sync.js';
+import { runAutoLink, SUPPLIERS_TABLE, MARKETERS_TABLE, EXPENSES_TABLE, CHECKS_TABLE, DELIVERY_TABLE } from './supplier-linking.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -358,6 +359,36 @@ app.post('/api/expenses/manual', authenticate, requireOwner, async (req, res) =>
     invalidateReads('הוצאות');
     invalidateReads('מלאי בסיסי');
     res.status(201).json(created);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// קישור ספקים/משווקים אוטומטי (2026-10-06, סעיף C) — ר' supplier-linking.js.
+// owner בלבד: נוגע בכספים (הוצאות/צ׳קים/חשבוניות) ויכול ליצור/לכתוב
+// רשומות ספק/משווק אמיתיות. GET הוא *תמיד* dryRun (בלי קשר לפרמטר) —
+// קריאת GET לעולם לא כותבת, מתוך עקרון בטיחות נוסף על מה שהתבקש; רק
+// POST עם dryRun=0 מפורש מבצע כתיבה בפועל. בלי פרמטר (או dryRun=1/כל
+// ערך אחר) — תצוגה מקדימה בלבד.
+// ============================================================
+app.get('/api/suppliers/auto-link', authenticate, requireOwner, async (_req, res) => {
+  try {
+    const result = await runAutoLink({ dryRun: true });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/suppliers/auto-link', authenticate, requireOwner, async (req, res) => {
+  try {
+    const dryRun = req.query.dryRun !== '0';
+    const result = await runAutoLink({ dryRun });
+    if (!dryRun) {
+      [SUPPLIERS_TABLE, MARKETERS_TABLE, EXPENSES_TABLE, CHECKS_TABLE, INVOICES_TABLE, DELIVERY_TABLE].forEach(invalidateReads);
+    }
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
