@@ -5,7 +5,7 @@ import { workHours } from '../utils/field.js';
 // ============================================================
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useAutoRefresh } from '../utils/live.js';
-import { formatMoney, formatNumber } from '../utils/format.js';
+import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { t, translateStructureName } from '../i18n.js';
@@ -38,8 +38,8 @@ export default function WorkerEarnings({ api, worker }) {
     return String(r['עובד'] || '') === String(workerId);
   });
 
-  // חלון רף לפי בחירת ההגדרה
-  const rangeRecs = useMemo(() => {
+  // חלון התאריכים לפי בחירת ההגדרה — משמש גם לסינון וגם לכיתוב-התקופה (kpi-sub)
+  const periodBounds = useMemo(() => {
     const now = new Date();
     let start = null, end = now;
     if (range === 'month') {
@@ -52,7 +52,20 @@ export default function WorkerEarnings({ api, worker }) {
     }
     if (dFrom) start = new Date(dFrom);
     if (dTo) end = new Date(dTo);
+    return { start, end };
+  }, [range, dFrom, dTo]);
 
+  // כיתוב-תקופה לכל ה-KPI-ים (בדומה למסכי מנהל — ר' utils/period.js)
+  const periodCaption = useMemo(() => {
+    const { start, end } = periodBounds;
+    if (!start) return formatDate(end);
+    const a = formatDate(start), b = formatDate(end);
+    return a === b ? a : `${a} – ${b}`;
+  }, [periodBounds]);
+
+  // חלון רף לפי בחירת ההגדרה
+  const rangeRecs = useMemo(() => {
+    const { start, end } = periodBounds;
     return mine.filter((r) => {
       const d = new Date(r['תאריך']);
       if (Number.isNaN(d.getTime())) return false;
@@ -60,7 +73,7 @@ export default function WorkerEarnings({ api, worker }) {
       if (d > end) return false;
       return true;
     });
-  }, [mine, range, dFrom, dTo]);
+  }, [mine, periodBounds]);
 
   const totalEarned = rangeRecs.reduce((s, r) => s + (Number(r['סכום לתשלום']) || 0), 0);
   const totalHours = rangeRecs.reduce((s, r) => s + workHours(r), 0);
@@ -123,18 +136,22 @@ export default function WorkerEarnings({ api, worker }) {
             <div className="kpi-card">
               <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">{t('w_earnedInRange')}</span></div>
               <div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(totalEarned)}</div>
+              <div className="kpi-sub">{periodCaption}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--cartons-soft)' }}>⏱️</div><span className="kpi-label">{t('w_hours')}</span></div>
               <div className="kpi-value" style={{ color: 'var(--cartons)' }}>{formatNumber(totalHours)}</div>
+              <div className="kpi-sub">{periodCaption}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--pallets-soft)' }}>📋</div><span className="kpi-label">{t('w_jobs')}</span></div>
               <div className="kpi-value" style={{ color: 'var(--pallets)' }}>{formatNumber(rangeRecs.length)}</div>
+              <div className="kpi-sub">{periodCaption}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--profit-soft)' }}>📈</div><span className="kpi-label">{t('w_avgPerDay')}</span></div>
               <div className="kpi-value" style={{ color: 'var(--profit)' }}>{formatMoney(avgPerDay)}</div>
+              <div className="kpi-sub">{periodCaption}</div>
             </div>
           </div>
 

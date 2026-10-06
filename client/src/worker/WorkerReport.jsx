@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react';
 import { t, translateStructureName, translateVariety } from '../i18n.js';
 import { workTypeName, pricingForStructureOnDate } from '../utils/field.js';
-import { formatMoney } from '../utils/format.js';
+import { formatMoney, localDateTimeToISO } from '../utils/format.js';
 
 export default function WorkerReport({ api, worker, approvedDate = null, onDone, onAskDateChange }) {
   const [structures, setStructures] = useState([]);
@@ -25,6 +25,8 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
   const [success, setSuccess] = useState(false);
   // הסכום שחושב ב-Airtable לדיווח האחרון: null = עדיין מחשב, number = הגיע, 'pending' = לא הגיע בזמן
   const [computedSum, setComputedSum] = useState(null);
+  // תקציר "הדיווח האחרון שלך" — נלכד לפני איפוס הטופס, מוצג אחרי שמירה מוצלחת
+  const [lastReport, setLastReport] = useState(null);
 
   useEffect(() => {
     Promise.all([
@@ -63,8 +65,8 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
   const submit = async (e) => {
     e.preventDefault();
     setSaving(true); setError(''); setSuccess(false); setComputedSum(null);
-    // המבנה הוא שדה חובה; סוג העבודה נבחר עבור תצוגה/תווית — אינו נכתב ל-Airtable
-    if (!structure) {
+    // המבנה וסוג העבודה הם שדות חובה (סוג העבודה קובע את התמחור בפועל)
+    if (!structure || !workType) {
       setError(t('w_requiredFields'));
       setSaving(false);
       return;
@@ -72,13 +74,15 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
     const workerId = worker?.id || userRecordId();
     try {
       // שדות בלבד הניתנים לכתיבה; Lookup/Formula נכתבים ע"י Airtable מעצמו
+      // שעת התחלה/סיום: בונים Date מקומי ושולחים .toISOString() (UTC נכון) —
+      // לא הדבקת מחרוזת עם "Z" (שהייתה מסמנת שעה מקומית כ-UTC בטעות).
       const fields = {
         'תאריך': date,
         'מבנה': [structure],
         'תמחור עבודות': workType ? [workType] : null,
         'כמות': amount ? Number(amount) : null,
-        'שעת התחלה': startTime ? `${date}T${startTime}:00.000Z` : null,
-        'שעת סיום': endTime ? `${date}T${endTime}:00.000Z` : null,
+        'שעת התחלה': localDateTimeToISO(date, startTime),
+        'שעת סיום': localDateTimeToISO(date, endTime),
         'הערות': notes || null,
       };
       if (workerId) fields['עובד'] = [workerId];
@@ -92,6 +96,14 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
         } catch {}
       }
       setSuccess(true);
+      // תקציר "הדיווח האחרון שלך" — נלכד כאן, לפני איפוס השדות למטה
+      setLastReport({
+        date,
+        structureLabel: translateStructureName(structures.find((s) => s.id === structure)?.['מספר מבנה'] || structures.find((s) => s.id === structure)?.['סוג מבנה'] || structure),
+        workTypeLabel: selectedPricing?.label || '',
+        amount,
+        amountLabel,
+      });
       setAmount(''); setNotes(''); setStartTime(''); setEndTime(''); setWorkType('');
       // האוטומציה ב-Airtable כותבת את "סכום לתשלום" כמה שניות אחרי השמירה —
       // ממתינים לה (קריאת רשומה בודדת, לא מהמטמון) ומציגים לעובד את הסכום.
@@ -120,9 +132,16 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
     <div>
       <div className="page-header"><h2>{t('w_report')}</h2></div>
 
-      {success && (
+      {success && lastReport && (
         <div className="badge badge-ok" style={{ width: '100%', marginBottom: 14, display: 'block' }}>
           <div>✓ {t('w_reportSaved')}</div>
+          <div style={{ marginTop: 8, fontSize: 13, opacity: 0.9 }}>
+            <div style={{ fontWeight: 700, marginBottom: 2 }}>{t('w_lastReport')}</div>
+            <div>{t('w_date')}: {lastReport.date}</div>
+            <div>{t('w_structure')}: {lastReport.structureLabel}</div>
+            {lastReport.workTypeLabel && <div>{t('w_workType')}: {lastReport.workTypeLabel}</div>}
+            {lastReport.amount && <div>{lastReport.amountLabel}: {lastReport.amount}</div>}
+          </div>
           <div style={{ marginTop: 6, fontSize: 15 }}>
             {computedSum === null && <span><span className="spinner" /> {t('w_computingSum')}</span>}
             {computedSum === 'pending' && <span>{t('w_sumPending')}</span>}
@@ -160,7 +179,7 @@ export default function WorkerReport({ api, worker, approvedDate = null, onDone,
         </div>
 
         <div className="form-group">
-          <label>{t('w_workType')}</label>
+          <label className="required">{t('w_workType')}</label>
           <select className="select" style={{ width: '100%' }} value={workType} onChange={(e) => setWorkType(e.target.value)}>
             <option value="">{t('w_chooseWorkType')}</option>
             {pricingOptions.map((p) => (
