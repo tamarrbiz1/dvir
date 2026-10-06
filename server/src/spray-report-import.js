@@ -116,19 +116,30 @@ const toDMY = (iso) => { const [y, m, d] = iso.split('-'); return `${d}/${m}/${y
 // מינון: "40" → 40; "1 ליטר לדונם" → 1 + בסיס "לדונם" + הטקסט המלא בהערות;
 // "50 סמ"ק ל-100 ליטר" → 50 + "ל-100 ליטר". מספר לא-חד-משמעי → בלי ערך.
 // ============================================================
+// מספר בודד: פסיק עם **בדיוק** 3 ספרות ובלי נקודה בנוסף → מפריד אלפים
+// ("40,000" → 40000, לא 40.000) — אחרת (נקודה, או פסיק עם 1-2 ספרות) → עשרוני
+// ("1,5"/"2.5" → 1.5/2.5). בדיקת-קצה 2026-10-06: בלי זה "40,000" (ארבעים אלף,
+// מופיע בדוחות אמיתיים) היה הופך בשקט ל-40.
+function parseNumToken(raw) {
+  const m = /^(-?\d+),(\d{3})$/.exec(raw);
+  if (m) return Number(m[1] + m[2]);
+  return Number(raw.replace(',', '.'));
+}
 export function parseDosage(text) {
   const s = normSpaces(text);
   if (!s) return { value: null, basis: null, note: null };
-  if (/^-?\d+(?:[.,]\d+)?$/.test(s)) return { value: Number(s.replace(',', '.')), basis: null, note: null };
+  if (/^-?\d+(?:[.,]\d+)?$/.test(s)) return { value: parseNumToken(s), basis: null, note: null };
   let basis = null;
-  if (/100\s*ליטר/.test(s) || /ל-?100/.test(s)) basis = 'ל-100 ליטר';
+  // (?!\d) חשוב: "ל-1000 ליטר" לא אמור להיתפס כ"ל-100 ליטר" (מצא-בדיקה
+  // 2026-10-06 — בלי העוגן, "ל-100" הוא תת-מחרוזת של "ל-1000" ומתאים בטעות)
+  if (/100\s*ליטר/.test(s) || /ל-?100(?!\d)/.test(s)) basis = 'ל-100 ליטר';
   else if (/לדונם|דונם/.test(s)) basis = 'לדונם';
   else if (/לליטר|ל-?1\s*ליטר|לכל ליטר/.test(s)) basis = 'לליטר';
   else if (/%|אחוז/.test(s)) basis = 'אחוז';
   // מורידים את ביטוי הבסיס ("ל-100 ליטר", "ל-1 ליטר") לפני חיפוש המספר, כדי שלא ייחשב כמינון
   const stripped = s.replace(/ל-?\s*100\s*ליטר/g, ' ').replace(/ל-?\s*1\s*ליטר/g, ' ');
   const nums = stripped.match(/\d+(?:[.,]\d+)?/g) || [];
-  const value = nums.length === 1 ? Number(nums[0].replace(',', '.')) : null;
+  const value = nums.length === 1 ? parseNumToken(nums[0]) : null;
   return { value, basis, note: s };
 }
 

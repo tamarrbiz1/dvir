@@ -1553,6 +1553,38 @@ await test('פענוח מינון: מספר טהור / "לדונם" / "ל-100 ל
   return 'מספר טהור/לדונם/ל-100-ליטר/עמום/ריק — כולם כצפוי';
 });
 
+// מקרי-קצה שנוספו במשימת הלילה 2026-10-06 (M3): פסיק כמפריד-אלפים מול
+// עשרוני, ו"ל-1000" שלא אמור להיתפס בטעות כ"ל-100" (תת-מחרוזת, בלי עוגן).
+await test('פענוח מינון — מקרי קצה: פסיק-אלפים ("40,000"), "ל-1000 ליטר" לא נתפס כ"ל-100", מקפים/אחוז/טווח', () => {
+  const thousands = parseDosage('40,000');
+  if (thousands.value !== 40000) throw new Error(`"40,000" אמור להתפרש כ-40000 (מפריד אלפים), התקבל ${JSON.stringify(thousands)}`);
+  const decimal = parseDosage('1,5');
+  if (decimal.value !== 1.5) throw new Error(`"1,5" אמור להתפרש כ-1.5 (עשרוני, לא אלפים), התקבל ${JSON.stringify(decimal)}`);
+  const dot = parseDosage('2.5');
+  if (dot.value !== 2.5) throw new Error(`"2.5" אמור להישאר 2.5, התקבל ${JSON.stringify(dot)}`);
+  const notHundred = parseDosage('40 גרם ל-1000 ליטר');
+  if (notHundred.basis === 'ל-100 ליטר') throw new Error(`"ל-1000 ליטר" נתפס בטעות כ"ל-100 ליטר": ${JSON.stringify(notHundred)}`);
+  const percent = parseDosage('3%');
+  if (percent.value !== 3 || percent.basis !== 'אחוז') throw new Error(`"3%" שגוי: ${JSON.stringify(percent)}`);
+  const range = parseDosage('50-60');
+  if (range.value !== null) throw new Error(`טווח "50-60" לא חד-משמעי, צפוי value:null, התקבל ${range.value}`);
+  const ccPer100 = parseDosage('50 סמ״ק ל-100 ליטר'); // גרש תאילנדי/עברי שונה (״ במקום ")
+  if (ccPer100.value !== 50 || ccPer100.basis !== 'ל-100 ליטר') throw new Error(`גרש חלופי שגוי: ${JSON.stringify(ccPer100)}`);
+  return '40,000→40000, 1,5→1.5, 2.5→2.5, ל-1000≠ל-100, 3%, טווח→null — כולם כצפוי';
+});
+
+// Attachment Summary כ-{state:'error'}/{state:'pending'} (אובייקט aiText של Airtable,
+// לא מחרוזת JSON) — אמור להתפרש כ"אין נתון עדיין" (pending), לא לקרוס (M3).
+await test('פענוח Attachment Summary: אובייקט {state:"error"}/{state:"pending"} → pending, לא קורס', () => {
+  const err = parseSummary({ state: 'error', errorType: 'emptyDependency' });
+  if (err.status !== 'pending') throw new Error(`{state:'error'} אמור להתפרש כ-pending, התקבל: ${JSON.stringify(err)}`);
+  const pending = parseSummary({ state: 'pending' });
+  if (pending.status !== 'pending') throw new Error(`{state:'pending'} אמור להתפרש כ-pending, התקבל: ${JSON.stringify(pending)}`);
+  const generated = parseSummary({ state: 'generated', value: '[{"סוג טיפול":"ריסוס"}]' });
+  if (generated.status !== 'ready' || generated.rows.length !== 1) throw new Error(`{state:'generated',value:...} אמור להתפרש כ-ready עם שורה אחת: ${JSON.stringify(generated)}`);
+  return "error/pending/generated — כולם מתפרשים נכון, בלי לקרוס";
+});
+
 await test('סמן המקור: markerOf תואם את תבנית הזיהוי שה-UI/הייבוא קוראים', () => {
   const marker = markerOf(42);
   if (!/^\[מדוח ריסוסים #42\]$/.test(marker)) throw new Error(`תבנית סמן לא צפויה: ${marker}`);
