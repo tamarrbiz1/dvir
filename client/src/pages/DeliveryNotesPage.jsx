@@ -157,6 +157,26 @@ export default function DeliveryNotesPage() {
     });
   }, [items, search, marketerF, structureF, weekF, checkF, range]);
 
+  // תעודות שקיימות (עוברות שאר הפילטרים) אבל מוסתרות ע"י בורר-התקופה — למשל
+  // תעודה שהועלתה היום אך "תאריך תעודה" (מה-AI) הוא חודש קודם. בלי זה "הרשימה
+  // לא מתעדכנת" (ממצא 2026-10-06, K) למרות שהרשומה נוצרה בפועל.
+  const hiddenByPeriod = useMemo(() => {
+    if (preset === 'all') return 0;
+    const q = search.trim().toLowerCase();
+    return items.filter((n) => {
+      if (marketerF && !linkedTo(n, 'משווק', marketerF)) return false;
+      if (structureF && !linkedTo(n, 'מבנה', structureF)) return false;
+      if (weekF && noteWeekCode(n) !== weekF) return false;
+      if (checkF === '__anomaly' ? !isWeightAnomaly(n) : (checkF && String(noteCheck(n) || '') !== checkF)) return false;
+      if (q) {
+        const hay = [noteNumber(n), noteMarketer(n)?.name, noteStructure(n)?.name, noteWeekCode(n), noteDocument(n)?.filename]
+          .filter((x) => x !== null && x !== undefined).join(' ').toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return !inPeriod(noteDate(n), range);
+    }).length;
+  }, [items, search, marketerF, structureF, weekF, checkF, range, preset]);
+
   const sorted = useMemo(() => sortRows(filtered, sort.key, sort.dir, SORTERS), [filtered, sort]);
   const paged = useMemo(() => paginate(sorted, page, printing ? Math.max(sorted.length, 1) : pageSize), [sorted, page, pageSize, printing]);
 
@@ -261,6 +281,13 @@ export default function DeliveryNotesPage() {
         <PeriodSelect preset={preset} from={from} to={to} onPreset={setPreset} onFrom={setFrom} onTo={setTo} />
         {hasFilters && <button type="button" className="btn btn-ghost btn-sm" onClick={resetFilters}>נקה סינון</button>}
       </div>
+
+      {hiddenByPeriod > 0 && (
+        <div className="badge badge-warn no-print" style={{ width: '100%', marginBottom: 12 }}>
+          ⚠ {hiddenByPeriod} תעודות קיימות אך מוסתרות כי תאריך התעודה מחוץ ל"{caption}" (לדוגמה: תעודה שהועלתה היום עם תאריך-מסמך מחודש קודם).{' '}
+          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setPreset('all')}>הצג הכל</button>
+        </div>
+      )}
 
       {/* הטבלה */}
       <div className="card">

@@ -179,6 +179,27 @@ export default function InvoicesPage() {
     });
   }, [items, search, marketerF, weekF, statusF, checkF, range]);
 
+  // חשבוניות שקיימות (עוברות שאר הפילטרים) אבל מוסתרות ע"י בורר-התקופה —
+  // למשל חשבונית שהועלתה היום אך "תאריך-AI" הוא חודש קודם (ר' ממצא 2026-10-06, K).
+  const hiddenByPeriod = useMemo(() => {
+    if (preset === 'all') return 0;
+    const q = search.trim().toLowerCase();
+    return items.filter((i) => {
+      if (marketerF && !linkedTo(i, 'משווק', marketerF)) return false;
+      if (weekF && invWeekCode(i) !== weekF) return false;
+      if (statusF === '__none' ? Boolean(invStatus(i)) : (statusF && String(invStatus(i) || '') !== statusF)) return false;
+      if (checkF === '__any' && !hasAnomaly(i)) return false;
+      if (checkF === '__deduction' && !isDeductionAnomaly(i)) return false;
+      if (checkF === '__transport' && !isTransportAnomaly(i)) return false;
+      if (q) {
+        const hay = [invNumber(i), invTitle(i), invMarketer(i)?.name, invWeekCode(i), invStatus(i), invDocument(i)?.filename]
+          .filter((x) => x !== null && x !== undefined).join(' ').toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return !inPeriod(invDate(i), range);
+    }).length;
+  }, [items, search, marketerF, weekF, statusF, checkF, range, preset]);
+
   const sorted = useMemo(() => sortRows(filtered, sort.key, sort.dir, SORTERS), [filtered, sort]);
   const paged = useMemo(() => paginate(sorted, page, printing ? Math.max(sorted.length, 1) : pageSize), [sorted, page, pageSize, printing]);
 
@@ -313,6 +334,13 @@ export default function InvoicesPage() {
         <PeriodSelect preset={preset} from={from} to={to} onPreset={setPreset} onFrom={setFrom} onTo={setTo} />
         {hasFilters && <button type="button" className="btn btn-ghost btn-sm" onClick={resetFilters}>נקה פילטרים</button>}
       </div>
+
+      {hiddenByPeriod > 0 && (
+        <div className="badge badge-warn no-print" style={{ width: '100%', marginBottom: 12 }}>
+          ⚠ {hiddenByPeriod} חשבוניות קיימות אך מוסתרות כי התאריך מחוץ ל"{caption}" (לדוגמה: חשבונית שהועלתה היום עם תאריך-מסמך מחודש קודם).{' '}
+          <button type="button" className="btn btn-sm btn-ghost" onClick={() => setPreset('all')}>הצג הכל</button>
+        </div>
+      )}
 
       {/* הטבלה */}
       <div className="card">
