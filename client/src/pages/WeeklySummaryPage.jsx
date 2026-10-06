@@ -9,8 +9,9 @@ import { BarChart, Bar, Line, LineChart, XAxis, YAxis, Tooltip, ResponsiveContai
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps, yCategoryProps } from '../utils/chart.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { removeRecord } from '../components/RecordForm.jsx';
-import { toast } from '../utils/ui.js';
+import { toast, confirmDialog } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
+import { authFetch } from '../utils/authFetch.js';
 
 // ============================================================
 // סיכום שבועי — סעיפים 30–35 באיפיון
@@ -49,6 +50,7 @@ export default function WeeklySummaryPage() {
   const [loading, setLoading] = useState(true);
   const [drawer, setDrawer] = useState(null);
   const [newWeek, setNewWeek] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [fYear, setFYear] = useState('');
   const [fMonth, setFMonth] = useState('');
   const [fWeek, setFWeek] = useState('');
@@ -79,6 +81,48 @@ export default function WeeklySummaryPage() {
   useEffect(() => { load(true).catch(() => {}).finally(() => setLoading(false)); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   const silentLoad = useCallback(() => load(false).catch(() => {}), [load]);
   useAutoRefresh(silentLoad);
+
+  // ------------------------------------------------------------
+  // "סנכרן שבועות" (owner בלבד, סעיף D 2026-10-06) — "הכנסות ותחזית
+  // 2026" ו"סיכום שבועי" ריקים כש-לחשבוניות/תעודות משלוח יש "קוד שבוע"
+  // בלי רשומת-שבוע תואמת. בודק קודם dry-run (GET, בלי כתיבה) ומציג
+  // סיכום; רק אחרי אישור מפורש מריץ בפועל (POST) ומרענן את המסך.
+  // ------------------------------------------------------------
+  const handleSyncWeeks = useCallback(async () => {
+    setSyncing(true);
+    try {
+      const r = await authFetch('/api/weekly/sync?dryRun=1');
+      const dry = await r.json().catch(() => ({}));
+      if (!r.ok || dry.error) throw new Error(dry.error || `שגיאה ${r.status}`);
+      const nothingToDo = !dry.weeksToCreate?.length && !dry.linksToCreate?.length;
+      if (nothingToDo) {
+        toast('הכל כבר מסונכרן — אין שבועות או קישורים חסרים');
+        return;
+      }
+      const lines = [
+        `שבועות חדשים שייווצרו: ${dry.weeksToCreate?.length || 0}`,
+        `חשבוניות/תעודות משלוח שיקושרו: ${dry.linksToCreate?.length || 0}`,
+        `כבר מקושרים: ${dry.alreadyLinked || 0}`,
+      ];
+      if (dry.skippedNoCode) lines.push(`בלי "קוד שבוע" כלל (לא ניתן לקשר): ${dry.skippedNoCode}`);
+      if (dry.skippedInvalidCode?.length) lines.push(`"קוד שבוע" בפורמט לא תקין: ${dry.skippedInvalidCode.length}`);
+      const ok = await confirmDialog({
+        title: 'סנכרון שבועות',
+        message: `${lines.join('\n')}\n\nלהריץ בפועל ולעדכן ב-Airtable?`,
+        confirmLabel: 'סנכרן בפועל',
+      });
+      if (!ok) return;
+      const r2 = await authFetch('/api/weekly/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+      const real = await r2.json().catch(() => ({}));
+      if (!r2.ok || real.error) throw new Error(real.error || `שגיאה ${r2.status}`);
+      toast(`סונכרן: ${real.weeksCreated?.length || 0} שבועות נוצרו, ${real.linksCreated || 0} קישורים עודכנו`);
+      await load();
+    } catch (e) {
+      toast(`הסנכרון נכשל: ${e.message || e}`, 'error');
+    } finally {
+      setSyncing(false);
+    }
+  }, [load]);
 
   // ------ סינון לפי שנה / חודש / שבוע (מקוד השבוע) ------
   const validCode = (w) => /^\d{8}-\d{8}$/.test(String(w[F.code] || ''));
@@ -171,6 +215,11 @@ export default function WeeklySummaryPage() {
   return (
     <div>
       <PageHeader icon="📆" title="סיכום שבועי">
+        {canEdit && (
+          <button className="btn btn-ghost no-print" disabled={syncing} onClick={handleSyncWeeks} title="בודק חשבוניות/תעודות משלוח בלי רשומת-שבוע תואמת, ויוצר/מקשר לפי צורך">
+            {syncing ? 'בודק…' : '🔄 סנכרן שבועות'}
+          </button>
+        )}
         {canEdit && <button className="btn btn-primary no-print" onClick={() => setNewWeek(true)}>+ סיכום שבועי</button>}
       </PageHeader>
       {loading ? (

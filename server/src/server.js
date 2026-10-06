@@ -15,6 +15,7 @@ import { scheduleFridaysCheck } from './fridays.js';
 import { analyzeExpenseInventory, approvePendingDeduction, readState, reverseInventoryDeduction, createManualExpense } from './inventory-deduction.js';
 import { analyzeLogisticsInventory } from './logistics-deduction.js';
 import { fixFilenameEncoding } from './filename-utils.js';
+import { sweep as sweepWeeklySync, INVOICES_TABLE, NOTES_TABLE } from './weekly-sync.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -314,6 +315,32 @@ app.post('/api/expenses/:id/analyze-inventory/approve', authenticate, requireOwn
     invalidateReads('הוצאות');
     invalidateReads('מלאי בסיסי');
     res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// סנכרון "סיכום שבועי" (תוספת 2026-10-06, סעיף D) — ר' weekly-sync.js.
+// GET תמיד dry-run (שום כתיבה, ללא קשר לפרמטר) — דוח בלבד, לכל מי
+// שמחובר. POST מבצע בפועל (owner בלבד): יוצר רשומות-שבוע חסרות
+// ומקשר חשבוניות/תעודות משלוח אליהן לפי "קוד שבוע".
+// ============================================================
+app.get('/api/weekly/sync', authenticate, async (_req, res) => {
+  try {
+    const report = await sweepWeeklySync({ dryRun: true });
+    res.json(report);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/weekly/sync', authenticate, requireOwner, async (req, res) => {
+  try {
+    const dryRun = req.query.dryRun === '1' || req.body?.dryRun === true;
+    const report = await sweepWeeklySync({ dryRun });
+    if (!dryRun) { invalidateReads('סיכום שבועי'); invalidateReads(INVOICES_TABLE); invalidateReads(NOTES_TABLE); }
+    res.json(report);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
