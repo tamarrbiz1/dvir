@@ -5,7 +5,7 @@ import { authFetch } from '../utils/authFetch.js';
 import { formatDate, formatMoney, formatNumber } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { confirmDialog, toast } from '../utils/ui.js';
-import { readInventoryAiState, inventoryAiSummary } from '../utils/inventoryAi.js';
+import { readInventoryAiState, inventoryAiSummary, logisticsAiSummary } from '../utils/inventoryAi.js';
 
 // ============================================================
 // העלאת מסמך — "גרסה סופית" באיפיון (שורות 3845–4118)
@@ -52,9 +52,25 @@ const POLL_MAX_MS = 4 * 60 * 1000; // מפסיקים לבדוק אחרי 4 דק�
 const HISTORY_POLL_MS = 15000;              // רענון שקט של ההיסטוריה כל עוד יש "ממתין לעיבוד"
 const HISTORY_POLL_MAX_MS = 10 * 60 * 1000; // ...עד 10 דקות מהכניסה למסך / מההעלאה האחרונה
 
-/** האם ה-Automation כבר מילאה לפחות שדה ניתוח אחד */
+/**
+ * האם ה-Automation כבר מילאה לפחות שדה ניתוח אחד.
+ * הגנה (2026-10-06, סעיף L): שדה-AI אמיתי של Airtable (טיפוס aiText,
+ * לא multilineText רגיל) מגיע כאובייקט כמו { state:'pending' } או
+ * { state:'error', errorType:... } — "לא ריק" כאובייקט JS, אבל *לא*
+ * ניתוח שהושלם. היום אף שדה-analysis בפועל אינו מהטיפוס הזה (נבדק מול
+ * הסכימה האמיתית — כולם multilineText/singleLineText/formula), אבל
+ * אם ייוסף כזה שדה בעתיד — לא נרצה "נותח" שגוי (error/pending) ולא
+ * "ממתין" שגוי (state:'generated' עם value אמיתי).
+ */
 function isAnalyzed(rec, target) {
-  return target.analysis.some(([, f]) => rec?.[f] !== undefined && rec?.[f] !== null && rec?.[f] !== '');
+  return target.analysis.some(([, f]) => {
+    const v = rec?.[f];
+    if (v === undefined || v === null || v === '') return false;
+    if (typeof v === 'object' && !Array.isArray(v) && 'state' in v) {
+      return v.state === 'generated' && v.value !== undefined && v.value !== null && v.value !== '';
+    }
+    return true;
+  });
 }
 function fmtAnalysis(v, kind) {
   if (v === undefined || v === null || v === '') return null;
@@ -135,34 +151,67 @@ export default function UploadDocumentPage() {
   const needsWeek = topic === 'income' || topic === 'delivery';
   const topicMeta = TOPICS.find((t) => t.key === topic);
 
+  // מצב הורדת-המלאי הנגזרת (תעודות משלוח/חשבוניות — ר' logistics-deduction.js),
+  // id -> { weekCode, cartonsCrossCheck, results, ... }. בשרת-בלבד (in-memory),
+  // כי לטבלאות האלה אין שדה "הערות" משלהן לשמור בו state (ר' server.js).
+  const [logisticsById, setLogisticsById] = useState({});
+
   // silent — רענון ברקע בלי להחליף את הטבלה בשלד (כדי שלא יהבהב כל 15 שניות)
+  // fresh=1: עוקף את מטמון-הקריאה (30 שניות) בשרת — Make כותב ישירות ל-Airtable
+  // בלי לעבור בשרת שלנו, כך שאין שום invalidateReads שיודע לנקות קאש-ישן (ר'
+  // תוספת 2026-10-06, סעיף L). המסך הזה הוא בדיוק מי שצריך לראות "נותח" מהר
+  // כי הוא בפולינג פעיל על "ממתין לעיבוד".
   const loadHistory = (opts = {}) => {
     if (opts.silent !== true) setHistLoading(true);
-    Promise.all(Object.entries(TARGETS).map(([key, t]) =>
-      app.api.get(t.table, '?maxRecords=60&raw=1').then((d) => (Array.isArray(d) ? d : [])
-        .filter((r) => Array.isArray(r[t.field]) && r[t.field].length)
-        .map((r) => ({
-          key, id: r.id, table: t.table,
-          label: TOPICS.find((x) => x.key === key)?.label || t.table,
-          date: r[t.dateField] || r['תאריך'] || r['תאריך העלאת קובץ'] || '',
-          uploadedAt: r[t.uploadedField] || r[t.dateField] || '',
-          week: r['קוד שבוע'] || '',
-          name: r[t.field][0]?.filename || 'קובץ',
-          url: r[t.field][0]?.url || '',
-          analyzed: isAnalyzed(r, t),
-          notes: r['הערות'] || '', // ליניתוח מלאי-AI בהוצאות בלבד (ר' inventoryAi.js) — ריק/לא רלוונטי בשאר הסוגים
-        }))).catch(() => [])
-    )).then((results) => {
+    Promise.all([
+      ...Object.entries(TARGETS).map(([key, t]) =>
+        app.api.get(t.table, '?maxRecords=60&raw=1&fresh=1').then((d) => (Array.isArray(d) ? d : [])
+          .filter((r) => Array.isArray(r[t.field]) && r[t.field].length)
+          .map((r) => ({
+            key, id: r.id, table: t.table,
+            label: TOPICS.find((x) => x.key === key)?.label || t.table,
+            date: r[t.dateField] || r['תאריך'] || r['תאריך העלאת קובץ'] || '',
+            uploadedAt: r[t.uploadedField] || r[t.dateField] || '',
+            week: r['קוד שבוע'] || '',
+            name: r[t.field][0]?.filename || 'קובץ',
+            url: r[t.field][0]?.url || '',
+            analyzed: isAnalyzed(r, t),
+            notes: r['הערות'] || '', // לניתוח מלאי-AI בהוצאות בלבד (ר' inventoryAi.js) — ריק/לא רלוונטי בשאר הסוגים
+          }))).catch(() => [])
+      ),
+      ...['תעודות משלוח', 'חשבוניות'].map((tbl) =>
+        authFetch(`/api/logistics/${encodeURIComponent(tbl)}/status`).then((r) => (r.ok ? r.json() : {})).catch(() => ({}))
+      ),
+    ]).then((all) => {
       if (!isMounted.current) return;
-      setHistory(results.flat().sort((a, b) => String(b.uploadedAt).localeCompare(String(a.uploadedAt))).slice(0, 20));
+      const historyResults = all.slice(0, Object.keys(TARGETS).length);
+      const [notesStatus, invoicesStatus] = all.slice(Object.keys(TARGETS).length);
+      setLogisticsById({ ...notesStatus, ...invoicesStatus });
+      setHistory(historyResults.flat().sort((a, b) => String(b.uploadedAt).localeCompare(String(a.uploadedAt))).slice(0, 20));
       setHistLoading(false);
     });
   };
   useEffect(() => { loadHistory(); }, []);
 
+  const retryLogistics = async (h) => {
+    try {
+      const r = await authFetch(`/api/logistics/${encodeURIComponent(h.table)}/${h.id}/analyze-inventory`, { method: 'POST' });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `שגיאה ${r.status}`);
+      toast('הניתוח הופעל מחדש');
+      loadHistory({ silent: true });
+    } catch (e) {
+      toast(`לא ניתן היה להפעיל ניתוח מחדש: ${e.message || e}`, 'error');
+    }
+  };
+
   // ההיסטוריה מתרעננת מעצמה כל עוד יש בה מסמך "ממתין לעיבוד" — גם אם ההעלאה
   // נעשתה בביקור קודם במסך (המעקב שלמעלה חי רק בביקור שבו הועלה הקובץ).
-  const pendingCount = history.filter((h) => !h.analyzed).length;
+  // כולל גם "ממתין לנתוני ניתוח" בהורדת-מלאי נגזרת (תעודות/חשבוניות) —
+  // זה יכול להישאר ממתין אחרי שה-AI עצמו (isAnalyzed) כבר הושלם, כי Make
+  // ממלא "כמות קרטונים"/"מספר משטחים" בנפרד (ר' logistics-deduction.js).
+  const pendingCount = history.filter((h) => !h.analyzed
+    || ((h.key === 'delivery' || h.key === 'income') && logisticsAiSummary(logisticsById[h.id])?.kind === 'pending')).length;
   useEffect(() => {
     if (!pendingCount) return undefined;
     const timer = setInterval(() => {
@@ -442,7 +491,13 @@ export default function UploadDocumentPage() {
               <tbody>
                 {history.map((h, i) => {
                   const meta = TOPICS.find((t) => t.key === h.key);
-                  const aiSummary = h.key === 'expense' ? inventoryAiSummary(readInventoryAiState(h.notes)) : null;
+                  // תעודות משלוח/חשבוניות: הורדה נגזרת (קרטונים/נילונים/כובעים/משטחים —
+                  // ר' logistics-deduction.js), מצב בשרת-בלבד (in-memory) לפי record id.
+                  // צ'קים: במפורש "אין השפעה" ולא שתיקה (סעיף L, בקשת תמר).
+                  const aiSummary = h.key === 'expense' ? inventoryAiSummary(readInventoryAiState(h.notes))
+                    : (h.key === 'delivery' || h.key === 'income') ? logisticsAiSummary(logisticsById[h.id])
+                      : null;
+                  const canRetry = canEdit && (h.key === 'delivery' || h.key === 'income') && aiSummary && aiSummary.kind !== 'ok';
                   return (
                     <tr key={i} style={{ cursor: 'default' }}>
                       <td><span className="badge" style={{ background: meta?.soft, color: meta?.color }}>{meta?.icon} {h.label}</span></td>
@@ -453,10 +508,17 @@ export default function UploadDocumentPage() {
                       <td>{h.analyzed ? <span className="badge badge-ok">נותח</span> : <span className="badge badge-warn">ממתין לעיבוד</span>}</td>
                       <td>
                         {aiSummary ? (
-                          <span className={`badge ${aiSummary.kind === 'ok' ? 'badge-ok' : aiSummary.kind === 'warn' ? 'badge-warn' : aiSummary.kind === 'error' ? 'badge-error' : ''}`} title={aiSummary.text}>
-                            📦 {aiSummary.text}
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                            <span className={`badge ${aiSummary.kind === 'ok' ? 'badge-ok' : (aiSummary.kind === 'warn' || aiSummary.kind === 'pending') ? 'badge-warn' : aiSummary.kind === 'error' ? 'badge-error' : ''}`} title={aiSummary.text}>
+                              📦 {aiSummary.text}
+                            </span>
+                            {canRetry && (
+                              <button type="button" className="btn btn-ghost btn-sm" title="נסה שוב — להריץ את הצלבת המלאי מחדש" aria-label={`ניסיון חוזר להורדת מלאי: ${h.label}`} style={{ padding: '2px 6px' }} onClick={() => retryLogistics(h)}>🔄</button>
+                            )}
                           </span>
-                        ) : h.key === 'expense' ? <span className="muted" style={{ fontSize: 12 }}>—</span> : null}
+                        ) : h.key === 'expense' ? <span className="muted" style={{ fontSize: 12 }}>—</span>
+                          : h.key === 'cheque' ? <span className="muted" style={{ fontSize: 12 }} title="לצ'קים אין השפעה על מלאי">אין השפעה</span>
+                            : null}
                       </td>
                       {canEdit && (
                         <td className="no-print">

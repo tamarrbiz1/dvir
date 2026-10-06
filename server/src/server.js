@@ -239,30 +239,50 @@ async function autoAnalyzeExpenseInventory(expenseId, attempt = 0) {
 // הקובץ עצמו — ממתינים ש-Make ימלא "כמות קרטונים"/"מספר משטחים" על
 // הרשומה, ואז מצליבים וגוזרים הורדה. ר' logistics-deduction.js.
 //
-// ⚠️ סיכון פתוח, אומת בפועל בבדיקה (ר' qa-check.mjs): ל"הוצאות" יש לנו
-// סימן-state משלנו ([מלאי-AI]) שמאפשר לדעת בוודאות שניתוח Make הסתיים
-// לפני שאנחנו קוראים את התוצאה. לתעודת-משלוח/חשבונית **אין** סימן כזה —
-// "יש ערך לא-ריק" הוא ניחוש, לא אישור שה-Make-ניתוח הסתיים וסופי. אם
-// הניסיון הראשון קולט ערך-ביניים/שגוי ומצליח להוריד מלאי (לא "נכשל",
-// אז אין ניסיון חוזר!) — התגית-אידמפוטנטיות תחסום הורדה נכונה בהמשך.
-// ההמתנה הארוכה (עד ~2 דקות) מקטינה את הסיכון אך לא מבטלת אותו.
-// עד שתהיה דרך אמינה יותר לדעת ש-Make סיים (למשל webhook ממנו, כמו
-// notifyMakeWebhook בכיוון ההפוך) — מומלץ לתמר לאמת ידנית דרך
-// POST /api/logistics/:table/:id/analyze-inventory אחרי שרואה בעין
-// שהשדות התמלאו נכון בטבלה, ולא להסתמך רק על הטריגר האוטומטי.
+// ⚠️ תקרית אמיתית 2026-10-06 (לא השערה — נבדק מול Airtable חי): "יש
+// ערך לא-ריק" היה ניחוש-בלבד לכך ש-Make סיים, ו-num() הפך שדה ריק ל-0
+// (לא ל-null) — כך ש-deductOne כתב תגית-אידמפוטנטיות גם על "0" מזויף,
+// ונעל לנצח הורדה אמיתית מאוחרת יותר (ר' הערת הכותרת ב-logistics-deduction.js
+// לתעודות #45/#47 וחשבונית #61 שנפגעו בפועל). לאחר התיקון: "ממתין לנתון"
+// (d.pending) לעולם לא כותב ל-Airtable בכלל, אז ריטריי בטוח ולא "נועל"
+// כלום. ממשיכים לנסות גם כשיש תוצאות אבל כולן pending (לא רק
+// results.length===0), עד כ-5 דקות סה"כ, עם לוג מפורט לכל ניסיון.
 // ============================================================
+const MAX_LOGISTICS_ATTEMPTS = 9;
+// in-memory בלבד (לא נשרד restart) — לחשיפת מצב ההורדה האחרון לכל מסמך
+// למסך ("מסמכים שהועלו לאחרונה"), כולל כפתור "נסה שוב". אין לטבלאות
+// תעודות-משלוח/חשבוניות שדה "הערות" משלהן לשמור בו state (ר' הערת הכותרת).
+const logisticsStatus = new Map(); // `${table}:${id}` -> { at, weekCode, cartonsCrossCheck, results, attempt }
+
+function summarizeLogisticsResults(results) {
+  if (!results.length) return 'אין תוצאות (אין עדיין נתון לגזור ממנו)';
+  return results.map((r) => {
+    if (r.pending) return `${r.sourceLabel || '?'}: ${r.skipped}`;
+    if (r.deducted) return `${r.category}: ירד ${r.quantity}${r.softWarning ? ' ⚠' : ''}`;
+    if (r.needsApproval) return `${r.category}: דורש אישור (${r.reason})`;
+    return `${r.category || '?'}: ${r.skipped || 'דולג'}`;
+  }).join(' | ');
+}
+
+function recordLogisticsStatus(table, id, result, attempt) {
+  logisticsStatus.set(`${table}:${id}`, { at: Date.now(), attempt, ...result });
+}
+
 async function autoAnalyzeLogisticsInventory(table, recordId, attempt = 0) {
-  const MAX_ATTEMPTS = 6;
   try {
-    await new Promise((r) => setTimeout(r, 10000 * (attempt + 1)));
+    const delay = Math.min(10000 * (attempt + 1), 45000);
+    await new Promise((r) => setTimeout(r, delay));
     const result = await analyzeLogisticsInventory(table, recordId);
-    if (!result.results.length && attempt < MAX_ATTEMPTS - 1) {
+    recordLogisticsStatus(table, recordId, result, attempt);
+    const allPending = result.results.length > 0 && result.results.every((r) => r.pending);
+    const nothingYet = result.results.length === 0 || allPending;
+    console.log(`[logistics-ai] ${table} ${recordId}: ניסיון ${attempt + 1}/${MAX_LOGISTICS_ATTEMPTS} — ${summarizeLogisticsResults(result.results)}`);
+    if (nothingYet && attempt < MAX_LOGISTICS_ATTEMPTS - 1) {
       return autoAnalyzeLogisticsInventory(table, recordId, attempt + 1);
     }
     invalidateReads('מלאי בסיסי');
-    console.log(`[logistics-ai] ${table} ${recordId}: ${result.results.length} פעולות מלאי`);
   } catch (e) {
-    console.error(`[logistics-ai] ${table} ${recordId} נכשל: ${e.message}`);
+    console.error(`[logistics-ai] ${table} ${recordId} נכשל (ניסיון ${attempt + 1}): ${e.message}`);
   }
 }
 
@@ -271,11 +291,25 @@ app.post('/api/logistics/:table/:id/analyze-inventory', authenticate, requireOwn
     const { table, id } = req.params;
     if (table !== 'תעודות משלוח' && table !== 'חשבוניות') return res.status(400).json({ error: 'טבלה לא נתמכת' });
     const result = await analyzeLogisticsInventory(table, id);
+    recordLogisticsStatus(table, id, result, 0);
     invalidateReads('מלאי בסיסי');
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// מצב ההורדה-הנגזרת האחרון לכל מסמכי טבלה אחת, בבת-אחת (למסך ההיסטוריה —
+// נמנעים מ-N קריאות). authenticate בלבד (לא owner): זו מטא-דאטה על מצב
+// עיבוד, לא מידע פיננסי רגיש.
+app.get('/api/logistics/:table/status', authenticate, async (req, res) => {
+  const { table } = req.params;
+  const out = {};
+  for (const [key, val] of logisticsStatus.entries()) {
+    const [t, id] = key.split(':');
+    if (t === table) out[id] = val;
+  }
+  res.json(out);
 });
 
 // ============================================================
@@ -750,8 +784,13 @@ async function assertOwnRecord(req, res, table) {
 app.get('/api/:table', authorizeRead, async (req, res) => {
   try {
     const { table } = req.params;
+    // ?fresh=1 — עוקף את המטמון (קריאה וכתיבה) במקור ובפלט. משמש מסכי
+    // מעקב-אחרי-ניתוח (היסטוריית העלאות) שצריכים לראות מיד שדות ש-Make
+    // כתב ישירות ל-Airtable בלי לעבור בשרת שלנו (ואין שום invalidateReads
+    // שיודע לנקות את זה) — ר' תוספת 2026-10-06, סעיף L.
+    const fresh = req.query.fresh === '1';
     const key = cacheKeyFor(table, req.query) + '|role=' + req.auth.role + (req.auth.sub || '');
-    const cached = readCache.get(key);
+    const cached = !fresh && readCache.get(key);
     if (cached && Date.now() - cached.at < READ_TTL_MS) {
       res.set('X-Cache', 'HIT');
       return res.json(cached.payload);
@@ -786,8 +825,8 @@ app.get('/api/:table', authorizeRead, async (req, res) => {
 
     // העשרה: שדות מקושרים -> אובייקטים עם שם (אלא אם raw=1)
     const payload = req.query.raw === '1' ? records : await attachLinkedNames(table, records);
-    readCache.set(key, { at: Date.now(), payload });
-    res.set('X-Cache', 'MISS');
+    if (!fresh) readCache.set(key, { at: Date.now(), payload });
+    res.set('X-Cache', fresh ? 'BYPASS' : 'MISS');
     res.json(payload);
   } catch (e) {
     res.status(500).json({ error: e.message });
