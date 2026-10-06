@@ -14,6 +14,7 @@ import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
 import { analyzeExpenseInventory, approvePendingDeduction, readState, reverseInventoryDeduction, createManualExpense } from './inventory-deduction.js';
 import { analyzeLogisticsInventory } from './logistics-deduction.js';
+import { checkForecastPreflight } from './forecast-preflight.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -313,6 +314,24 @@ app.post('/api/expenses/manual', authenticate, requireOwner, async (req, res) =>
     invalidateReads('הוצאות');
     invalidateReads('מלאי בסיסי');
     res.status(201).json(created);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// preflight ל"רענן תחזית" (תוספת 2026-10-06, סעיף E) — בדיקה read-only
+// בלבד (fetchRecords, בלי שום כתיבה) שבודקת אם לתוכנית-שתילה מסוימת
+// יש את כל נתוני-הבסיס שהאוטומציה "רענן תחזית" ב-Airtable צריכה כדי
+// להצליח (תפוקה רבעונית + מחיר גידול משוער). מוגדר כאן, *לפני* ה-
+// middleware הכללי '/api/:table' למטה — אחרת '/api/plans/...' היה
+// מתפרש כטבלה בשם "plans" שלא קיימת ונכשל ב-404, בדיוק כמו שההערה
+// מעל '/api/upload-document' מסבירה.
+// ============================================================
+app.get('/api/plans/:id/forecast-preflight', authenticate, async (req, res) => {
+  try {
+    const result = await checkForecastPreflight(req.params.id);
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

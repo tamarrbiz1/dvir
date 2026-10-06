@@ -383,16 +383,22 @@ function PricesTab({ prices, crops, api, canEdit, onChanged }) {
 function QuarterlyTab({ quarterly, crops, api, canEdit, onChanged }) {
   const [form, setForm] = useState(null);
   const cropName = (q) => displayName(q['גידול'], '') || q['גידול'] || '—';
-  const rows = useMemo(() => {
+  // רשומות "תפוקה רבעונית" ריקות-לחלוטין (אין ערך ל"קג לדונם לשבוע" —
+  // לא 0 אמיתי, אלא שדה חסר) מוסתרות מהמטריצה ולא נחשבות "—"/0 מטעה;
+  // מסך זה רק מציג, לא מתקן את החוסר (ר' תוספת 2026-10-06, סעיף E).
+  const { rows, hiddenCount } = useMemo(() => {
+    let hidden = 0;
     const map = {};
     quarterly.forEach((q) => {
+      const raw = q['קג לדונם לשבוע'] ?? q['ק"ג לדונם לשבוע'];
+      if (raw === null || raw === undefined || raw === '') { hidden += 1; return; }
       const crop = cropName(q);
       const qname = q['רבעון'] ? `Q${String(q['רבעון']).replace('Q', '')}` : '—';
       if (!map[crop]) map[crop] = { crop, recs: {} };
-      map[crop][qname] = Number(q['קג לדונם לשבוע'] ?? q['ק"ג לדונם לשבוע']) || 0;
+      map[crop][qname] = Number(raw) || 0;
       map[crop].recs[qname] = q;
     });
-    return Object.values(map);
+    return { rows: Object.values(map), hiddenCount: hidden };
   }, [quarterly]);
 
   return (
@@ -400,6 +406,11 @@ function QuarterlyTab({ quarterly, crops, api, canEdit, onChanged }) {
       {canEdit && (
         <div style={{ marginBottom: 14 }}>
           <button className="btn btn-primary" onClick={() => setForm({})}>+ תפוקה רבעונית</button>
+        </div>
+      )}
+      {hiddenCount > 0 && (
+        <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+          {hiddenCount} רשומות ריקות הוסתרו (אין ק"ג לדונם לשבוע)
         </div>
       )}
       {!rows.length ? <div className="empty-state">אין נתונים לתקופה זו</div> : (
@@ -534,11 +545,22 @@ function CropLinkedForm({ api, table, crops, record, title, fields, onClose, onS
 }
 
 // ---------- תחזית שתילה שבועית (סעיף 40) ----------
-function ForecastTab({ rows, api, canEdit, onChanged }) {
+function ForecastTab({ rows: allRows, api, canEdit, onChanged }) {
   const [fCrop, setFCrop] = useState('');
   const [fStructure, setFStructure] = useState('');
   const [search, setSearch] = useState('');
   const [priceEdit, setPriceEdit] = useState(null); // שורת תחזית לעריכת מחיר
+
+  // שורות "תחזית שתילה שבועית" ריקות-לחלוטין — אין ק"ג צפוי/בפועל, הכנסה
+  // צפויה או קג-לדונם (למשל תוכנית שנוצרה בלי שהחישוב השלים — ר' תוכנית 42)
+  // מוסתרות מהתצוגה, עם שורת-סיכום. לא נמחק כלום ב-Airtable, UI בלבד.
+  const isEmptyRow = (r) =>
+    (r.expectedKg === null || r.expectedKg === undefined || r.expectedKg === '')
+    && (r.actualKg === null || r.actualKg === undefined || r.actualKg === '')
+    && (r.expectedIncome === null || r.expectedIncome === undefined || r.expectedIncome === '')
+    && (r.perDunam === null || r.perDunam === undefined || r.perDunam === '');
+  const rows = useMemo(() => allRows.filter((r) => !isEmptyRow(r)), [allRows]);
+  const hiddenEmptyCount = allRows.length - rows.length;
 
   const cropList = useMemo(() => [...new Set(rows.map((r) => r.crop).filter((c) => c && c !== '—'))], [rows]);
   const structList = useMemo(() => [...new Set(rows.map((r) => r.structure).filter(Boolean))], [rows]);
@@ -553,11 +575,16 @@ function ForecastTab({ rows, api, canEdit, onChanged }) {
     return true;
   });
 
-  if (!rows.length) return <div className="empty-state">אין נתונים לתקופה זו</div>;
+  if (!allRows.length) return <div className="empty-state">אין נתונים לתקופה זו</div>;
   const chart = filtered.slice(0, 30).map((r) => ({ label: `${r.crop}`, צפוי: Math.round(Number(r.expectedKg) || 0), בפועל: Math.round(Number(r.actualKg) || 0) }));
 
   return (
     <div>
+      {hiddenEmptyCount > 0 && (
+        <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+          {hiddenEmptyCount} רשומות ריקות הוסתרו (אין ק"ג צפוי/בפועל, הכנסה או קג לדונם)
+        </div>
+      )}
       <div className="filter-bar no-print">
         <input className="input" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
         <select className="select" value={fCrop} onChange={(e) => setFCrop(e.target.value)}>
