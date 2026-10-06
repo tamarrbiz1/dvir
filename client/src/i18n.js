@@ -168,6 +168,7 @@ export const translations = {
   c_clearFilters: { he: 'נקה פילטרים', th: 'ล้างตัวกรอง' },
   c_noData: { he: 'אין נתונים לתקופה זו', th: 'ไม่มีข้อมูลในช่วงเวลานี้' },
   c_actions: { he: 'פעולות', th: 'การกระทำ' },
+  c_delete: { he: 'מחיקה', th: 'ลบ' },
   c_all: { he: 'הכל', th: 'ทั้งหมด' },
   c_from: { he: 'מתאריך', th: 'จากวันที่' },
   c_to: { he: 'עד תאריך', th: 'ถึงวันที่' },

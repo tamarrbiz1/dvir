@@ -82,6 +82,25 @@ function inferType(t) {
   return 'ריסוס';
 }
 
+/** מקור הטיפול: נוצר ידנית בטופס, או נגזר מניתוח של דוח ריסוסים שהועלה */
+export function treatmentSource(raw) {
+  if (!raw) return 'manual';
+  if (Array.isArray(raw['דוח ריסוסים']) && raw['דוח ריסוסים'].length) return 'report';
+  if (/\[מדוח(?: ריסוסים)? ?#?\d*\]/.test(String(raw['הערות'] || ''))) return 'report'; // סמן שכותב ייבוא הדוחות
+  const ai = raw['פירוק טבלת דוח (AI ניתוח טבלה)'];
+  if (typeof ai === 'string' && ai.trim()) return 'report';
+  if (ai && typeof ai === 'object' && ai.state === 'generated' && ai.value) return 'report';
+  return 'manual';
+}
+const SOURCE_BADGE = {
+  manual: { label: 'ידני', title: 'נוצר ידנית בטופס טיפול', bg: '#EEF2FF', color: '#4338CA' },
+  report: { label: 'מדוח', title: 'נוצר מניתוח של דוח ריסוסים שהועלה', bg: '#ECFDF5', color: '#047857' },
+};
+function SourceBadge({ ev, small }) {
+  const s = SOURCE_BADGE[ev.source] || SOURCE_BADGE.manual;
+  return <span className="badge" title={s.title} style={{ background: s.bg, color: s.color, fontSize: small ? 10 : 11, padding: small ? '1px 6px' : undefined }}>{s.label}</span>;
+}
+
 /** תג "היום / מתחיל היום / יום אחרון" (סעיף 22 — Highlight) */
 function todayBadge(ev) {
   const today = startOfToday();
@@ -149,6 +168,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
   const [fStructure, setFStructure] = useState('');
   const [fCrop, setFCrop] = useState('');
   const [fVariety, setFVariety] = useState('');
+  const [fSource, setFSource] = useState(''); // '' = הכל | manual | report
   const [fType, setFType] = useState('');
 
   const [dayDrawer, setDayDrawer] = useState(null);
@@ -210,6 +230,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       return {
         id: t.id, raw: t, ...range,
         type: inferType(t),
+        source: treatmentSource(t),
         material: displayName(t['חומר ריסוס'], 'לא זמין'),
         structNames, structIds,
         crop: crop || 'לא זמין',
@@ -233,6 +254,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
     if (fStructure && !e.structIds.includes(fStructure)) return false;
     if (fCrop && e.crop !== fCrop) return false;
     if (fVariety && e.variety !== fVariety) return false;
+    if (fSource && e.source !== fSource) return false;
     if (fType && e.type !== fType) return false;
     return true;
   }), [events, fStructure, fCrop, fVariety, fType]);
@@ -413,6 +435,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
           options={[['', 'הכל'], ...sortStructures(structures).map((s) => [s.id, s['מספר מבנה'] ? `מבנה ${s['מספר מבנה']}` : 'מבנה'])]} />
         <Sel label="גידול" value={fCrop} onChange={setFCrop} options={[['', 'הכל'], ...cropOptions.map((c) => [c, c])]} />
         <Sel label="זן" value={fVariety} onChange={setFVariety} options={[['', 'הכל'], ...varietyOptions.map((c) => [c, c])]} />
+        <Sel label="מקור" value={fSource} onChange={setFSource} options={[['', 'הכל'], ['manual', 'ידני'], ['report', 'מניתוח דוח']]} />
         <Sel label="סוג טיפול" value={fType} onChange={setFType} options={[['', 'הכל'], ...Object.keys(TYPES).map((k) => [k, k])]} />
         {filtersActive && <button className="btn btn-sm btn-ghost" onClick={() => { setFStructure(''); setFCrop(''); setFVariety(''); setFType(''); }}>✕ נקה פילטר</button>}
       </div>
@@ -547,8 +570,9 @@ function EventChip({ ev, day, compact, onClick }) {
         borderRadius: 6, padding: compact ? '2px 5px' : '5px 7px', marginTop: 3, fontSize: compact ? 10.5 : 12, cursor: 'pointer',
         opacity: ev.done ? 0.65 : 1,
       }}>
-      <div style={{ fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {ev.done ? '✓ ' : ''}{ev.material}
+      <div style={{ fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'flex', gap: 4, alignItems: 'center' }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{ev.done ? '✓ ' : ''}{ev.material}</span>
+        {ev.source === 'report' && <span title="מניתוח דוח" style={{ fontSize: 10 }}>📄</span>}
       </div>
       {!compact && <div style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ev.structNames.join(', ') || 'לא זמין'}</div>}
       {badge && <span className="badge" style={{ background: TODAY_BORDER, color: '#fff', fontSize: 10, padding: '1px 7px', marginTop: 2 }}>{badge}</span>}
@@ -630,6 +654,7 @@ function ListView({ events, onOpen }) {
                   <td>
                     <b>{formatDate(ev.start)}{ev.days > 1 ? ` – ${formatDate(ev.end)}` : ''}</b>
                     {badge && <span className="badge" style={{ background: TODAY_BORDER, color: '#fff', fontSize: 10, marginRight: 6 }}>{badge}</span>}
+                    <span style={{ marginRight: 6 }}><SourceBadge ev={ev} small /></span>
                   </td>
                   <td><span className="badge" style={{ background: c.bg, color: c.border, border: `1px solid ${c.border}` }}>{c.label}</span></td>
                   <td><Chips names={ev.structNames} /></td>
@@ -679,6 +704,7 @@ function DayDrawer({ date, events, busy, error, onClose, onEdit, onToggle, onDel
                   <span className="badge" style={{ background: '#fff', color: c.border, border: `1px solid ${c.border}` }}>{c.label}</span>
                   {badge && <span className="badge" style={{ background: TODAY_BORDER, color: '#fff' }}>{badge}</span>}
                   <span className={`badge ${ev.done ? 'badge-ok' : 'badge-warn'}`}>{ev.done ? 'בוצע' : (ev.status || 'לא בוצע')}</span>
+                  <SourceBadge ev={ev} />
                   <div style={{ flex: 1 }} />
                   {onEdit && <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" disabled={busy} onClick={() => onEdit(ev)}>✎</button>}
                   {onToggle && <button className="btn btn-sm btn-ghost" title={ev.done ? 'סמן כלא בוצע' : 'סמן כבוצע'} disabled={busy} onClick={() => onToggle(ev)}>{ev.done ? '↩' : '✓'}</button>}
@@ -916,7 +942,7 @@ function MaterialsTab({ materials, search, setSearch, canEdit, api, onChanged, o
 // ============================================================
 function ReportsTab({ events, search, setSearch, canEdit, busy, onEdit, onToggle, onDelete }) {
   const rows = events
-    .filter((e) => (Array.isArray(e.raw['דוח ריסוסים']) && e.raw['דוח ריסוסים'].length) || e.raw['פירוק טבלת דוח (AI ניתוח טבלה)'])
+    .filter((e) => e.source === 'report')
     .filter((e) => {
       if (!search) return true;
       const hay = [e.material, e.structNames.join(' '), e.crop, e.variety, e.status].join(' ').toLowerCase();

@@ -1,3 +1,5 @@
+import { buildXlsx } from './xlsx.js';
+
 // ============================================================
 // עזרי טבלה ראשית (סעיף 47): מיון, עימוד, ייצוא והדפסה
 // ------------------------------------------------------------
@@ -49,18 +51,26 @@ export function inDateRange(v, from, to) {
 // ייצוא CSV (UTF-8 עם BOM כדי שאקסל יציג עברית נכון)
 // columns: [{ label, get(row) }]
 export function exportCsv(filename, columns, rows) {
-  const esc = (v) => {
+  // קובץ אקסל אמיתי (.xlsx) במקום CSV: CSV נפתח לפי הגדרות האזור של המחשב
+  // (מפריד נקודה-פסיק → כל השורה בתא אחד, ולעיתים עברית משובשת) — xlsx נפתח
+  // זהה בכל מחשב. שם הפונקציה נשמר — 8 מסכים קוראים לה.
+  // ערך מספרי נשמר כמספר (ניתן לסכום באקסל); כל השאר כטקסט כפי שמוצג במסך.
+  const val = (v) => {
     if (v === null || v === undefined) return '';
-    const s = String(v).replace(/"/g, '""');
-    return /[",\n\r]/.test(s) ? `"${s}"` : s;
+    if (typeof v === 'number') return v;
+    if (typeof v === 'string' && v.trim() !== '' && /^-?d+(.d+)?$/.test(v.trim())) return Number(v);
+    return String(v);
   };
-  const lines = [columns.map((c) => esc(c.label)).join(',')];
-  rows.forEach((r) => lines.push(columns.map((c) => esc(c.get(r))).join(',')));
-  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+  const header = columns.map((c) => c.label);
+  const data = rows.map((r) => columns.map((c) => val(c.get(r))));
+  const base = filename.replace(/.(csv|xlsx)$/i, '');
+  const sheetName = (base.replace(/-d{4}-d{2}-d{2}$/, '') || 'גיליון1').slice(0, 31);
+  const bytes = buildXlsx({ sheetName, header, rows: data });
+  const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename.endsWith('.csv') ? filename : `${filename}.csv`;
+  a.download = `${base}.xlsx`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

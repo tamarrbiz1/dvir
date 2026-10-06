@@ -27,7 +27,6 @@ export const NAV_GROUPS = [
     group: 'spraying',
     items: [
       { to: '/spraying', icon: '🧴', labelKey: 'spraying' },
-      { to: '/spray-reports', icon: '📋', labelKey: 'sprayReports' },
     ],
   },
   {
