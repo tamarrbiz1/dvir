@@ -1058,11 +1058,6 @@ button.nav-item {
   }
 }
 
-/* --- גיליון שנתי (תוכנית שתילה): גלילה חלקה באצבע בטלפון --- */
-.plan-sheet-wrap {
-  -webkit-overflow-scrolling: touch;
-}
-
 /* --- אפליקציית עובד: מרווח בטוח לאזורי חריץ/בית (iOS) --- */
 .worker-header {
   padding-top: max(14px, env(safe-area-inset-top));
@@ -1236,6 +1231,7 @@ textarea.input {
   overflow: auto;
   max-height: 72vh;
   position: relative;
+  -webkit-overflow-scrolling: touch;
 }
 .plan-sheet {
   border-collapse: separate;

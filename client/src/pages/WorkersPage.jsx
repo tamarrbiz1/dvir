@@ -12,7 +12,7 @@ import { t, monthShort, workerStatusDisplay, workerTypeDisplay, translateStructu
 import { sortStructures } from '../utils/structures.js';
 import { useApp } from '../App.jsx';
 import { workHours , workTypeName, pricingForStructureOnDate } from '../utils/field.js';
-import { formatMoney, formatNumber, formatDate, localDateTimeToISO, isoToLocalTime } from '../utils/format.js';
+import { formatMoney, formatNumber, formatDate, localDateTimeToISO, isoToLocalTime, kpiValueClass } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -311,9 +311,9 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
     <div>
       {/* KPI קטן על המסונן */}
       <div className="kpi-grid" style={{ marginBottom: 16 }}>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--workers-soft)' }}>📋</div><span className="kpi-label">{t('m_jobs')}</span></div><div className="kpi-value" style={{ color: 'var(--workers)' }}>{formatNumber(filtered.length)}</div><div className="kpi-sub">{periodSub}</div></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--hours-soft)' }}>⏱️</div><span className="kpi-label">{t('w_hours')}</span></div><div className="kpi-value" style={{ color: 'var(--hours)' }}>{formatNumber(Math.round(totalHours * 10) / 10)}</div><div className="kpi-sub">{periodSub}</div></div>
-        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">{t('m_pay')}</span></div><div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(totalPaid)}</div><div className="kpi-sub">{periodSub}</div></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--workers-soft)' }}>📋</div><span className="kpi-label">{t('m_jobs')}</span></div><div className={kpiValueClass(formatNumber(filtered.length))} style={{ color: 'var(--workers)' }}>{formatNumber(filtered.length)}</div><div className="kpi-sub">{periodSub}</div></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--hours-soft)' }}>⏱️</div><span className="kpi-label">{t('w_hours')}</span></div><div className={kpiValueClass(formatNumber(Math.round(totalHours * 10) / 10))} style={{ color: 'var(--hours)' }}>{formatNumber(Math.round(totalHours * 10) / 10)}</div><div className="kpi-sub">{periodSub}</div></div>
+        <div className="kpi-card"><div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">{t('m_pay')}</span></div><div className={kpiValueClass(formatMoney(totalPaid))} style={{ color: 'var(--revenue)' }}>{formatMoney(totalPaid)}</div><div className="kpi-sub">{periodSub}</div></div>
       </div>
 
       <div className="filter-bar no-print">
@@ -696,7 +696,7 @@ function WorkerDetails({ worker, records, onClose }) {
             {kpis.map((k) => (
               <div key={k.label} className="kpi-card" style={{ padding: '14px 14px 0' }}>
                 <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>{k.label}</span></div>
-                <div className="kpi-value" style={{ fontSize: 18, color: k.color }}>{k.value}</div>
+                <div className={kpiValueClass(k.value)} style={{ fontSize: 18, color: k.color }}>{k.value}</div>
               </div>
             ))}
           </div>

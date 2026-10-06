@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
-import { formatMoney, formatNumber, formatDate, yearProgressLabel } from '../utils/format.js';
+import { formatMoney, formatNumber, formatDate, yearProgressLabel, kpiValueClass } from '../utils/format.js';
 import { PERIOD_PRESETS as PRESETS, periodRange } from '../utils/period.js';
 import { useAutoRefresh } from '../utils/live.js';
 import { expenseCategory , workHours } from '../utils/field.js';
@@ -218,7 +218,7 @@ export default function DashboardPage() {
     <div className={`kpi-card ${onClick ? 'clickable' : ''}`}
       {...(onClick ? { role: 'button', tabIndex: 0, onClick, onKeyDown: (e) => { if (e.key === 'Enter') onClick(); } } : {})}>
       <div className="kpi-top"><div className="kpi-icon" style={{ background: soft }}>{icon}</div><span className="kpi-label">{label}</span></div>
-      <div className="kpi-value" style={{ color }}>{value}</div>
+      <div className={kpiValueClass(value)} style={{ color }}>{value}</div>
       {sub && <div className="kpi-sub">{sub}</div>}
       {footer
         ? <div className="kpi-footer" style={{ background: footerBg || color }}>{footer}</div>
@@ -255,7 +255,7 @@ export default function DashboardPage() {
         <div className="kpi-card clickable" role="button" tabIndex={0} onClick={() => navigate('/finance')} onKeyDown={(e) => { if (e.key === 'Enter') navigate('/finance'); }}>
           <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div>
             <span className="kpi-label">{fInvoices.length ? `הכנסות ברוטו: ${formatMoney(kGross)}` : 'הכנסות ברוטו: אין נתונים'}</span></div>
-          <div className="kpi-value" style={{ color: 'var(--revenue)' }}>{fInvoices.length ? formatMoney(kNet) : 'אין נתונים'}</div>
+          <div className={kpiValueClass(fInvoices.length ? formatMoney(kNet) : 'אין נתונים')} style={{ color: 'var(--revenue)' }}>{fInvoices.length ? formatMoney(kNet) : 'אין נתונים'}</div>
           <div className="kpi-sub">הכנסות נטו · {periodDisclosure}</div>
           <div className="kpi-footer" style={{ background: 'linear-gradient(135deg,#08A878,#16BE8B)' }}>דוח הכנסות</div>
         </div>
@@ -327,7 +327,7 @@ export default function DashboardPage() {
               <div key={c.label} className="kpi-card clickable" role="button" tabIndex={0} style={{ padding: '14px 16px' }}
                 onClick={() => navigate(c.to)} onKeyDown={(e) => { if (e.key === 'Enter') navigate(c.to); }} title="פתיחת המסך המתאים">
                 <div className="kpi-top"><div className="kpi-icon" style={{ background: c.bg }}>{c.icon}</div><span className="kpi-label">{c.label}</span></div>
-                <div className="kpi-value" style={{ color: c.color, fontSize: 24 }}>{formatNumber(c.value)}</div>
+                <div className={kpiValueClass(formatNumber(c.value))} style={{ color: c.color, fontSize: 24 }}>{formatNumber(c.value)}</div>
                 <div className="kpi-sub">שבועות · מתוך {data.weeks.length}</div>
               </div>
             ))}
