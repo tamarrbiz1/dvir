@@ -13,6 +13,7 @@ import {
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
 import { analyzeExpenseInventory, approvePendingDeduction, readState, reverseInventoryDeduction, createManualExpense } from './inventory-deduction.js';
+import { importSprayReport, sprayReportsHistory, scheduleSprayReportImport, startSprayImportSweep, REPORTS_TABLE as SPRAY_REPORTS_TABLE } from './spray-report-import.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -176,6 +177,9 @@ app.post('/api/upload-document', authenticate, upload.single('file'), async (req
     // ניתוח מלאי אוטומטי להוצאה חדשה — fire-and-forget, עם backoff אם
     // הקובץ עוד לא זמין מיד אחרי ההעלאה (ר' inventory-deduction.js).
     if (table === 'הוצאות') autoAnalyzeExpenseInventory(created.id);
+    // דוח ריסוסים: ברקע מחכים שהניתוח של Make יתמלא ואז מייבאים את
+    // השורות לטיפולים (ר' spray-report-import.js). fire-and-forget.
+    if (table === SPRAY_REPORTS_TABLE) scheduleSprayReportImport(created.id, { afterImport: onSprayImported });
     res.status(201).json({ ok: true, record: created });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -263,6 +267,42 @@ app.post('/api/expenses/manual', authenticate, requireOwner, async (req, res) =>
     invalidateReads('הוצאות');
     invalidateReads('מלאי בסיסי');
     res.status(201).json(created);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// דוחות ריסוסים → טיפולים (2026-10-06). קריאה: owner + manager (מנהל
+// העבודה רואה את היומן); ייבוא: owner בלבד (יוצר רשומות "ריסוסים"
+// ו"חומרי ריסוס"). חייב להיות לפני '/api/:table' (ר' RESERVED_PATHS).
+// ============================================================
+function onSprayImported() {
+  invalidateReads('ריסוסים');
+  invalidateReads('חומרי ריסוס');
+}
+function requireOwnerOrManager(req, res, next) {
+  if (req.auth.role !== 'owner' && req.auth.role !== 'manager') return res.status(403).json({ error: 'אין הרשאה לצפות בדוחות הריסוסים' });
+  next();
+}
+
+app.get('/api/spray-reports/history', authenticate, requireOwnerOrManager, async (req, res) => {
+  try {
+    const list = (await sprayReportsHistory())
+      .filter((r) => req.query.includeTest === '1' || !r.isTest)
+      .map(({ isTest, ...r }) => r);
+    res.json(stripTestRecords(list, req));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/spray-reports/:id/import', authenticate, requireOwner, async (req, res) => {
+  try {
+    const dryRun = req.query.dryRun === '1';
+    const result = await importSprayReport(req.params.id, { dryRun });
+    if (!dryRun) onSprayImported();
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -463,7 +503,7 @@ function invalidateReads(table) {
 // טבלה שאינה קיימת ב-Base → 404 עם הודעה ברורה בעברית
 // (Airtable מחזיר לזה 403 עמום: "You are not authorized...")
 // ============================================================
-const RESERVED_PATHS = new Set(['tables', 'meta', 'select-options', 'upload-document']);
+const RESERVED_PATHS = new Set(['tables', 'meta', 'select-options', 'upload-document', 'spray-reports']);
 let tableNamesCache = { at: 0, names: null };
 async function knownTableNames() {
   if (tableNamesCache.names && Date.now() - tableNamesCache.at < 5 * 60 * 1000) return tableNamesCache.names;
@@ -643,6 +683,9 @@ app.listen(PORT, () => {
   console.log(`✅ שרת Zite רץ על http://localhost:${PORT}`);
   warmUpLinkIndex();
   scheduleFridaysCheck(); // ימי שישי תמיד ב"ימי אי עבודה" — ר' fridays.js
+  // דוחות ריסוסים שנותחו אבל טרם יובאו לטיפולים — איסוף ~60 שניות אחרי
+  // העלייה ואז כל 10 דקות (רק דוחות מאחרי תאריך-הסף; ר' spray-report-import.js)
+  startSprayImportSweep({ afterImport: onSprayImported });
 });
 
 // ============================================================

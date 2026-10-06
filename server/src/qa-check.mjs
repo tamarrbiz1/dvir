@@ -22,6 +22,7 @@ import { LOGIN_CODES_TABLE, canReadTable, canWriteTable } from './auth.js';
 import { analyzeExpenseDocument } from './document-analysis.js';
 import { matchLinesToInventory, categoryOfDescription, normalize } from './inventory-matching.js';
 import { readState } from './inventory-deduction.js';
+import { parseSummary, parseDateRange, parseDosage, markerOf } from './spray-report-import.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
@@ -915,6 +916,105 @@ await test('הורדת מלאי: ביטול הורדה במחיקת הוצאה (
   if (Number(afterRec2['מלאי נוכחי']) !== before) throw new Error('ביטול שני שינה את המלאי שוב — לא אידמפוטנטי');
 
   return `חזר במדויק ל-${before} אחרי ביטול, ביטול שני לא שינה כלום (${reversedAgain ? 'סומן reversed' : 'no-op'})`;
+});
+
+
+// ============ 3ב. דוחות ריסוסים → טיפולים (spray-report-import.js) ============
+// בדיקות יחידה טהורות (בלי Airtable/Make, בלי שום סיכון) לפענוח מה
+// ש-Make כותב ל-"Attachment Summary" — JSON/fence/טווחי-תאריכים/מינון.
+// רצות תמיד. בדיקת-הקצה-לקצה היחידה שיוצרת רשומה בטבלה המנוטרת ע"י
+// Make ("דוחות ריסוסים") מצרפת קובץ אמיתי שכבר נותח בהצלחה בעבר
+// (REAL_FIXTURE_PATH — בדיוק כמו הוצאות/חשבוניות/תעודות משלוח/צ'קים
+// למעלה; לעולם לא תוכן סינתטי), רצה רק מאחורי RUN_UPLOAD_TESTS=1,
+// ומוגבלת ל-dryRun בלבד: בודקת שה-dry-run עצמו מחזיר תוצאה סבירה,
+// בלי ליצור אף "ריסוסים"/"חומר ריסוס" אמיתי. הרשומה מסומנת ב-MARK
+// (תבנית QA-<13 ספרות>) כבר בשדה שנשמר איתה מהרגע הראשון, כך שגם
+// האיסוף האוטומטי (poll/sweep ב-spray-report-import.js, שמדלג על
+// isTestRecord) לא ינסה לייבא אותה בפועל ברקע.
+
+await test('פענוח Attachment Summary: JSON תקין / עטוף ב-fence / "[]" ריק / עטיפת {rows:[...]} / טקסט לא-JSON', () => {
+  if (parseSummary(null).status !== 'pending') throw new Error('null צפוי pending');
+  if (parseSummary('').status !== 'pending') throw new Error('מחרוזת ריקה צפויה pending');
+  if (parseSummary('[]').status !== 'empty') throw new Error('"[]" צפוי empty');
+  if (parseSummary('לא JSON בכלל').status !== 'invalid') throw new Error('טקסט לא תקין צפוי invalid');
+  const fenced = parseSummary('```json\n[{"סוג טיפול":"ריסוס"}]\n```');
+  if (fenced.status !== 'ready' || fenced.rows.length !== 1) throw new Error('JSON עטוף ב-fence לא פוענח');
+  const wrapped = parseSummary(JSON.stringify({ rows: [{ a: 1 }] }));
+  if (wrapped.status !== 'ready' || wrapped.rows.length !== 1) throw new Error('עטיפת {rows:[...]} לא פוענחה');
+  return 'כל המקרים פוענחו כצפוי';
+});
+
+await test('פענוח תאריך/טווח: dd/mm/yyyy, טווח עם "-", yyyy-mm-dd, סדר הפוך מתוקן, תאריך לא-חוקי', () => {
+  const a = parseDateRange('03/03/2031');
+  if (!a || a.start !== '2031-03-03' || a.end !== '2031-03-03') throw new Error(`תאריך בודד שגוי: ${JSON.stringify(a)}`);
+  const b = parseDateRange('05/03/2031-09/03/2031');
+  if (!b || b.start !== '2031-03-05' || b.end !== '2031-03-09') throw new Error(`טווח שגוי: ${JSON.stringify(b)}`);
+  const c = parseDateRange('09/03/2031-05/03/2031'); // הפוך — אמור לתקן לסדר עולה
+  if (!c || c.start !== '2031-03-05' || c.end !== '2031-03-09') throw new Error(`טווח הפוך לא תוקן: ${JSON.stringify(c)}`);
+  const d = parseDateRange('2031-03-11');
+  if (!d || d.start !== '2031-03-11') throw new Error(`ISO שגוי: ${JSON.stringify(d)}`);
+  if (parseDateRange('אין תאריך כאן') !== null) throw new Error('טקסט בלי תאריך צפוי null');
+  if (parseDateRange('32/13/2031') !== null) throw new Error('תאריך לא-חוקי (32/13) צפוי null, לא לקרוס');
+  return 'בודד/טווח/ISO/הפוך/חסר/לא-חוקי — כולם כצפוי';
+});
+
+await test('פענוח מינון: מספר טהור / "לדונם" / "ל-100 ליטר" / עמום (בלי מספר חד-משמעי)', () => {
+  const a = parseDosage('40');
+  if (a.value !== 40 || a.basis !== null) throw new Error(`מספר טהור שגוי: ${JSON.stringify(a)}`);
+  const b = parseDosage('1 ליטר לדונם');
+  if (b.value !== 1 || b.basis !== 'לדונם') throw new Error(`"לדונם" שגוי: ${JSON.stringify(b)}`);
+  const c = parseDosage('50 סמ"ק ל-100 ליטר');
+  if (c.value !== 50 || c.basis !== 'ל-100 ליטר') throw new Error(`"ל-100 ליטר" שגוי: ${JSON.stringify(c)}`);
+  const d = parseDosage('לפי הצורך, במידת הנדרש');
+  if (d.value !== null) throw new Error(`טקסט בלי מספר חד-משמעי צפוי value:null, התקבל ${d.value}`);
+  if (parseDosage('').value !== null) throw new Error('מחרוזת ריקה צפויה value:null');
+  return 'מספר טהור/לדונם/ל-100-ליטר/עמום/ריק — כולם כצפוי';
+});
+
+await test('סמן המקור: markerOf תואם את תבנית הזיהוי שה-UI/הייבוא קוראים', () => {
+  const marker = markerOf(42);
+  if (!/^\[מדוח ריסוסים #42\]$/.test(marker)) throw new Error(`תבנית סמן לא צפויה: ${marker}`);
+});
+
+await test('דוח ריסוסים: רשומה עם קובץ אמיתי שכבר נותח בעבר + dry-run בלבד (0 יצירות אמיתיות)', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
+  const rec = await createWithFile('דוחות ריסוסים', 'דוח ריסוסים', { 'מיקום': MARK });
+  const dry = await api('POST', `spray-reports/${rec.id}/import?dryRun=1`);
+  if (dry.dryRun !== true) throw new Error('התשובה לא מסמנת dryRun:true');
+  if (dry.created !== 0) throw new Error(`dry-run "יצר" ${dry.created} — אסור, dry-run לא אמור לכתוב כלום`);
+  if (!['pending', 'no-file', 'empty', 'invalid', 'ready'].includes(dry.status)) throw new Error(`status לא מוכר: ${dry.status}`);
+  const made = await api('GET', `${enc('ריסוסים')}?raw=1&includeTest=1&filterByFormula=${enc(`FIND('${MARK}', {הערות})`)}`);
+  if (made.length) throw new Error(`נמצאו ${made.length} רשומות "ריסוסים" אמיתיות עם הסמן — dry-run לא אמור ליצור אף אחת`);
+  const hist = await api('GET', 'spray-reports/history?includeTest=1');
+  if (!hist.some((h) => h.id === rec.id)) throw new Error('הדוח לא מופיע בהיסטוריה (includeTest=1)');
+  const histPlain = await api('GET', 'spray-reports/history');
+  if (histPlain.some((h) => h.id === rec.id)) throw new Error('רשומת בדיקה דלפה להיסטוריה הרגילה');
+  return `dry-run: status=${dry.status}, created=0 (כצפוי), ${dry.rows?.length ?? 0} שורות בניתוח`;
+});
+
+await test('אבטחה: /api/spray-reports — עובד 403 בשניהם, מנהל עבודה 200 היסטוריה / 403 ייבוא', async () => {
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  const target = 'recFAKE00000001';
+  const problems = [];
+  if (w) {
+    const wLogin = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    try { await apiAs(wLogin.token, 'GET', 'spray-reports/history'); problems.push('worker GET history עבר'); }
+    catch (e) { if (!String(e.message).startsWith('403')) problems.push(`worker GET: ${e.message}`); }
+    try { await apiAs(wLogin.token, 'POST', `spray-reports/${target}/import?dryRun=1`); problems.push('worker POST import עבר'); }
+    catch (e) { if (!String(e.message).startsWith('403')) problems.push(`worker POST: ${e.message}`); }
+  }
+  if (manager) {
+    const mLogin = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
+    const h = await apiAs(mLogin.token, 'GET', 'spray-reports/history');
+    if (!Array.isArray(h)) problems.push('manager GET history לא החזיר מערך');
+    try { await apiAs(mLogin.token, 'POST', `spray-reports/${target}/import?dryRun=1`); problems.push('manager POST import עבר'); }
+    catch (e) { if (!String(e.message).startsWith('403')) problems.push(`manager POST: ${e.message}`); }
+  }
+  try { await apiAs(null, 'GET', 'spray-reports/history'); problems.push('בלי טוקן עבר'); }
+  catch (e) { if (!String(e.message).startsWith('401')) problems.push(`בלי טוקן: ${e.message}`); }
+  if (problems.length) throw new Error(problems.join('; '));
+  return `${w ? 'עובד 403×2' : 'אין עובד לבדיקה'}, ${manager ? 'מנהל 200/403' : 'אין מנהל עבודה לבדיקה'}, בלי טוקן 401`;
 });
 
 // ============ 4. ניקוי מלא ============
