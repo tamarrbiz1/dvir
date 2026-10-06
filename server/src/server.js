@@ -14,6 +14,7 @@ import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
 import { analyzeExpenseInventory, approvePendingDeduction, readState, reverseInventoryDeduction, createManualExpense } from './inventory-deduction.js';
 import { analyzeLogisticsInventory } from './logistics-deduction.js';
+import { fixFilenameEncoding } from './filename-utils.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -153,16 +154,33 @@ app.post('/api/upload-document', authenticate, upload.single('file'), async (req
       return res.status(400).json({ error: 'הקובץ אינו תקין. יש להעלות PDF, JPG או PNG תקין.', invalidFile: true });
     }
 
+    // תיקון שם-קובץ שהתעקם ב-multer (קידוד latin1 בטעות על מקור UTF-8) —
+    // ר' filename-utils.js. משמש גם בכתיבה ל-Airtable (שדה "שם קובץ"
+    // אם קיים בטבלה) וגם בהעלאת ה-attachment עצמו.
+    const fixedFilename = fixFilenameEncoding(req.file.originalname);
+
+    // בדיקה אם לטבלה היעד יש שדה "שם קובץ" — best-effort, לא חוסמת
+    // את ההעלאה אם קריאת המטא-נתונים נכשלה.
+    let hasFilenameField = false;
+    try {
+      const meta = await getMeta();
+      const tableMeta = meta.find((t) => t.name === table);
+      hasFilenameField = !!tableMeta?.fields?.some((f) => f.name === 'שם קובץ');
+    } catch { /* לא קריטי — ממשיכים בלי שדה שם הקובץ */ }
+
     // 1) יצירת הרשומה (עם קוד שבוע כשנדרש) 2) העלאת הקובץ אליה.
     // אם ההעלאה נכשלת — הרשומה נמחקת, כדי שלא תישאר רשומה ריקה.
     const fields = {};
     if (weekCode && (table === 'חשבוניות' || table === 'תעודות משלוח')) {
       fields['קוד שבוע'] = weekCode;
     }
+    if (hasFilenameField) {
+      fields['שם קובץ'] = fixedFilename;
+    }
     const created = await createRecord(table, fields);
     try {
       await uploadAttachmentToRecord(created.id, field, {
-        filename: req.file.originalname,
+        filename: fixedFilename,
         contentType: req.file.mimetype,
         base64: req.file.buffer.toString('base64'),
       });
