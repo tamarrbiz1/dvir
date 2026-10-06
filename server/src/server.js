@@ -13,6 +13,7 @@ import {
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
 import { analyzeExpenseInventory, approvePendingDeduction, readState, reverseInventoryDeduction, createManualExpense } from './inventory-deduction.js';
+import { analyzeLogisticsInventory } from './logistics-deduction.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -176,6 +177,10 @@ app.post('/api/upload-document', authenticate, upload.single('file'), async (req
     // ניתוח מלאי אוטומטי להוצאה חדשה — fire-and-forget, עם backoff אם
     // הקובץ עוד לא זמין מיד אחרי ההעלאה (ר' inventory-deduction.js).
     if (table === 'הוצאות') autoAnalyzeExpenseInventory(created.id);
+    // הורדת מלאי נגזרת (קרטונים/נילונים/כובעים/משטחים) מתעודת משלוח
+    // או חשבונית — ר' logistics-deduction.js. fire-and-forget, עם
+    // backoff לתת ל-Make זמן למלא את "כמות קרטונים"/"מספר משטחים".
+    if (table === 'תעודות משלוח' || table === 'חשבוניות') autoAnalyzeLogisticsInventory(table, created.id);
     res.status(201).json({ ok: true, record: created });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -202,6 +207,51 @@ async function autoAnalyzeExpenseInventory(expenseId, attempt = 0) {
     console.error(`[inventory-ai] הוצאה ${expenseId} נכשלה: ${e.message}`);
   }
 }
+
+// ============================================================
+// הורדת מלאי נגזרת מתעודת משלוח/חשבונית (תוספת 2026-10-06, סעיף D) —
+// רץ ברקע אחרי העלאת קובץ. בניגוד ל"הוצאות", אין כאן ניתוח AI על
+// הקובץ עצמו — ממתינים ש-Make ימלא "כמות קרטונים"/"מספר משטחים" על
+// הרשומה, ואז מצליבים וגוזרים הורדה. ר' logistics-deduction.js.
+//
+// ⚠️ סיכון פתוח, אומת בפועל בבדיקה (ר' qa-check.mjs): ל"הוצאות" יש לנו
+// סימן-state משלנו ([מלאי-AI]) שמאפשר לדעת בוודאות שניתוח Make הסתיים
+// לפני שאנחנו קוראים את התוצאה. לתעודת-משלוח/חשבונית **אין** סימן כזה —
+// "יש ערך לא-ריק" הוא ניחוש, לא אישור שה-Make-ניתוח הסתיים וסופי. אם
+// הניסיון הראשון קולט ערך-ביניים/שגוי ומצליח להוריד מלאי (לא "נכשל",
+// אז אין ניסיון חוזר!) — התגית-אידמפוטנטיות תחסום הורדה נכונה בהמשך.
+// ההמתנה הארוכה (עד ~2 דקות) מקטינה את הסיכון אך לא מבטלת אותו.
+// עד שתהיה דרך אמינה יותר לדעת ש-Make סיים (למשל webhook ממנו, כמו
+// notifyMakeWebhook בכיוון ההפוך) — מומלץ לתמר לאמת ידנית דרך
+// POST /api/logistics/:table/:id/analyze-inventory אחרי שרואה בעין
+// שהשדות התמלאו נכון בטבלה, ולא להסתמך רק על הטריגר האוטומטי.
+// ============================================================
+async function autoAnalyzeLogisticsInventory(table, recordId, attempt = 0) {
+  const MAX_ATTEMPTS = 6;
+  try {
+    await new Promise((r) => setTimeout(r, 10000 * (attempt + 1)));
+    const result = await analyzeLogisticsInventory(table, recordId);
+    if (!result.results.length && attempt < MAX_ATTEMPTS - 1) {
+      return autoAnalyzeLogisticsInventory(table, recordId, attempt + 1);
+    }
+    invalidateReads('מלאי בסיסי');
+    console.log(`[logistics-ai] ${table} ${recordId}: ${result.results.length} פעולות מלאי`);
+  } catch (e) {
+    console.error(`[logistics-ai] ${table} ${recordId} נכשל: ${e.message}`);
+  }
+}
+
+app.post('/api/logistics/:table/:id/analyze-inventory', authenticate, requireOwner, async (req, res) => {
+  try {
+    const { table, id } = req.params;
+    if (table !== 'תעודות משלוח' && table !== 'חשבוניות') return res.status(400).json({ error: 'טבלה לא נתמכת' });
+    const result = await analyzeLogisticsInventory(table, id);
+    invalidateReads('מלאי בסיסי');
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ============================================================
 // ניתוח מלאי להוצאה — ידני (כפתור "🔍 נתח מלאי", כולל הוצאות ישנות)

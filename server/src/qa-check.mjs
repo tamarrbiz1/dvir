@@ -22,6 +22,7 @@ import { LOGIN_CODES_TABLE, canReadTable, canWriteTable } from './auth.js';
 import { analyzeExpenseDocument } from './document-analysis.js';
 import { matchLinesToInventory, categoryOfDescription, normalize } from './inventory-matching.js';
 import { readState } from './inventory-deduction.js';
+import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD } from './logistics-deduction.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
@@ -916,6 +917,75 @@ await test('הורדת מלאי: ביטול הורדה במחיקת הוצאה (
 
   return `חזר במדויק ל-${before} אחרי ביטול, ביטול שני לא שינה כלום (${reversedAgain ? 'סומן reversed' : 'no-op'})`;
 });
+
+// ============================================================
+// תוספת 2026-10-06 — הורדת מלאי נגזרת מתעודת משלוח/חשבונית (סעיף D)
+// בדיקות על הפונקציות הטהורות (deriveDeductions/computeDeviation/
+// findCounterpart) בלי שום כתיבה ל-Airtable — אין צורך ליצור רשומות
+// אמיתיות בטבלאות המנוטרות ע"י Make כדי לבדוק את הלוגיקה הזו, כי
+// היא רק קוראת שדות קיימים ומחשבת, לא קוראת לשום AI.
+// ============================================================
+
+await test('הורדה נגזרת: תעודה+חשבונית תואמות (קרטונים זהים) → אין חריגה, 4 קטגוריות', () => {
+  const note = { id: 'recN1', 'קוד שבוע': 'W1', 'כמות קרטונים': '100', 'מספר תעודה': 1 };
+  const invoice = { id: 'recI1', 'קוד שבוע': 'W1', 'כמות קרטונים': '100', 'מספר משטחים': '5', 'מספר חשבונית': 1 };
+  const { cartonsCrossCheck, deductions } = deriveDeductions({ note, invoice });
+  if (!cartonsCrossCheck.ok) throw new Error('קרטונים זהים — ההצלבה הייתה אמורה לעבור');
+  const byCategory = Object.fromEntries(deductions.map((d) => [d.category, d]));
+  if (byCategory['קרטונים'].quantity !== 100) throw new Error('קרטונים: צפויה 100');
+  if (byCategory['נילונים'].quantity !== 100) throw new Error('נילונים: צפוי מקדם 1:1 = 100');
+  if (byCategory['כובעים'].quantity !== 100) throw new Error('כובעים: צפוי מקדם 1:1 = 100');
+  if (byCategory['משטחי עץ'].quantity !== 5) throw new Error('משטחים: צפוי ישיר מהחשבונית = 5');
+  if (deductions.some((d) => d.needsApproval)) throw new Error('אין סטייה — שום קטגוריה לא אמורה לדרוש אישור');
+  return `4 קטגוריות נגזרו נכון, הצלבה עברה (${(cartonsCrossCheck.deviation * 100).toFixed(1)}% סטייה)`;
+});
+
+await test(`הורדה נגזרת: סטייה מעל הסף (${(DEVIATION_THRESHOLD * 100)}%) → קרטונים/נילונים/כובעים/משטחים דורשים אישור, לא נגזרים בפועל`, () => {
+  const note = { id: 'recN2', 'קוד שבוע': 'W2', 'כמות קרטונים': '100', 'מספר תעודה': 2 };
+  const invoice = { id: 'recI2', 'קוד שבוע': 'W2', 'כמות קרטונים': '140', 'מספר משטחים': '5', 'מספר חשבונית': 2 }; // 28.5% סטייה
+  const { cartonsCrossCheck, deductions } = deriveDeductions({ note, invoice });
+  if (cartonsCrossCheck.ok) throw new Error('סטייה גדולה — ההצלבה לא הייתה אמורה לעבור');
+  if (!deductions.every((d) => d.needsApproval)) throw new Error('כל הקטגוריות (כולל משטחים) אמורות לדרוש אישור כשיש חריגה בהצלבה');
+  if (!deductions.every((d) => d.reason)) throw new Error('כל שורה דורשת-אישור חייבת הסבר עם שני המספרים');
+  return `סטייה ${(cartonsCrossCheck.deviation * 100).toFixed(1)}% זוהתה, כל 4 הקטגוריות סומנו דורש-אישור עם הסבר`;
+});
+
+await test('הורדה נגזרת: רק תעודה קיימת (אין חשבונית מקבילה לשבוע) → נגזר עם אזהרת "בלי הצלבה", לא חוסם', () => {
+  const note = { id: 'recN3', 'קוד שבוע': 'W3', 'כמות קרטונים': '50', 'מספר תעודה': 3 };
+  const { cartonsCrossCheck, deductions } = deriveDeductions({ note, invoice: null });
+  if (cartonsCrossCheck) throw new Error('בלי חשבונית מקבילה — אין מה להצליב, cartonsCrossCheck צפוי null');
+  if (deductions.some((d) => d.needsApproval)) throw new Error('בלי מסמך מקביל זו אזהרה רכה, לא חסימה');
+  if (!deductions.every((d) => d.softWarning)) throw new Error('כל השורות צפויות softWarning=true (בלי הצלבה)');
+  if (deductions.find((d) => d.category === 'משטחי עץ')) throw new Error('בלי חשבונית — אין "מספר משטחים" לגזור ממנו');
+  return `3 קטגוריות (קרטונים/נילונים/כובעים) נגזרו עם אזהרה רכה, בלי חסימה`;
+});
+
+await test('findCounterpart: מוצא רשומה תואמת-שבוע בדיוק, לא מתאים שבוע שונה', () => {
+  const invoices = [{ id: 'a', 'קוד שבוע': 'W1' }, { id: 'b', 'קוד שבוע': 'W2' }];
+  if (findCounterpart('W2', invoices)?.id !== 'b') throw new Error('היה צפוי להתאים ל-W2');
+  if (findCounterpart('W9', invoices) !== null) throw new Error('שבוע לא קיים צפוי null');
+});
+
+await test('computeDeviation: סימטרי ומחושב כאחוז מהערך הגדול', () => {
+  if (Math.abs(computeDeviation(100, 100)) > 1e-9) throw new Error('זהים → סטייה 0');
+  if (Math.abs(computeDeviation(100, 110) - computeDeviation(110, 100)) > 1e-9) throw new Error('צפוי סימטרי');
+  if (computeDeviation(null, 100) !== null) throw new Error('ערך חסר → null (לא ניתן להצליב)');
+});
+
+// ⚠️ ניסיתי לכתוב כאן בדיקת-קצה-לקצה חיה (כמו ל-reverseInventoryDeduction
+// למעלה) שמדמה "כמות קרטונים"/"מספר משטחים" ע"י patch ישיר, ואז קוראת
+// ל-analyzeLogisticsInventory על רשומות אמיתיות. היא נכשלה באופן שחשף
+// ממצא אמיתי, לא באג בבדיקה: קובץ-הקבע (qa-real-invoice.pdf — חשבונית
+// אמיתית #21) מופעל ע"י Make כדי לנתח ולמלא "כמות קרטונים"/"מספר משטחים"
+// בעצמו מתוך תוכן הקובץ, ו-Make ניתח את הקובץ ברקע ו**שכתב** את ה-"20"
+// שה-patch שלי כתב לערך האמיתי מהחשבונית (1648!) — תוך כדי הריצה.
+// בניגוד ל"הוצאות" (שיש לנו עליה סימן-state משלנו ב"[מלאי-AI]" לדעת
+// שהניתוח הסתיים), לתעודת-משלוח/חשבונית **אין** אצלנו שום סימן-"סיום"
+// לדעת שה-Make-ניתוח התייצב — ה-retry האוטומטי בשרת (autoAnalyzeLogisticsInventory)
+// הוא ניחוש לפי "יש ערך לא-ריק", לא לפי "הערך הסופי". זה פער אמיתי —
+// ר' דוח הבוקר, סעיף "ממה נגזרת ההורדה" (סיכון מקצה-לקצה פתוח, לא קוד שגוי).
+// הלוגיקה הטהורה (deriveDeductions/computeDeviation/findCounterpart,
+// מעל) כבר מכוסה היטב בלי להזדקק לשדות-Make בכלל.
 
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
