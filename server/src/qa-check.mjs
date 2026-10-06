@@ -19,6 +19,9 @@ import { readFile } from 'node:fs/promises';
 // הקוד/הדרכון תמיד נקראים חי מהטבלה בזמן ריצה, לא מוטמעים בקובץ.
 import { fetchRecords as directFetchRecords } from './airtable.js';
 import { LOGIN_CODES_TABLE, canReadTable, canWriteTable } from './auth.js';
+import { analyzeExpenseDocument } from './document-analysis.js';
+import { matchLinesToInventory, categoryOfDescription, normalize } from './inventory-matching.js';
+import { readState } from './inventory-deduction.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
@@ -677,6 +680,113 @@ await test('אבטחה: עובד לא יכול PATCH/DELETE רשומת עבוד�
     throw new Error('עובד הצליח למחוק רשומה של עובד אחר!');
   } catch (e) { if (!String(e.message).startsWith('403')) throw e; }
   return 'PATCH ו-DELETE שניהם נחסמו (403) כנדרש';
+});
+
+// ============================================================
+// חלק B — ניתוח מסמכי הוצאות → ניהול מלאי אוטומטי (2026-10-06 לילה)
+// ------------------------------------------------------------
+// בדיקות יחידה טהורות (בלי שום קריאת/כתיבת Airtable) ל-3 המודולים
+// החדשים — document-analysis.js (ספק stub דטרמיניסטי כשאין
+// ANTHROPIC_API_KEY), inventory-matching.js (התאמה מטושטשת +
+// סף ביטחון + יחידות עמומות), inventory-deduction.js (סמן
+// אידמפוטנטיות ב"הערות"). רצות תמיד — אין בהן שום סיכון לנתונים
+// אמיתיים או לאוטומציית Make, ולכן לא מגודרות מאחורי RUN_UPLOAD_TESTS.
+// בדיקת-הקצה-לקצה האמיתית (קובץ מצורף אמיתי בהוצאה) כן מגודרת —
+// ר' בסוף הבלוק.
+// ============================================================
+const buf = (s) => Buffer.from(s, 'utf8');
+
+await test('ניתוח מסמך (stub): זיהוי שורת ניילון ברורה', async () => {
+  const r = await analyzeExpenseDocument(buf('הזמנה: 3 גלילי ניילון לחממה'), 'application/pdf', []);
+  if (!r.lines.length) throw new Error('לא זוהתה אף שורה');
+  if (r.lines[0].confidence < 0.9) throw new Error('ביטחון נמוך מהצפוי');
+  return `${r.lines.length} שורות, ביטחון ${r.lines[0].confidence}`;
+});
+
+await test('ניתוח מסמך (stub): מסמך בלי שום פריט מלאי רלוונטי (דלק)', async () => {
+  const r = await analyzeExpenseDocument(buf('NO_MATCH_ITEM: דלק לטרקטור 200 ליטר'), 'application/pdf', []);
+  if (!r.lines.length) throw new Error('הקו של stub לא הופעל כצפוי — בדוק את STUB_RULES');
+  // השורה מזוהה (יש "מוצר" במסמך) אבל matchLinesToInventory אמור לסנן אותה — נבדק בהמשך
+  return `${r.lines.length} שורות מזוהות (ייבדק שאף אחת לא תתאים למלאי)`;
+});
+
+await test('ניתוח מסמך (stub): מסמך דו-קטגורי (קרטון + כובע יחד)', async () => {
+  const r = await analyzeExpenseDocument(buf('חשבונית: קרטונים למיון + כובעי הגנה לעובדים'), 'application/pdf', []);
+  if (r.lines.length !== 2) throw new Error(`צפויות 2 שורות, התקבלו ${r.lines.length}`);
+  return '2 שורות (קרטון + כובע)';
+});
+
+await test('ניתוח מסמך (stub): יחידה לא ברורה + ביטחון נמוך', async () => {
+  // טקסט בכוונה בלי "ניילון"/"נילו" כדי לא להפעיל גם את הכלל של ניילון
+  // בטעות (UNCLEAR_UNIT היא שורת-בדיקה נפרדת ומבודדת)
+  const r = await analyzeExpenseDocument(buf('UNCLEAR_UNIT: משקל לא ברור'), 'application/pdf', []);
+  if (r.lines.length !== 1) throw new Error(`צפויה שורה אחת בדיוק, התקבלו ${r.lines.length}`);
+  if (r.lines[0].confidence >= 0.85) throw new Error('הציפייה הייתה לביטחון נמוך מ-0.85');
+  return `ביטחון ${r.lines[0].confidence}, יחידה "${r.lines[0].unit}"`;
+});
+
+await test('ניתוח מסמך (stub): אין כלל מילות-מפתח מוכרות', async () => {
+  const r = await analyzeExpenseDocument(buf('חשבונית על שירותי ייעוץ חשבונאי'), 'application/pdf', []);
+  if (r.lines.length !== 0) throw new Error(`צפוי 0 שורות, התקבלו ${r.lines.length}`);
+  return 'lines: [] כצפוי';
+});
+
+const FAKE_INVENTORY = [
+  { id: 'recFAKE_NYLON', 'קטגוריה': 'נילונים', 'מלאי נוכחי': 100 },
+  { id: 'recFAKE_CARTON', 'קטגוריה': 'קרטונים', 'מלאי נוכחי': 200 },
+  // ⚠️ בכוונה בלי 'כובעים' — בודק את התרחיש "קטגוריה זוהתה אבל אין לה פריט במלאי"
+];
+
+await test('התאמת מלאי: ריבוי עם אות סופית ("ניילונים", בלי מילת-רמז אחרת בתיאור)', () => {
+  // מבודד בכוונה — בלי "גליל"/"גלילי" (שגם הם כינוי בפני עצמו) כדי
+  // לבדוק באמת את ההתאמה המטושטשת של "ניילון"->"ניילונים", לא התאמה
+  // מקרית דרך כינוי אחר (זה בדיוק מה שהסתיר את התקלה המקורית)
+  const matches = matchLinesToInventory([{ description: 'ניילונים לבית הרשת', quantity: 3, unit: 'יחידה', confidence: 0.95 }], FAKE_INVENTORY);
+  if (matches.length !== 1 || matches[0].item.id !== 'recFAKE_NYLON') throw new Error('לא נמצאה התאמה מטושטשת (אות סופית מול רגילה)');
+});
+
+await test('התאמת מלאי: ריבוי נקבה ("יריעות" מול כינוי "יריעה")', () => {
+  const matches = matchLinesToInventory([{ description: 'יריעות לחיפוי', quantity: 2, unit: 'יחידה', confidence: 0.95 }], FAKE_INVENTORY);
+  if (matches.length !== 1 || matches[0].item.id !== 'recFAKE_NYLON') throw new Error('לא נמצאה התאמה מטושטשת (יריעה/יריעות)');
+});
+
+await test('התאמת מלאי: יחידת מידה עמומה (ליטר) חוסמת הורדה אוטומטית', () => {
+  const matches = matchLinesToInventory([{ description: 'ניילון 50 ליטר', quantity: 50, unit: 'ליטר', confidence: 0.95 }], FAKE_INVENTORY);
+  if (!matches[0]?.needsApproval) throw new Error('ציפייה ל-needsApproval=true ביחידה לא ברורה');
+  if (!/יחידת מידה/.test(matches[0].reason || '')) throw new Error('הסיבה לא מזכירה יחידת מידה');
+});
+
+await test('התאמת מלאי: ביטחון מתחת לסף 0.85 חוסם הורדה אוטומטית', () => {
+  const matches = matchLinesToInventory([{ description: 'קרטונים לאריזה', quantity: 10, unit: 'יחידה', confidence: 0.7 }], FAKE_INVENTORY);
+  if (!matches[0]?.needsApproval) throw new Error('ציפייה ל-needsApproval=true בביטחון 0.7');
+});
+
+await test('התאמת מלאי: קטגוריה מזוהה אבל אין לה פריט במלאי (כובעים) — לא מדווחת', () => {
+  const matches = matchLinesToInventory([{ description: 'כובעי הגנה', quantity: 20, unit: 'יחידה', confidence: 0.95 }], FAKE_INVENTORY);
+  if (matches.length !== 0) throw new Error(`צפוי 0 תוצאות (אין פריט "כובעים" במלאי הבדיקה), התקבלו ${matches.length}`);
+});
+
+await test('התאמת מלאי: תיאור שלא שייך לאף קטגוריה (דלק) — מסונן לגמרי', () => {
+  const matches = matchLinesToInventory([{ description: 'דלק לטרקטור', quantity: 200, unit: 'ליטר', confidence: 0.95 }], FAKE_INVENTORY);
+  if (matches.length !== 0) throw new Error(`צפוי 0 תוצאות, התקבלו ${matches.length}`);
+});
+
+await test('הורדת מלאי: קריאת סמן [מלאי-AI] מ"הערות" — round-trip ומקרה-קצה', () => {
+  const state = { status: 'done', results: [{ description: 'x', deducted: true }] };
+  const notes = `הערה ידנית של תמר\n[מלאי-AI]${JSON.stringify(state)}`;
+  const parsed = readState(notes);
+  if (parsed?.status !== 'done' || parsed.results[0].description !== 'x') throw new Error('הסמן לא נקרא נכון מתוך טקסט עם שורות אחרות');
+  if (readState('הערה רגילה בלי שום סמן') !== null) throw new Error('ציפייה ל-null כשאין סמן בכלל');
+});
+
+await test('הוצאה אמיתית → ניתוח מלאי מקצה-לקצה (קובץ אמיתי, אידמפוטנטי)', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
+  const rec = await createWithFile('הוצאות', 'חשבונית', { 'הערות': MARK });
+  const r1 = await api('POST', `expenses/${rec.id}/analyze-inventory`);
+  if (r1.status === 'failed' && !/אין קובץ/.test(r1.error || '')) throw new Error(`ניתוח ראשון נכשל: ${r1.error}`);
+  const r2 = await api('POST', `expenses/${rec.id}/analyze-inventory`);
+  if (JSON.stringify(r1.results) !== JSON.stringify(r2.results)) throw new Error('אידמפוטנטיות נכשלה — ניתוח שני נתן תוצאה שונה');
+  return `סטטוס: ${r1.status}, ${(r1.results || []).length} שורות (קובץ אמיתי לא בהכרח מכיל פריטי מלאי — זו בדיקת-צנרת, לא בדיקת-זיהוי)`;
 });
 
 // ============ 4. ניקוי מלא ============

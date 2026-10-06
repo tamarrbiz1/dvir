@@ -12,6 +12,7 @@ import {
 } from './auth.js';
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
+import { analyzeExpenseInventory, approvePendingDeduction, readState } from './inventory-deduction.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -172,7 +173,79 @@ app.post('/api/upload-document', authenticate, upload.single('file'), async (req
     // טריגר ל-Make — רק אחרי שהרשומה+הקובץ נוצרו בהצלחה. fire-and-forget
     // בכוונה: לא await-ים, כשל כאן לא ישפיע על התגובה למשתמש.
     notifyMakeWebhook(table, created.id);
+    // ניתוח מלאי אוטומטי להוצאה חדשה — fire-and-forget, עם backoff אם
+    // הקובץ עוד לא זמין מיד אחרי ההעלאה (ר' inventory-deduction.js).
+    if (table === 'הוצאות') autoAnalyzeExpenseInventory(created.id);
     res.status(201).json({ ok: true, record: created });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// ניתוח מלאי אוטומטי להוצאה חדשה — רץ ברקע אחרי התגובה למשתמש,
+// עם ניסיונות חוזרים (הקובץ שהועלה הרגע לא תמיד זמין מיד ב-URL של
+// Airtable). כשל כאן אף פעם לא זורק — נרשם ללוג בלבד.
+// ============================================================
+async function autoAnalyzeExpenseInventory(expenseId, attempt = 0) {
+  const MAX_ATTEMPTS = 4;
+  try {
+    const result = await analyzeExpenseInventory(expenseId);
+    if (result.status === 'failed' && /אין קובץ מצורף/.test(result.error || '') && attempt < MAX_ATTEMPTS - 1) {
+      await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
+      return autoAnalyzeExpenseInventory(expenseId, attempt + 1);
+    }
+    invalidateReads('הוצאות');
+    invalidateReads('מלאי בסיסי');
+    console.log(`[inventory-ai] הוצאה ${expenseId}: ${result.status}, ${(result.results || []).length} שורות`);
+  } catch (e) {
+    console.error(`[inventory-ai] הוצאה ${expenseId} נכשלה: ${e.message}`);
+  }
+}
+
+// ============================================================
+// ניתוח מלאי להוצאה — ידני (כפתור "🔍 נתח מלאי", כולל הוצאות ישנות)
+// + אישור הורדה ידנית לשורה "דורשת אישור". owner בלבד בכוונה: טבלת
+// "הוצאות" כולה חסומה למנהל עבודה היום (MANAGER_READ לא כוללת אותה) —
+// לא מרחיבים את החשיפה הפיננסית שלו כאן כתוצר-לוואי של הפיצ'ר הזה
+// (ר' דיון בדוח-הבוקר, סעיף B6 במשימה מבקש "מנהל רואה תגים" — זה
+// סותר את העיקרון הקיים "מנהל עבודה לא רואה כספים" ולכן לא יושם
+// בלי אישור מפורש של תמר).
+function requireOwner(req, res, next) {
+  if (req.auth.role !== 'owner') return res.status(403).json({ error: 'פעולה זו זמינה למנהל הראשי בלבד' });
+  next();
+}
+
+app.post('/api/expenses/:id/analyze-inventory', authenticate, requireOwner, async (req, res) => {
+  try {
+    const result = await analyzeExpenseInventory(req.params.id, { force: req.query.force === '1' });
+    invalidateReads('הוצאות');
+    invalidateReads('מלאי בסיסי');
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/expenses/:id/analyze-inventory', authenticate, requireOwner, async (req, res) => {
+  try {
+    const base = (await import('./airtable.js')).getBase();
+    const rec = await base('הוצאות').find(req.params.id);
+    const state = readState(rec.fields['הערות']);
+    res.json(state || { status: 'none' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/expenses/:id/analyze-inventory/approve', authenticate, requireOwner, async (req, res) => {
+  try {
+    const { lineIndex } = req.body || {};
+    if (lineIndex == null) return res.status(400).json({ error: 'חסר lineIndex' });
+    const result = await approvePendingDeduction(req.params.id, Number(lineIndex));
+    invalidateReads('הוצאות');
+    invalidateReads('מלאי בסיסי');
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
