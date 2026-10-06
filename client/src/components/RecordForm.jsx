@@ -1,9 +1,17 @@
 // ============================================================
 // טופס רשומה גנרי — יצירה / עריכה מול Airtable (סעיף 7: CRUD למנהל ראשי)
 //
-// fields: [{ name, label, type: 'text'|'number'|'date'|'select'|'textarea', required }]
-// אפשרויות ה-select נטענות מהמטא של Airtable — לא מקודדות בקוד,
-// כדי שלא ייכתב ערך שאינו ברשימה (כתיבה כזו נדחית).
+// fields: [{ name, label, type: 'text'|'number'|'date'|'select'|'multiselect'|'textarea'|'link', required }]
+// אפשרויות ה-select/multiselect נטענות מהמטא של Airtable — לא מקודדות
+// בקוד, כדי שלא ייכתב ערך שאינו ברשימה (כתיבה כזו נדחית).
+//
+// type 'link' — קישור לרשומה מטבלה אחרת (סעיף C, 2026-10-06): שדה
+// נוסף חובה { linkTable, linkNameField, multiple? }. האפשרויות נטענות
+// עם app.api.get(linkTable) (לא select-options — זה לא שדה-בחירה
+// ב-Airtable). ברירת מחדל multiple=false: ה-UI הוא select יחיד, אבל
+// הערך הנשלח ל-Airtable הוא תמיד מערך (שדה קישור מצפה למערך של
+// Record IDs, גם כשיש בו רשומה אחת). אם הטבלה המקושרת ריקה — מוצג
+// "אין <label> — הוסף" עם יצירה מהירה (שם בלבד) בלי לעזוב את הטופס.
 // שדות ריקים אינם נשלחים; null לעולם אינו הופך ל-0.
 // ============================================================
 import { useEffect, useState } from 'react';
@@ -17,11 +25,16 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
       let cur = record?.[f.name];
       if (f.type === 'date' && cur) cur = String(cur).slice(0, 10);
       if (f.type === 'multiselect') cur = Array.isArray(cur) ? cur : (cur ? [cur] : []);
-      v[f.name] = cur ?? (f.type === 'multiselect' ? [] : '');
+      if (f.type === 'link') {
+        const ids = Array.isArray(cur) ? cur.map((x) => (x && typeof x === 'object' ? x.id : x)).filter(Boolean) : [];
+        cur = f.multiple ? ids : (ids[0] || '');
+      }
+      v[f.name] = cur ?? (f.type === 'multiselect' || (f.type === 'link' && f.multiple) ? [] : '');
     });
     return v;
   });
   const [options, setOptions] = useState({});
+  const [linkOptions, setLinkOptions] = useState({}); // { [fieldName]: [{id, name}] }
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   // שדות "מחושבים" (formula/rollup/lookup/autoNumber/...) — Airtable דוחה כל
@@ -41,6 +54,11 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
         .then((d) => { if (!cancelled) setOptions((o) => ({ ...o, [f.name]: Array.isArray(d.choices) ? d.choices : [] })); })
         .catch(() => {});
     });
+    fields.filter((f) => f.type === 'link' && f.linkTable).forEach((f) => {
+      api.get(f.linkTable, '?maxRecords=200')
+        .then((d) => { if (!cancelled) setLinkOptions((o) => ({ ...o, [f.name]: Array.isArray(d) ? d : [] })); })
+        .catch(() => { if (!cancelled) setLinkOptions((o) => ({ ...o, [f.name]: [] })); });
+    });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table]);
@@ -52,7 +70,9 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
     if (saving) return;
     for (const f of fields) {
       if (computedFields.has(f.name)) continue; // לקריאה בלבד — לעולם לא שדה חובה מבחינת הטופס
-      if (f.required && (values[f.name] === '' || values[f.name] == null)) {
+      const v = values[f.name];
+      const empty = Array.isArray(v) ? v.length === 0 : (v === '' || v == null);
+      if (f.required && empty) {
         setError(`חסר שדה חובה: ${f.label}`);
         return;
       }
@@ -64,6 +84,13 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
       const v = values[f.name];
       if (f.type === 'multiselect') {
         if (Array.isArray(v) && v.length) body[f.name] = v;
+        else if (record?.id) body[f.name] = [];
+        continue;
+      }
+      if (f.type === 'link') {
+        // שדה קישור מצפה למערך של Record IDs (גם כשיש בו רשומה אחת)
+        const ids = f.multiple ? (Array.isArray(v) ? v : []) : (v ? [v] : []);
+        if (ids.length) body[f.name] = ids;
         else if (record?.id) body[f.name] = [];
         continue;
       }
@@ -116,6 +143,18 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
                     <option value="">בחר...</option>
                     {(options[f.name] || (values[f.name] ? [values[f.name]] : [])).map((c) => <option key={c} value={c}>{c}</option>)}
                   </select>
+                ) : f.type === 'link' ? (
+                  <LinkField
+                    api={api}
+                    linkTable={f.linkTable}
+                    nameField={f.linkNameField || 'שם'}
+                    label={f.label}
+                    multiple={!!f.multiple}
+                    value={values[f.name]}
+                    options={linkOptions[f.name]}
+                    onChange={(v) => set(f.name, v)}
+                    onCreated={(rec) => setLinkOptions((o) => ({ ...o, [f.name]: [...(o[f.name] || []), rec] }))}
+                  />
                 ) : f.type === 'textarea' ? (
                   <textarea className="input" style={{ width: '100%' }} value={values[f.name]} onChange={(e) => set(f.name, e.target.value)} />
                 ) : (
@@ -132,6 +171,78 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+
+// ============================================================
+// שדה 'link' — select יחיד (ברירת מחדל) או צ'קבוקסים (multiple) מתוך
+// רשומות של טבלה אחרת. אם הטבלה ריקה (או עדיין בטעינה) מוצג "הוסף"
+// עם יצירה מהירה (שם בלבד) שלא עוזבת את הטופס — הרשומה החדשה נבחרת
+// אוטומטית. value: מחרוזת מזהה (יחיד) או מערך מזהים (multiple).
+// ============================================================
+function LinkField({ api, linkTable, nameField, label, multiple, value, options, onChange, onCreated }) {
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const loaded = Array.isArray(options);
+  const list = loaded ? options : [];
+  const displayName = (rec) => rec?.[nameField] || 'ללא שם';
+
+  const createQuick = async () => {
+    const name = newName.trim();
+    if (!name || creating) return;
+    setCreating(true);
+    try {
+      const rec = await api.create(linkTable, { [nameField]: name });
+      onCreated(rec);
+      onChange(multiple ? [...(Array.isArray(value) ? value : []), rec.id] : rec.id);
+      setAdding(false); setNewName('');
+    } catch (e) {
+      toast(`לא ניתן היה ליצור ${label} חדש. (${e.message || e})`, 'error');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <div>
+      {!loaded ? (
+        <span className="muted" style={{ fontSize: 12 }}>טוען אפשרויות...</span>
+      ) : multiple ? (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {list.map((rec) => {
+            const on = (Array.isArray(value) ? value : []).includes(rec.id);
+            return (
+              <button type="button" key={rec.id} className="badge"
+                style={{ cursor: 'pointer', border: `1px solid ${on ? 'var(--accent-top)' : 'var(--border)'}`, background: on ? 'var(--accent-top)' : '#fff', color: on ? '#fff' : 'var(--text-main)', padding: '6px 12px' }}
+                onClick={() => onChange(on ? value.filter((x) => x !== rec.id) : [...(Array.isArray(value) ? value : []), rec.id])}>
+                {displayName(rec)}
+              </button>
+            );
+          })}
+          {!list.length && <span className="muted" style={{ fontSize: 12 }}>אין {label} עדיין</span>}
+        </div>
+      ) : (
+        <select className="select" style={{ width: '100%' }} value={value || ''} onChange={(e) => onChange(e.target.value)}>
+          <option value="">בחר...</option>
+          {list.map((rec) => <option key={rec.id} value={rec.id}>{displayName(rec)}</option>)}
+        </select>
+      )}
+      {loaded && !list.length && !multiple && (
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>אין {label} — הוסף</div>
+      )}
+      {!adding ? (
+        <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 6, padding: '2px 8px' }} onClick={() => setAdding(true)}>+ {label} חדש</button>
+      ) : (
+        <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+          <input className="input" style={{ flex: 1 }} placeholder={`שם ${label} חדש`} autoFocus value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); createQuick(); } }} />
+          <button type="button" className="btn btn-primary btn-sm" disabled={creating || !newName.trim()} onClick={createQuick}>{creating ? '...' : 'צור'}</button>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setAdding(false); setNewName(''); }}>✕</button>
+        </div>
+      )}
     </div>
   );
 }

@@ -23,6 +23,7 @@ import { analyzeExpenseDocument } from './document-analysis.js';
 import { matchLinesToInventory, categoryOfDescription, normalize } from './inventory-matching.js';
 import { readState } from './inventory-deduction.js';
 import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD } from './logistics-deduction.js';
+import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggestions, summarizeSuggestions, AUTO_THRESHOLD } from './supplier-linking.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
@@ -970,6 +971,68 @@ await test('computeDeviation: סימטרי ומחושב כאחוז מהערך ה
   if (Math.abs(computeDeviation(100, 100)) > 1e-9) throw new Error('זהים → סטייה 0');
   if (Math.abs(computeDeviation(100, 110) - computeDeviation(110, 100)) > 1e-9) throw new Error('צפוי סימטרי');
   if (computeDeviation(null, 100) !== null) throw new Error('ערך חסר → null (לא ניתן להצליב)');
+});
+
+// ============================================================
+// קישור ספקים/משווקים אוטומטי (סעיף C, 2026-10-06) — ר' supplier-linking.js.
+// כל הבדיקות כאן טהורות-לוגיקה (מערכים מפוברקים ב-RAM, אין קריאת/כתיבת
+// Airtable בכלל) בכוונה: /api/suppliers/auto-link יכול ליצור/לעדכן
+// רשומות ספק/משווק אמיתיות כשהוא לא ב-dryRun, ואין לבדוק את זה כאן
+// נגד השרת החי. ר' הערת הבטיחות בתדריך המשימה (2026-10-06, סעיף C).
+// ============================================================
+await test('normalizeName: מתעלם מסיומת חברה/גרשיים/פיסוק/רווחים', () => {
+  if (normalizeName('ל.ש. שיווק תוצרת חקלאית בע"מ') !== normalizeName('ל ש שיווק תוצרת חקלאית')) {
+    throw new Error('נרמול לא עקבי בין צורות כתיב שונות');
+  }
+  if (normalizeName('  ABC  Ltd.  ') !== 'abc') throw new Error('סיומת חברה/רווחים לא הוסרו');
+});
+
+await test('matchEntity: התאמה מדויקת מקבלת ביטחון 1.0, שם ריק מתעלם', () => {
+  const candidates = [{ id: 's1', 'שם ספק': 'דוד ירקות' }, { id: 's2', 'שם ספק': '' }];
+  const m = matchEntity('דוד ירקות', candidates, 'שם ספק');
+  if (!m || m.candidate.id !== 's1' || m.confidence !== 1.0) throw new Error('התאמה מדויקת לא זוהתה כצפוי');
+});
+
+await test('planLink: בלי התאמה ממלא רשומה קיימת בלי שם (לא יוצר כפולה)', () => {
+  const candidates = [{ id: 's1', 'שם ספק': 'דוד ירקות' }, { id: 'm1', 'שם ספק': '' }];
+  const plan = planLink('ל.ש. שיווק תוצרת חקלאית', candidates, 'שם ספק');
+  if (plan?.kind !== 'fill' || plan.targetId !== 'm1') throw new Error('צפוי kind=fill על הרשומה הקיימת בלי שם');
+});
+
+await test('planLink: בלי התאמה ובלי רשומה-בלי-שם מציע יצירה חדשה', () => {
+  const plan = planLink('חברה חדשה שלא קיימת', [{ id: 's1', 'שם ספק': 'דוד ירקות' }], 'שם ספק');
+  if (plan?.kind !== 'create' || plan.newName !== 'חברה חדשה שלא קיימת') throw new Error('צפוי kind=create');
+  if (planLink('   ', [], 'שם ספק') !== null) throw new Error('טקסט ריק צפוי להחזיר null');
+});
+
+await test('planCheckSupplier: ירושת ספק מהוצאה מקושרת גוברת על "מוטב"', () => {
+  const suppliers = [{ id: 's1', 'שם ספק': 'דוד ירקות' }];
+  const expensesById = new Map([['e1', { id: 'e1', 'ספקים': ['s1'] }]]);
+  const plan = planCheckSupplier({ id: 'c1', 'הוצאות': ['e1'], 'מוטב': 'מישהו אחר' }, suppliers, expensesById);
+  if (plan?.kind !== 'link' || plan.targetId !== 's1' || plan.confidence !== 1.0) throw new Error('צפוי קישור דרך ההוצאה, ביטחון 1.0');
+});
+
+await test('computeSuggestions: ארבע הקבוצות (הוצאות/צ\'קים/חשבוניות/תעודות) מחושבות נכון', () => {
+  const suppliers = [{ id: 's1', 'שם ספק': 'דוד ירקות' }];
+  const marketers = [{ id: 'm1', 'שם משווק': '' }]; // ממצא אמיתי: רשומת משווק אחת בלי שם
+  const expenses = [
+    { id: 'e2', 'ספק-AI': 'דוד ירקות', 'ספקים': [] },
+    { id: 'e3', 'ספק-AI': '', 'ספקים': [] }, // בלי טקסט — לא נכנס לרשימה
+  ];
+  const checks = [{ id: 'c3', 'מוטב': 'דוד ירקות', 'ספקים': [] }];
+  const invoices = [{ id: 'i1', 'משווק-AI': 'ל.ש. שיווק תוצרת חקלאית', 'משווק': [] }];
+  const deliveryNotes = [{ id: 'd1', 'משווק-AI': 'ל.ש. שיווק תוצרת חקלאית', 'משווק': [] }];
+  const sug = computeSuggestions({ suppliers, marketers, expenses, checks, invoices, deliveryNotes });
+  if (sug.expenses.length !== 1 || sug.expenses[0].plan?.kind !== 'link') throw new Error('הוצאה עם ספק-AI ריק לא אמורה להיכלל, והקיימת צפויה kind=link');
+  if (sug.checks.length !== 1 || sug.checks[0].plan?.kind !== 'link') throw new Error('צ\'ק צפוי kind=link לפי "מוטב"');
+  if (sug.invoices[0].plan?.kind !== 'fill' || sug.invoices[0].plan.targetId !== 'm1') throw new Error('חשבונית צפויה kind=fill על המשווק הקיים בלי שם');
+  if (sug.deliveryNotes[0].plan?.kind !== 'fill' || sug.deliveryNotes[0].plan.targetId !== 'm1') throw new Error('תעודת משלוח צפויה kind=fill על המשווק הקיים בלי שם');
+  const summary = summarizeSuggestions(sug, 'willApply');
+  if (summary.expenses.willApply !== 1 || summary.invoices.willApply !== 1 || summary.deliveryNotes.willApply !== 1) {
+    throw new Error('סיכום willApply שגוי');
+  }
+  if (AUTO_THRESHOLD !== 0.9) throw new Error('AUTO_THRESHOLD השתנה בלי כוונה');
+  return `${sug.expenses.length} הוצאות, ${sug.checks.length} צ'קים, ${sug.invoices.length} חשבוניות, ${sug.deliveryNotes.length} תעודות`;
 });
 
 // ⚠️ ניסיתי לכתוב כאן בדיקת-קצה-לקצה חיה (כמו ל-reverseInventoryDeduction

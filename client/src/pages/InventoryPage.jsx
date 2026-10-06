@@ -24,8 +24,12 @@ import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisPro
 
 const TABLE = 'מלאי בסיסי';
 
+// "ספקים" נוסף 2026-10-06 (סעיף C) — שדה קישור (link) לטבלת "ספקים",
+// כך שאפשר לקשר ספק לפריט מלאי ישירות מהטופס (לא רק דרך הקישור ההפוך
+// בכרטיס הספק עצמו). ר' RecordForm.jsx type:'link'.
 const ITEM_FORM_FIELDS = [
   { name: 'קטגוריה', label: 'קטגוריה', type: 'select', required: true },
+  { name: 'ספקים', label: 'ספק', type: 'link', linkTable: 'ספקים', linkNameField: 'שם ספק', multiple: true },
   { name: 'מלאי נוכחי', label: 'מלאי נוכחי', type: 'number' },
   { name: 'מלאי מינימום', label: 'מלאי מינימום', type: 'number' },
   { name: 'תאריך עדכון', label: 'תאריך עדכון', type: 'date' },

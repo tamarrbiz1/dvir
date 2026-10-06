@@ -43,8 +43,13 @@ const SORTERS = {
   check: (n) => noteCheck(n) || null,
 };
 
+// "משווק" הוא שדה קישור (link) לטבלת "משווקים", לא select-options רגיל —
+// ר' RecordForm.jsx type:'link'. תוקן 2026-10-06 (סעיף C): השדה הזה היה
+// חסר כליל מהטופס, ולכן לא הופיעה אף אפשרות בחירה ("בתעודות משלוח לא
+// מופיע לי בחירה של משווק" — תמר).
 const EDIT_FIELDS = [
   { name: 'תאריך תעודה', label: 'תאריך תעודה', type: 'date' },
+  { name: 'משווק', label: 'משווק', type: 'link', linkTable: 'משווקים', linkNameField: 'שם משווק' },
   { name: 'כמות קרטונים', label: 'כמות קרטונים', type: 'text' },
   { name: 'משקל כולל', label: 'משקל כולל (ק"ג)', type: 'text' },
   { name: 'קוד שבוע', label: 'קוד שבוע (YYYYMMDD-YYYYMMDD)', type: 'text' },

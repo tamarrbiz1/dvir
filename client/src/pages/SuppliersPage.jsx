@@ -15,6 +15,8 @@ import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useAutoRefresh } from '../utils/live.js';
 import { exportCsv, fileStamp } from '../utils/table.js';
+import { authFetch } from '../utils/authFetch.js';
+import { toast } from '../utils/ui.js';
 import { CHECKS_TABLE, CHECK_FIELDS, checkBelongsToSupplier, checkNumber, checkPayee, sortByDue } from '../utils/checks.js';
 import { StatusBadge } from '../components/ChecksTab.jsx';
 
@@ -44,6 +46,7 @@ export default function SuppliersPage() {
   const [search, setSearch] = useState('');
   const [drawer, setDrawer] = useState(null);
   const [form, setForm] = useState(null); // {record, fields, title}
+  const [autoLink, setAutoLink] = useState(false); // מודאל "קישור אוטומטי"
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
 
@@ -123,6 +126,7 @@ export default function SuppliersPage() {
       <PageHeader icon="🚚" title="ספקים">
         <input className="input no-print" aria-label="חיפוש ספק" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
         <button type="button" className="btn btn-ghost no-print" onClick={doExport} disabled={!filtered.length}>⬇️ ייצוא</button>
+        {canEdit && <button className="btn btn-ghost no-print" onClick={() => setAutoLink(true)}>🔗 קישור אוטומטי</button>}
         {canEdit && <button className="btn btn-primary no-print" onClick={() => setForm({ record: null, fields: SUPPLIER_FIELDS, title: 'ספק חדש' })}>+ ספק חדש</button>}
       </PageHeader>
       {loading ? (
@@ -160,6 +164,9 @@ export default function SuppliersPage() {
           expenses={supplierExpenses(drawer.id)}
           checks={supplierChecks(drawer.id)}
           inventory={supplierInventory(drawer.id)}
+          allInventory={inventory}
+          api={app.api}
+          onInventoryChanged={load}
           canEdit={canEdit}
           onAddDetails={() => openAddDetails(items.find((x) => x.id === drawer.id) || drawer)}
           onEdit={() => openEditAll(items.find((x) => x.id === drawer.id) || drawer)}
@@ -178,11 +185,13 @@ export default function SuppliersPage() {
           onSaved={async () => { setForm(null); await load(); }}
         />
       )}
+
+      {autoLink && <AutoLinkModal onClose={() => setAutoLink(false)} onApplied={load} />}
     </div>
   );
 }
 
-function SupplierDrawer({ supplier, expenses, checks, inventory, canEdit, onAddDetails, onEdit, onClose, onAllChecks }) {
+function SupplierDrawer({ supplier, expenses, checks, inventory, allInventory, api, onInventoryChanged, canEdit, onAddDetails, onEdit, onClose, onAllChecks }) {
   useEscapeClose(onClose); // סגירה במקש Escape
   const [tab, setTab] = useState('פרטים');
 
@@ -204,7 +213,16 @@ function SupplierDrawer({ supplier, expenses, checks, inventory, canEdit, onAddD
           {tab === 'פרטים' && <DetailsTab s={supplier} canEdit={canEdit} onAddDetails={onAddDetails} onEdit={onEdit} />}
           {tab === 'הוצאות' && <ExpensesTab list={expenses} />}
           {tab === "צ'קים" && <ChecksList list={checks} onAllChecks={onAllChecks} />}
-          {tab === 'מלאי קשור' && <InventoryTab list={inventory} />}
+          {tab === 'מלאי קשור' && (
+            <InventoryTab
+              list={inventory}
+              allInventory={allInventory}
+              supplierId={supplier.id}
+              api={api}
+              canEdit={canEdit}
+              onChanged={onInventoryChanged}
+            />
+          )}
         </div>
       </div>
     </div>
@@ -302,8 +320,62 @@ function ChecksList({ list, onAllChecks }) {
   );
 }
 
-// מלאי קשור — פריטי "מלאי בסיסי" שהספק מקושר אליהם
-function InventoryTab({ list }) {
+// מלאי קשור — פריטי "מלאי בסיסי" שהספק מקושר אליהם (קישור קיים ב"מלאי
+// בסיסי".ספקים → הקישור ה"הפוך" כאן הוא תצוגה/עריכה ממסך הספק, לא שדה
+// נפרד ב-Airtable). canEdit: מציג גם את כל שאר הפריטים עם תיבת סימון
+// לקישור/ביטול-קישור ישיר לספק הזה — בלי לדרוס ספקים אחרים שכבר
+// מקושרים לפריט (merge, לא overwrite).
+function InventoryTab({ list, allInventory, supplierId, api, canEdit, onChanged }) {
+  const [busyId, setBusyId] = useState(null);
+  const idsOf = (v) => (Array.isArray(v) ? v.map((x) => (x && typeof x === 'object' ? x.id : x)).filter(Boolean) : []);
+
+  const toggle = async (item) => {
+    if (busyId) return;
+    setBusyId(item.id);
+    const cur = idsOf(item['ספקים']);
+    const linked = cur.includes(supplierId);
+    const next = linked ? cur.filter((id) => id !== supplierId) : [...cur, supplierId];
+    try {
+      await api.update('מלאי בסיסי', item.id, { 'ספקים': next });
+      await onChanged();
+    } catch (e) {
+      toast(`לא ניתן היה לעדכן את הקישור. (${e.message || e})`, 'error');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  if (canEdit && Array.isArray(allInventory) && allInventory.length) {
+    return (
+      <div>
+        <div className="section-title" style={{ marginTop: 0 }}>פריטי מלאי המקושרים לספק זה</div>
+        <div className="table-wrap">
+          <table className="data-table">
+            <tbody>
+              {allInventory.map((i) => {
+                const cur = Number(i['מלאי נוכחי']) || 0;
+                const min = Number(i['מלאי מינימום']) || 0;
+                const low = cur <= min;
+                const linked = idsOf(i['ספקים']).includes(supplierId);
+                return (
+                  <tr key={i.id}>
+                    <td style={{ width: 28 }}>
+                      <input type="checkbox" checked={linked} disabled={busyId === i.id} onChange={() => toggle(i)}
+                        aria-label={`קישור ${i['קטגוריה'] || 'פריט'} לספק זה`} />
+                    </td>
+                    <td><b>📦 {i['קטגוריה'] || 'פריט'}</b></td>
+                    <td>{formatNumber(cur)} / {formatNumber(min)}</td>
+                    <td><span className={`badge ${low ? 'badge-error' : 'badge-ok'}`}>{low ? 'מלאי נמוך' : 'תקין'}</span></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
   if (!list.length) return <div className="empty-state">אין פריטי מלאי מקושרים לספק זה</div>;
   return (
     <div className="table-wrap">
@@ -325,6 +397,131 @@ function InventoryTab({ list }) {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ============================================================
+// מודאל "קישור אוטומטי" (סעיף C, 2026-10-06) — תצוגה מקדימה (dryRun)
+// תמיד נטענת ראשית ואוטומטית; כתיבה בפועל רק בלחיצה מפורשת על "אשר
+// והרץ", אחרי שהתצוגה המקדימה נראית הגיונית לבעל העסק.
+// ============================================================
+const GROUP_LABELS = { expenses: 'הוצאות (ספק-AI)', checks: "צ'קים (מוטב)", invoices: 'חשבוניות (משווק-AI)', deliveryNotes: 'תעודות משלוח (משווק-AI)' };
+
+function AutoLinkModal({ onClose, onApplied }) {
+  const [loading, setLoading] = useState(true);
+  const [applying, setApplying] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [applied, setApplied] = useState(null);
+  const [error, setError] = useState('');
+  useEscapeClose(onClose, !applying);
+
+  const loadPreview = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const r = await authFetch('/api/suppliers/auto-link?dryRun=1', { method: 'POST' });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || `שגיאה (${r.status})`);
+      setPreview(j);
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadPreview(); }, [loadPreview]);
+
+  const runReal = async () => {
+    if (applying) return;
+    setApplying(true); setError('');
+    try {
+      const r = await authFetch('/api/suppliers/auto-link?dryRun=0', { method: 'POST' });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || `שגיאה (${r.status})`);
+      setApplied(j);
+      toast('הקישור האוטומטי בוצע בהצלחה');
+      await onApplied();
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const data = applied || preview;
+  const flagKey = applied ? 'applied' : 'willApply';
+
+  return (
+    <div className="modal-overlay" onClick={() => !applying && onClose()}>
+      <div className="modal" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
+        <h3>🔗 קישור אוטומטי — ספקים / משווקים</h3>
+        {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12 }}>⚠️ {error}</div>}
+        {loading ? (
+          <div className="skeleton skeleton-card" />
+        ) : data ? (
+          <div>
+            {!applied && (
+              <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
+                תצוגה מקדימה בלבד — עדיין לא נכתב כלום. ההתאמות המסומנות "יקושרו" ייכתבו בפועל רק בלחיצה על האישור למטה.
+              </div>
+            )}
+            {applied && (
+              <div style={{ fontSize: 13, color: 'var(--ok)', marginBottom: 12 }}>✅ הריצה בוצעה בפועל — הנתונים נכתבו ל-Airtable.</div>
+            )}
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead><tr><th>סוג</th><th>סה"כ</th><th>{applied ? 'קושרו' : 'יקושרו אוטומטית'}</th><th>לבדיקה ידנית</th><th>ללא התאמה</th></tr></thead>
+                <tbody>
+                  {Object.entries(GROUP_LABELS).map(([key, label]) => {
+                    const s = data.summary?.[key] || {};
+                    return (
+                      <tr key={key}>
+                        <td>{label}</td>
+                        <td>{s.total ?? 0}</td>
+                        <td style={{ fontWeight: 700, color: 'var(--ok)' }}>{s[flagKey] ?? 0}</td>
+                        <td>{s.needsReview ?? 0}</td>
+                        <td>{s.noMatch ?? 0}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {!applied && Object.entries(GROUP_LABELS).some(([key]) => (data[key] || []).some((x) => x.willApply)) && (
+              <div style={{ marginTop: 14, maxHeight: 220, overflowY: 'auto' }}>
+                <div className="section-title" style={{ marginTop: 0 }}>פירוט מה שיקושר אוטומטית</div>
+                {Object.entries(GROUP_LABELS).map(([key, label]) => {
+                  const rows = (data[key] || []).filter((x) => x.willApply);
+                  if (!rows.length) return null;
+                  return (
+                    <div key={key} style={{ marginBottom: 10 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{label}</div>
+                      {rows.map((r) => (
+                        <div key={r.id} style={{ fontSize: 13, padding: '4px 0', borderBottom: '1px solid var(--border)' }}>
+                          "{r.text}" ← {r.plan.kind === 'create' ? `יצירת רשומה חדשה: ${r.plan.newName}` : r.plan.kind === 'fill' ? `מילוי שם ברשומה קיימת: ${r.plan.newName}` : `קישור ל: ${r.plan.targetName}`}
+                          <span className="muted" style={{ marginInlineStart: 6 }}>({r.plan.reason})</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : null}
+        <div className="form-actions">
+          <button type="button" className="btn btn-ghost" disabled={applying} onClick={onClose}>{applied ? 'סגירה' : 'ביטול'}</button>
+          {!applied && (
+            <button type="button" className="btn btn-ghost" disabled={loading || applying} onClick={loadPreview}>🔄 רענון תצוגה מקדימה</button>
+          )}
+          {!applied && (
+            <button type="button" className="btn btn-primary" disabled={loading || applying || !data} onClick={runReal}>
+              {applying ? 'מריץ...' : 'אשר והרץ בפועל'}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
