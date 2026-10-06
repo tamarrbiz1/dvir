@@ -31,6 +31,16 @@ app.use(cors(NODE_ENV === 'production' && ALLOWED_ORIGIN !== '*'
   : { origin: ALLOWED_ORIGIN }
 ));
 app.use(express.json());
+// JSON לא-תקין בגוף הבקשה (body-parser זורק SyntaxError) — בלי זה Express
+// מחזיר עמוד HTML "Bad Request" גנרי; הלקוח שלנו מצפה ל-JSON בכל תשובה
+// (res.json() בעטיפת ה-API, ר' authFetch.js/App.jsx) ונכשל בפענוח בשקט.
+// תוספת 2026-10-06 (M3, מצאה בבדיקת עמידות ל-POST /api/worker-login).
+app.use((err, _req, res, next) => {
+  if (err?.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+    return res.status(400).json({ error: 'גוף הבקשה אינו JSON תקין' });
+  }
+  next(err);
+});
 
 // רישום מעבר הבקשות לפתרון בעיות (ללא נתונים רגישים)
 app.use((req, _res, next) => {
@@ -692,6 +702,7 @@ app.post('/api/translate', authenticate, async (req, res) => {
     if (!translated) return res.status(502).json({ error: 'התרגום נכשל' });
     res.json({ translated });
   } catch (e) {
+    console.error(`[translate] שגיאה בתרגום (target=${req.body?.target || '?'}): ${e.message}`);
     res.status(502).json({ error: 'שירות התרגום לא זמין כרגע' });
   }
 });
@@ -780,6 +791,18 @@ async function assertOwnRecord(req, res, table) {
   return true;
 }
 
+// מחזיר שגיאת-כתיבה/קריאה גנרית ללקוח. תוספת 2026-10-06 (M3): ספריית
+// airtable.js מצרפת statusCode אמיתי (422/404/400 וכו') לשגיאות תקינות-
+// נתונים (למשל ערך לא חוקי בשדה/קישור לרשומה שלא קיימת) — קודם כל אלו
+// הפכו ל-500 גנרי בלי קשר לסיבה האמיתית, מה שהציג "שגיאת שרת" ללקוח גם
+// כששורש הבעיה הוא קלט לא תקין (למשל טיפול/עבודה עם שדה-קישור שגוי).
+// מעבירים הלאה רק קודי 4xx ידועים של Airtable; כל דבר אחר (כולל חוסר
+// statusCode, 5xx, שגיאת-רשת) נשאר 500 כקודם.
+function sendApiError(res, e) {
+  const status = e?.statusCode;
+  res.status(status >= 400 && status < 500 ? status : 500).json({ error: e.message });
+}
+
 // רשומות מטבלה (עם filters / sort / limit)
 app.get('/api/:table', authorizeRead, async (req, res) => {
   try {
@@ -829,7 +852,11 @@ app.get('/api/:table', authorizeRead, async (req, res) => {
     res.set('X-Cache', fresh ? 'BYPASS' : 'MISS');
     res.json(payload);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    // לוג-הקשר (2026-10-06, M3): בלי זה כשל בטבלה כלשהי (כולל "עבודות
+    // עובדים" מאפליקציית העובד) מגיע ללקוח כ-500 אבל נבלע בשקט בלוג השרת —
+    // אין שום דרך לדעת איזו טבלה/תפקיד נכשלו בלי לשחזר מהלקוח.
+    console.error(`[api] GET /api/${req.params.table} (role=${req.auth?.role || '?'}): ${e.message}`);
+    sendApiError(res, e);
   }
 });
 
@@ -846,7 +873,8 @@ app.get('/api/:table/:id', authorizeRead, async (req, res) => {
     }
     res.json({ id: rec.id, ...rec.fields });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error(`[api] GET /api/${req.params.table}/${req.params.id} (role=${req.auth?.role || '?'}): ${e.message}`);
+    sendApiError(res, e);
   }
 });
 
@@ -869,7 +897,8 @@ app.post('/api/:table', authorizeWrite, async (req, res) => {
     invalidateReads(table); // כדי שהרשומה החדשה תיקרא מיד ותיפתר לשם
     res.status(201).json(created);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error(`[api] POST /api/${req.params.table} (role=${req.auth?.role || '?'}): ${e.message}`);
+    sendApiError(res, e);
   }
 });
 
@@ -885,7 +914,8 @@ app.patch('/api/:table/:id', authorizeWrite, async (req, res) => {
     invalidateReads(table);
     res.json(updated);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error(`[api] PATCH /api/${req.params.table}/${req.params.id} (role=${req.auth?.role || '?'}): ${e.message}`);
+    sendApiError(res, e);
   }
 });
 
@@ -906,7 +936,8 @@ app.delete('/api/:table/:id', authorizeWrite, async (req, res) => {
     invalidateReads(table);
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error(`[api] DELETE /api/${req.params.table}/${req.params.id} (role=${req.auth?.role || '?'}): ${e.message}`);
+    sendApiError(res, e);
   }
 });
 
