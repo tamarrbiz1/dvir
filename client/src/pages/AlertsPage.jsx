@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { useAutoRefresh } from '../utils/live.js';
-import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
+import { formatMoney, formatNumber, formatDate, kpiValueClass } from '../utils/format.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import PageHeader from '../components/PageHeader.jsx';
@@ -143,18 +143,20 @@ export default function AlertsPage() {
           <div className="kpi-grid">
             <div className="kpi-card">
               <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--warning-soft)' }}>⚠️</div><span className="kpi-label">סה"כ חריגות</span></div>
-              <div className="kpi-value" style={{ color: 'var(--warning)' }}>{anomalies.length}</div>
+              <div className={kpiValueClass(anomalies.length)} style={{ color: 'var(--warning)' }}>{formatNumber(anomalies.length)}</div>
+              <div className="kpi-sub">כל התקופה · כל סיכומי השבוע הקיימים במערכת</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--error-soft)' }}>🔴</div><span className="kpi-label">שבועות לא תקינים</span></div>
-              <div className="kpi-value" style={{ color: 'var(--error)' }}>{new Set(anomalies.map((a) => a.week)).size}</div>
+              <div className={kpiValueClass(new Set(anomalies.map((a) => a.week)).size)} style={{ color: 'var(--error)' }}>{formatNumber(new Set(anomalies.map((a) => a.week)).size)}</div>
+              <div className="kpi-sub">כל התקופה · כל סיכומי השבוע הקיימים במערכת</div>
             </div>
           </div>
 
           {/* גרפי חריגות */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, marginTop: 20 }}>
             <div className="card">
-              <div className="section-title" style={{ marginTop: 0 }}>חריגות לפי סוג</div>
+              <div className="section-title" style={{ marginTop: 0 }}>חריגות לפי סוג · כל התקופה</div>
               {byCategory.length ? (
                 <ResponsiveContainer width="100%" height={220}>
                   <PieChart>
@@ -168,7 +170,7 @@ export default function AlertsPage() {
               ) : <div className="empty-state">אין חריגות</div>}
             </div>
             <div className="card">
-              <div className="section-title" style={{ marginTop: 0 }}>חריגות לפי שבוע</div>
+              <div className="section-title" style={{ marginTop: 0 }}>חריגות לפי שבוע · כל התקופה</div>
               {byWeek.length ? (
                 <div style={{ direction: 'ltr' }}>
                   <ResponsiveContainer width="100%" height={220}>

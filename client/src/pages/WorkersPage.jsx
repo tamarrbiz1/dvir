@@ -178,7 +178,7 @@ export default function WorkersPage() {
                 </div>
                 <div className="form-grid-2" style={{ gap: 6, fontSize: 13 }}>
                   <div><span style={{ color: 'var(--text-muted)' }}>{t('m_hoursMonth')}: </span><b>{formatNumber(hoursOf(cur))}</b></div>
-                  <div><span style={{ color: 'var(--text-muted)' }}>{t('m_jobs')}: </span><b>{cur.length}</b></div>
+                  <div><span style={{ color: 'var(--text-muted)' }}>{t('m_jobsMonth')}: </span><b>{cur.length}</b></div>
                   <div><span style={{ color: 'var(--text-muted)' }}>{t('m_earnedMonth')}: </span><b style={{ color: 'var(--revenue)' }}>{formatMoney(paidOf(cur))}</b></div>
                   <div><span style={{ color: 'var(--text-muted)' }}>{t('m_prevMonth')}: </span><b style={{ color: 'var(--workers)' }}>{formatMoney(paidOf(prev))}</b></div>
                 </div>

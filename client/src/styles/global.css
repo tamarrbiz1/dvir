@@ -178,13 +178,23 @@ body {
 }
 
 .kpi-card .kpi-value {
-  font-size: var(--fs-kpi);
+  /* מתכווץ לרוחב הכרטיס — מספר לעולם לא נחתך ולא נשבר לשתי שורות */
+  font-size: clamp(18px, 2.2vw, var(--fs-kpi));
   font-weight: 800;
   color: var(--text-main);
   line-height: 1.2;
   margin-bottom: 8px;
   direction: ltr;
   text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  max-width: 100%;
+}
+/* ערך ארוך (מעל 9 תווים, למשל "30,382 ק"ג") — גופן קטן יותר כדי להיכנס בשורה אחת */
+.kpi-card .kpi-value.kpi-value--long {
+  font-size: clamp(16px, 1.6vw, 20px);
 }
 
 .kpi-card .kpi-sub {
@@ -966,7 +976,8 @@ button.nav-item {
   .topbar h1 { font-size: 22px; }
   .topbar { flex-wrap: wrap; }
   .topbar .filter-bar { width: 100%; }
-  .fs-kpi, .kpi-card .kpi-value { font-size: 26px; }
+  .fs-kpi, .kpi-card .kpi-value { font-size: clamp(18px, 6vw, 26px); }
+  .kpi-card .kpi-value.kpi-value--long { font-size: clamp(15px, 4.5vw, 20px); }
   .card { padding: 16px 16px; }
   .filter-bar { padding: 10px 12px; }
   .select, .input { min-width: 0; width: 100%; }

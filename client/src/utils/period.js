@@ -3,7 +3,7 @@
 // משותף ללוח הבקרה ולטאב "עבודות" (עובדים ועבודות), כדי שכל סכום תלוי-זמן
 // יציין את התקופה באותה לשון בדיוק.
 // ============================================================
-import { yearProgressLabel } from './format.js';
+import { yearProgressLabel, formatDate } from './format.js';
 
 export const PERIOD_PRESETS = [
   { key: 'today', label: 'היום' },
@@ -54,4 +54,12 @@ export function periodLabel(preset) {
 }
 export function periodDisclosure(preset) {
   return preset === 'year' ? yearProgressLabel() : periodLabel(preset);
+}
+
+// כיתוב התקופה לכרטיסי KPI ולכותרות גרפים — בטווח מותאם מציינים את התאריכים עצמם
+export function periodCaption(preset, from, to) {
+  if (preset === 'custom' && (from || to)) {
+    return [from ? `מ-${formatDate(from)}` : '', to ? `עד ${formatDate(to)}` : ''].filter(Boolean).join(' ');
+  }
+  return periodDisclosure(preset);
 }

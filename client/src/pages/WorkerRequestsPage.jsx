@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { t } from '../i18n.js';
-import { formatDate } from '../utils/format.js';
+import { formatDate, formatNumber, kpiValueClass } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import { REQUEST_TABLE, REQUEST_FIELDS, REQUEST_STATUS, isDateChangeReq, workerNotesOf, approvalExpiry, statusStyle, requestTimeLabel, MissingRequestsTable } from '../utils/requests.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -167,7 +167,8 @@ export default function WorkerRequestsPage() {
           return (
             <div key={s} className="kpi-card clickable" {...activatable(() => setTab(s), `סינון לפי בקשות בסטטוס ${s}`)} style={{ cursor: 'pointer' }}>
               <div className="kpi-top"><div className="kpi-icon" style={{ background: st.soft }}>{st.icon}</div><span className="kpi-label">{s === REQUEST_STATUS.pending ? t('m_reqPending') : s === REQUEST_STATUS.approved ? t('m_reqApproved') : t('m_reqRejected')}</span></div>
-              <div className="kpi-value" style={{ color: st.color }}>{counts[s]}</div>
+              <div className={kpiValueClass(counts[s])} style={{ color: st.color }}>{formatNumber(counts[s])}</div>
+              <div className="kpi-sub">{s === REQUEST_STATUS.pending ? 'כרגע' : 'כל ההיסטוריה'}</div>
             </div>
           );
         })}

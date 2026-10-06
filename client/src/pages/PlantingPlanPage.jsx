@@ -6,7 +6,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts';
 import { useApp } from '../App.jsx';
-import { formatDate, formatMoney, formatNumber } from '../utils/format.js';
+import { formatDate, formatMoney, formatNumber, kpiValueClass } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import { holidayInfo, KIND_STYLE } from '../utils/holidays.js';
 import { confirmDialog, toast } from '../utils/ui.js';
@@ -1459,15 +1459,18 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
               <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(3,1fr)', marginBottom: 14 }}>
                 <div className="kpi-card" style={{ padding: '12px 14px' }}>
                   <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>סה"כ צפוי לתוכנית</span></div>
-                  <div className="kpi-value" style={{ fontSize: 19, color: 'var(--planned)' }}>{formatNumber(totKg, 0)} ק"ג</div>
+                  <div className={kpiValueClass(`${formatNumber(totKg, 0)} ק"ג`)} style={{ fontSize: 19, color: 'var(--planned)' }}>{formatNumber(totKg, 0)} ק"ג</div>
+                  <div className="kpi-sub">לכל אורך התוכנית</div>
                 </div>
                 <div className="kpi-card" style={{ padding: '12px 14px' }}>
                   <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>בוצע עד כה</span></div>
-                  <div className="kpi-value" style={{ fontSize: 19, color: 'var(--actual)' }}>{totAct ? `${formatNumber(totAct, 0)} ק"ג` : 'טרם'}</div>
+                  <div className={kpiValueClass(totAct ? `${formatNumber(totAct, 0)} ק"ג` : 'טרם')} style={{ fontSize: 19, color: 'var(--actual)' }}>{totAct ? `${formatNumber(totAct, 0)} ק"ג` : 'טרם'}</div>
+                  <div className="kpi-sub">לכל אורך התוכנית</div>
                 </div>
                 <div className="kpi-card" style={{ padding: '12px 14px' }}>
                   <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>הכנסה צפויה</span></div>
-                  <div className="kpi-value" style={{ fontSize: 19, color: 'var(--revenue)' }}>{formatMoney(Math.round(totRev))}</div>
+                  <div className={kpiValueClass(formatMoney(Math.round(totRev)))} style={{ fontSize: 19, color: 'var(--revenue)' }}>{formatMoney(Math.round(totRev))}</div>
+                  <div className="kpi-sub">לכל אורך התוכנית</div>
                 </div>
               </div>
             );
@@ -1648,17 +1651,17 @@ function WeekDetails({ week, totals, planById, planInfo, onClose, onPlan }) {
           <div className="kpi-grid" style={{ marginBottom: 14 }}>
             <div className="kpi-card">
               <div className="kpi-top"><span className="kpi-label">סה"כ ק"ג צפוי</span></div>
-              <div className="kpi-value" style={{ color: PLANNED_COLOR }}>{formatNumber(totals.expected, 0)}</div>
+              <div className={kpiValueClass(formatNumber(totals.expected, 0))} style={{ color: PLANNED_COLOR }}>{formatNumber(totals.expected, 0)}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-top"><span className="kpi-label">סה"כ ק"ג בפועל</span></div>
-              <div className="kpi-value" style={{ color: totals.anyActual ? ACTUAL_COLOR : 'var(--text-muted)' }}>
+              <div className={kpiValueClass(totals.anyActual ? formatNumber(totals.actual, 0) : 'טרם התקבל ביצוע')} style={{ color: totals.anyActual ? ACTUAL_COLOR : 'var(--text-muted)' }}>
                 {totals.anyActual ? formatNumber(totals.actual, 0) : 'טרם התקבל ביצוע'}
               </div>
             </div>
             <div className="kpi-card">
               <div className="kpi-top"><span className="kpi-label">סה"כ הכנסה צפויה</span></div>
-              <div className="kpi-value">{formatMoney(totals.revenue)}</div>
+              <div className={kpiValueClass(formatMoney(totals.revenue))}>{formatMoney(totals.revenue)}</div>
             </div>
           </div>
 
@@ -1772,13 +1775,14 @@ function Dashboard({ data, year, onWeek, onStructure, onCrop, onQuarter }) {
         {kpis.map((k) => (
           <div key={k.label} className="kpi-card">
             <div className="kpi-top"><span className="kpi-label">{k.label}</span></div>
-            <div className="kpi-value" style={{ color: k.color }}>{k.value}</div>
+            <div className={kpiValueClass(k.value)} style={{ color: k.color }}>{k.value}</div>
+            <div className="kpi-sub">שנת {year}</div>
           </div>
         ))}
       </div>
 
       <div className="card" style={{ marginBottom: 16 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>צפוי מול בפועל לאורך השנה</div>
+        <div className="section-title" style={{ marginTop: 0 }}>צפוי מול בפועל לאורך השנה · {year}</div>
         <ResponsiveContainer width="100%" height={280}>
           <LineChart data={data.weekSeries} margin={CHART_MARGIN}
             onClick={(e) => e?.activePayload?.[0] && onWeek(e.activePayload[0].payload.key)}>
@@ -1794,7 +1798,7 @@ function Dashboard({ data, year, onWeek, onStructure, onCrop, onQuarter }) {
       </div>
 
       <div className="card" style={{ marginBottom: 16 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>הכנסה צפויה לפי שבוע</div>
+        <div className="section-title" style={{ marginTop: 0 }}>הכנסה צפויה לפי שבוע · {year}</div>
         <ResponsiveContainer width="100%" height={240}>
           <BarChart data={data.weekSeries} margin={CHART_MARGIN}
             onClick={(e) => e?.activePayload?.[0] && onWeek(e.activePayload[0].payload.key)}>
@@ -1814,7 +1818,7 @@ function Dashboard({ data, year, onWeek, onStructure, onCrop, onQuarter }) {
 
       <div className="grid-2" style={{ gap: 16, marginBottom: 16 }}>
         <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>ק"ג בפועל לפי מבנה</div>
+          <div className="section-title" style={{ marginTop: 0 }}>ק"ג בפועל לפי מבנה · {year}</div>
           <ResponsiveContainer width="100%" height={260}>
             <BarChart layout="vertical" margin={CHART_MARGIN}
               data={[...data.byStructure].sort((a, b) => b.actual - a.actual)}
@@ -1829,7 +1833,7 @@ function Dashboard({ data, year, onWeek, onStructure, onCrop, onQuarter }) {
         </div>
 
         <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>צפוי מול בפועל לפי גידול</div>
+          <div className="section-title" style={{ marginTop: 0 }}>צפוי מול בפועל לפי גידול · {year}</div>
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={data.byCrop} margin={CHART_MARGIN_ROTATED}
               onClick={(e) => e?.activePayload?.[0] && onCrop(e.activePayload[0].payload.name)}>
@@ -1847,7 +1851,7 @@ function Dashboard({ data, year, onWeek, onStructure, onCrop, onQuarter }) {
 
       <div className="grid-2" style={{ gap: 16, marginBottom: 16 }}>
         <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>תכנון מול ביצוע לפי רבעון</div>
+          <div className="section-title" style={{ marginTop: 0 }}>תכנון מול ביצוע לפי רבעון · {year}</div>
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={data.byQuarter} margin={CHART_MARGIN}
               onClick={(e) => e?.activePayload?.[0] && onQuarter(e.activePayload[0].payload.quarter)}>
@@ -1869,7 +1873,7 @@ function Dashboard({ data, year, onWeek, onStructure, onCrop, onQuarter }) {
         </div>
 
         <div className="card">
-          <div className="section-title" style={{ marginTop: 0 }}>חלוקת הק"ג הצפוי בין הרבעונים</div>
+          <div className="section-title" style={{ marginTop: 0 }}>חלוקת הק"ג הצפוי בין הרבעונים · {year}</div>
           <ResponsiveContainer width="100%" height={260}>
             <PieChart>
               <Pie data={data.byQuarter.filter((q) => q.expected > 0)} dataKey="expected" nameKey="name"
@@ -1888,7 +1892,7 @@ function Dashboard({ data, year, onWeek, onStructure, onCrop, onQuarter }) {
       </div>
 
       <div className="card">
-        <div className="section-title" style={{ marginTop: 0 }}>פעילות שתילה וקטיף לאורך השנה</div>
+        <div className="section-title" style={{ marginTop: 0 }}>פעילות שתילה וקטיף לאורך השנה · {year}</div>
         <ResponsiveContainer width="100%" height={260}>
           <BarChart data={data.monthly} margin={CHART_MARGIN}>
             {grid}

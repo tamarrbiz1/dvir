@@ -8,7 +8,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { authFetch } from '../utils/authFetch.js';
-import { formatNumber, formatWeight, formatDate, safeValue } from '../utils/format.js';
+import { formatNumber, formatWeight, formatDate, safeValue, kpiValueClass } from '../utils/format.js';
+import { periodRange, inPeriod, periodCaption } from '../utils/period.js';
+import PeriodSelect from '../components/PeriodSelect.jsx';
 import { sortStructures } from '../utils/structures.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import PageHeader from '../components/PageHeader.jsx';
@@ -17,7 +19,7 @@ import { toast } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useAutoRefresh } from '../utils/live.js';
-import { exportCsv, fileStamp, inDateRange } from '../utils/table.js';
+import { exportCsv, fileStamp } from '../utils/table.js';
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
@@ -34,6 +36,8 @@ export default function HarvestsPage() {
   const [search, setSearch] = useState('');
   const [fStructure, setFStructure] = useState('');
   const [fType, setFType] = useState('');
+  // תקופה — אותו בורר כמו בלוח הבקרה; ברירת מחדל: החודש
+  const [preset, setPreset] = useState('month');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [limit, setLimit] = useState(25);
@@ -54,16 +58,19 @@ export default function HarvestsPage() {
   const types = useMemo(() => [...new Set(harvests.map((h) => h['סוג קטיף']).filter(Boolean))], [harvests]);
   const structOptions = useMemo(() => [...new Set(harvests.map(structName).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'he')), [harvests]);
 
+  const range = useMemo(() => periodRange(preset, from, to), [preset, from, to]);
+  const caption = periodCaption(preset, from, to);
+  const periodSub = (fStructure || fType) ? `${caption} · לפי הסינון` : caption;
   const filtered = useMemo(() => harvests.filter((h) => {
     if (fStructure && structName(h) !== fStructure) return false;
     if (fType && h['סוג קטיף'] !== fType) return false;
-    if (!inDateRange(h['תאריך'], from, to)) return false;
+    if (!inPeriod(h['תאריך'], range)) return false;
     if (search) {
       const hay = [structName(h), h['סוג קטיף'], h['הערות']].filter(Boolean).join(' ').toLowerCase();
       if (!hay.includes(search.toLowerCase())) return false;
     }
     return true;
-  }).sort((a, b) => String(b['תאריך'] || '').localeCompare(String(a['תאריך'] || ''))), [harvests, fStructure, fType, from, to, search]);
+  }).sort((a, b) => String(b['תאריך'] || '').localeCompare(String(a['תאריך'] || ''))), [harvests, fStructure, fType, range, search]);
 
   const num = (h, f) => Number(h[f]) || 0;
   const totalKg = filtered.reduce((s, h) => s + num(h, 'כמות ק"ג'), 0);
@@ -85,7 +92,7 @@ export default function HarvestsPage() {
       .map((r) => ({ ...r, kg: Math.round(r.kg), avg: r.cartons ? Math.round((r.kg / r.cartons) * 10) / 10 : null }));
   }, [filtered]);
 
-  const hasFilters = search || fStructure || fType || from || to;
+  const hasFilters = search || fStructure || fType || preset !== 'month' || from || to;
 
   const doExport = () => exportCsv(`קטיפים-${fileStamp()}`, [
     { label: 'תאריך', get: (h) => formatDate(h['תאריך']) },
@@ -118,33 +125,32 @@ export default function HarvestsPage() {
           <option value="">כל סוגי הקטיף</option>
           {types.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
-        <label className="date-field">מתאריך<input type="date" className="input" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
-        <label className="date-field">עד תאריך<input type="date" className="input" value={to} onChange={(e) => setTo(e.target.value)} /></label>
-        {hasFilters && <button className="btn btn-ghost" onClick={() => { setSearch(''); setFStructure(''); setFType(''); setFrom(''); setTo(''); }}>נקה פילטרים</button>}
+        <PeriodSelect preset={preset} from={from} to={to} onPreset={setPreset} onFrom={setFrom} onTo={setTo} />
+        {hasFilters && <button className="btn btn-ghost" onClick={() => { setSearch(''); setFStructure(''); setFType(''); setPreset('month'); setFrom(''); setTo(''); }}>נקה פילטרים</button>}
       </div>
 
       {loading ? <div className="skeleton skeleton-card" /> : (
         <>
           {/* KPI */}
           <div className="kpi-grid">
-            <Kpi icon="🧺" soft="var(--harvest-soft)" color="var(--harvest)" label={'סה"כ ק"ג'} value={filtered.length ? formatNumber(Math.round(totalKg)) : 'אין נתונים'} />
-            <Kpi icon="📦" soft="var(--cartons-soft)" color="var(--cartons)" label={'סה"כ קרטונים'} value={filtered.length ? formatNumber(totalCartons) : 'אין נתונים'} />
-            <Kpi icon="🛒" soft="var(--pallets-soft)" color="var(--pallets)" label={'סה"כ משטחים'} value={filtered.length ? formatNumber(totalPallets) : 'אין נתונים'} />
-            <Kpi icon="⚖️" soft="var(--weight-soft)" color="var(--weight)" label="משקל ממוצע לקרטון" value={avgPerCarton !== null ? `${formatNumber(Math.round(avgPerCarton * 10) / 10)} ק"ג` : 'לא זמין'} />
+            <Kpi icon="🧺" soft="var(--harvest-soft)" color="var(--harvest)" label={'סה"כ ק"ג'} value={filtered.length ? formatNumber(Math.round(totalKg)) : 'אין נתונים'} sub={periodSub} />
+            <Kpi icon="📦" soft="var(--cartons-soft)" color="var(--cartons)" label={'סה"כ קרטונים'} value={filtered.length ? formatNumber(totalCartons) : 'אין נתונים'} sub={periodSub} />
+            <Kpi icon="🛒" soft="var(--pallets-soft)" color="var(--pallets)" label={'סה"כ משטחים'} value={filtered.length ? formatNumber(totalPallets) : 'אין נתונים'} sub={periodSub} />
+            <Kpi icon="⚖️" soft="var(--weight-soft)" color="var(--weight)" label="משקל ממוצע לקרטון" value={avgPerCarton !== null ? `${formatNumber(Math.round(avgPerCarton * 10) / 10)} ק"ג` : 'לא זמין'} sub={periodSub} />
           </div>
 
           {/* גרפים 1–2: ק"ג / קרטונים לאורך זמן */}
           <div className="grid-2" style={{ marginTop: 20 }}>
-            <ChartCard title={'ק"ג לאורך זמן'}>
+            <ChartCard title={`ק"ג לאורך זמן · ${caption}`}>
               <TimeBars data={byDate} dataKey="kg" color="#2E9B62" fmt={(v) => formatWeight(v)} />
             </ChartCard>
-            <ChartCard title="קרטונים לאורך זמן">
+            <ChartCard title={`קרטונים לאורך זמן · ${caption}`}>
               <TimeBars data={byDate} dataKey="cartons" color="#09A7B2" fmt={(v) => `${formatNumber(v)} קרטונים`} />
             </ChartCard>
           </div>
 
           {/* גרף 5: משקל ממוצע לקרטון לאורך זמן */}
-          <ChartCard title="משקל ממוצע לקרטון לאורך זמן" style={{ marginTop: 16 }}>
+          <ChartCard title={`משקל ממוצע לקרטון לאורך זמן · ${caption}`} style={{ marginTop: 16 }}>
             {byDate.filter((d) => d.avg !== null).length ? (
               <div style={{ direction: 'ltr' }}>
                 <ResponsiveContainer width="100%" height={220}>
@@ -225,12 +231,12 @@ export default function HarvestsPage() {
   );
 }
 
-function Kpi({ icon, soft, color, label, value }) {
+function Kpi({ icon, soft, color, label, value, sub }) {
   return (
     <div className="kpi-card">
       <div className="kpi-top"><div className="kpi-icon" style={{ background: soft }}>{icon}</div><span className="kpi-label">{label}</span></div>
-      <div className="kpi-value" style={{ color }}>{value}</div>
-      <div style={{ height: 12 }} />
+      <div className={kpiValueClass(value)} style={{ color }}>{value}</div>
+      {sub ? <div className="kpi-sub">{sub}</div> : <div style={{ height: 12 }} />}
     </div>
   );
 }

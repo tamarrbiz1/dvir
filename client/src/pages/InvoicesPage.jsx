@@ -17,13 +17,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { useAutoRefresh } from '../utils/live.js';
-import { formatNumber, formatDate, formatWeight, formatPercent, formatMoney } from '../utils/format.js';
+import { formatNumber, formatDate, formatWeight, formatPercent, formatMoney, kpiMoney, kpiValueClass } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import RecordForm from '../components/RecordForm.jsx';
 import InvoiceDrawer, { ObjChip, StatusBadge, CheckBadgeValue } from '../components/InvoiceDrawer.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
-import { exportCsv, fileStamp, inDateRange, paginate, sortRows, dateValue } from '../utils/table.js';
+import { exportCsv, fileStamp, paginate, pagerSummary, sortRows, dateValue } from '../utils/table.js';
+import { periodRange, inPeriod, periodCaption } from '../utils/period.js';
+import PeriodSelect from '../components/PeriodSelect.jsx';
 import {
   INVOICES_TABLE, invNumber, invLabel, invTitle, invDate, invStatus, invGross, invNet, invWeight, invCartons, invPallets,
   invNetPerKg, invGrossPerKg, invAvgCarton, invDeduction, invDeductionPct, invDeductionDev, invDeductionCheck,
@@ -85,6 +87,9 @@ export default function InvoicesPage() {
   const [weekF, setWeekF] = useState(params.get('week') || '');
   const [statusF, setStatusF] = useState(params.get('status') || '');
   const [checkF, setCheckF] = useState(''); // '' | '__any' | '__deduction' | '__transport'
+  // תקופה — אותו בורר כמו בלוח הבקרה; ברירת מחדל: החודש. בהגעה מקישור
+  // ממוקד (משווק/שבוע) — "הכל", כדי שהרשומות המבוקשות לא יוסתרו
+  const [preset, setPreset] = useState(() => (params.get('marketer') || params.get('week')) ? 'all' : 'month');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
 
@@ -150,6 +155,8 @@ export default function InvoicesPage() {
   const statuses = useMemo(() => [...new Set(items.map(invStatus).filter(Boolean).map(String))], [items]);
 
   // סינון (החיפוש עובד יחד עם הפילטרים, לא במקומם)
+  const range = useMemo(() => periodRange(preset, from, to), [preset, from, to]);
+  const caption = periodCaption(preset, from, to);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return items.filter((i) => {
@@ -159,7 +166,7 @@ export default function InvoicesPage() {
       if (checkF === '__any' && !hasAnomaly(i)) return false;
       if (checkF === '__deduction' && !isDeductionAnomaly(i)) return false;
       if (checkF === '__transport' && !isTransportAnomaly(i)) return false;
-      if (!inDateRange(invDate(i), from, to)) return false;
+      if (!inPeriod(invDate(i), range)) return false;
       if (q) {
         const hay = [invNumber(i), invTitle(i), invMarketer(i)?.name, invWeekCode(i), invStatus(i), invDocument(i)?.filename]
           .filter((x) => x !== null && x !== undefined).join(' ').toLowerCase();
@@ -167,7 +174,7 @@ export default function InvoicesPage() {
       }
       return true;
     });
-  }, [items, search, marketerF, weekF, statusF, checkF, from, to]);
+  }, [items, search, marketerF, weekF, statusF, checkF, range]);
 
   const sorted = useMemo(() => sortRows(filtered, sort.key, sort.dir, SORTERS), [filtered, sort]);
   const paged = useMemo(() => paginate(sorted, page, printing ? Math.max(sorted.length, 1) : pageSize), [sorted, page, pageSize, printing]);
@@ -186,16 +193,18 @@ export default function InvoicesPage() {
     };
   }, [filtered]);
 
-  const hasFilters = search || marketerF || weekF || statusF || checkF || from || to;
+  const hasFilters = search || marketerF || weekF || statusF || checkF || preset !== 'month' || from || to;
+  // כיתוב התקופה בכרטיסים — בדיוק מה שהטבלה מסננת
+  const periodSub = (marketerF || weekF || statusF) ? `${caption} · לפי הסינון` : caption;
   const resetFilters = () => {
-    setSearch(''); setMarketerF(''); setWeekF(''); setStatusF(''); setCheckF(''); setFrom(''); setTo(''); setPage(1);
+    setSearch(''); setMarketerF(''); setWeekF(''); setStatusF(''); setCheckF(''); setPreset('month'); setFrom(''); setTo(''); setPage(1);
     setParams({}, { replace: true });
   };
   const changeSort = (key) => {
     setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'date' ? 'desc' : 'asc' }));
     setPage(1);
   };
-  useEffect(() => { setPage(1); }, [search, marketerF, weekF, statusF, checkF, from, to, pageSize]);
+  useEffect(() => { setPage(1); }, [search, marketerF, weekF, statusF, checkF, preset, from, to, pageSize]);
 
   const round2 = (v) => (v === null ? '' : Math.round(v * 100) / 100);
   const doExport = () => exportCsv(`חשבוניות-${fileStamp()}`, [
@@ -268,12 +277,12 @@ export default function InvoicesPage() {
 
       {/* KPI */}
       <div className="kpi-grid">
-        <Kpi icon="🧾" soft="var(--docs-soft)" color="var(--docs)" label="חשבוניות" value={formatNumber(kpi.count)} />
-        <Kpi icon="💵" soft="var(--revenue-soft)" color="var(--revenue)" label='סה"כ ברוטו' value={kpi.gross === null ? 'אין נתונים' : formatMoney(kpi.gross)} />
-        <Kpi icon="💸" soft="var(--profit-soft)" color="var(--profit)" label='סה"כ נטו' value={kpi.net === null ? 'אין נתונים' : formatMoney(kpi.net)} />
-        <Kpi icon="⚖️" soft="var(--weight-soft)" color="var(--weight)" label='סה"כ משקל' value={kpi.weight === null ? 'אין נתונים' : formatWeight(kpi.weight)} />
-        <Kpi icon="📦" soft="var(--cartons-soft)" color="var(--cartons)" label='סה"כ קרטונים' value={kpi.cartons === null ? 'אין נתונים' : formatNumber(kpi.cartons)} />
-        <Kpi icon="⚠️" soft={kpi.anomalies ? 'var(--error-soft)' : 'var(--ok-soft)'} color={kpi.anomalies ? 'var(--error)' : 'var(--ok)'} label="חריגות ניכוי / הובלה" value={formatNumber(kpi.anomalies)} onClick={() => setCheckF(checkF === '__any' ? '' : '__any')} active={checkF === '__any'} />
+        <Kpi icon="🧾" soft="var(--docs-soft)" color="var(--docs)" label="חשבוניות" value={formatNumber(kpi.count)} sub={periodSub} />
+        <Kpi icon="💵" soft="var(--revenue-soft)" color="var(--revenue)" label='סה"כ ברוטו' value={kpi.gross === null ? 'אין נתונים' : kpiMoney(kpi.gross)} sub={periodSub} />
+        <Kpi icon="💸" soft="var(--profit-soft)" color="var(--profit)" label='סה"כ נטו' value={kpi.net === null ? 'אין נתונים' : kpiMoney(kpi.net)} sub={periodSub} />
+        <Kpi icon="⚖️" soft="var(--weight-soft)" color="var(--weight)" label='סה"כ משקל' value={kpi.weight === null ? 'אין נתונים' : formatWeight(kpi.weight)} sub={periodSub} />
+        <Kpi icon="📦" soft="var(--cartons-soft)" color="var(--cartons)" label='סה"כ קרטונים' value={kpi.cartons === null ? 'אין נתונים' : formatNumber(kpi.cartons)} sub={periodSub} />
+        <Kpi icon="⚠️" soft={kpi.anomalies ? 'var(--error-soft)' : 'var(--ok-soft)'} color={kpi.anomalies ? 'var(--error)' : 'var(--ok)'} label="חריגות ניכוי / הובלה" value={formatNumber(kpi.anomalies)} sub={periodSub} onClick={() => setCheckF(checkF === '__any' ? '' : '__any')} active={checkF === '__any'} />
       </div>
 
       {/* סרגל סינון */}
@@ -298,8 +307,7 @@ export default function InvoicesPage() {
           <option value="__deduction">חריגת ניכוי משווק</option>
           <option value="__transport">חריגת מחיר משטח</option>
         </select>
-        <label className="date-field"><span>מתאריך</span><input className="input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} aria-label="מתאריך" /></label>
-        <label className="date-field"><span>עד תאריך</span><input className="input" type="date" value={to} onChange={(e) => setTo(e.target.value)} aria-label="עד תאריך" /></label>
+        <PeriodSelect preset={preset} from={from} to={to} onPreset={setPreset} onFrom={setFrom} onTo={setTo} />
         {hasFilters && <button type="button" className="btn btn-ghost btn-sm" onClick={resetFilters}>נקה פילטרים</button>}
       </div>
 
@@ -387,16 +395,20 @@ export default function InvoicesPage() {
 
             {/* עימוד */}
             <div className="pager no-print">
-              <span className="pager-info">מציג {formatNumber(paged.start + 1)}–{formatNumber(paged.end)} מתוך {formatNumber(paged.total)}</span>
+              <span className="pager-info">{pagerSummary(paged, formatNumber)}</span>
               <div className="pager-controls">
                 <label>שורות בעמוד
                   <select className="select" style={{ minHeight: 34, padding: '4px 8px', minWidth: 70, marginRight: 6 }} value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))} aria-label="שורות בעמוד">
                     {PAGE_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </label>
-                <button type="button" className="btn btn-ghost btn-sm" disabled={paged.current <= 1} onClick={() => setPage(paged.current - 1)} aria-label="עמוד קודם">‹ הקודם</button>
-                <span>עמוד {paged.current} מתוך {paged.pages}</span>
-                <button type="button" className="btn btn-ghost btn-sm" disabled={paged.current >= paged.pages} onClick={() => setPage(paged.current + 1)} aria-label="עמוד הבא">הבא ›</button>
+                {paged.pages > 1 && (
+                  <>
+                    <button type="button" className="btn btn-ghost btn-sm" disabled={paged.current <= 1} onClick={() => setPage(paged.current - 1)} aria-label="עמוד קודם">‹ הקודם</button>
+                    <span>עמוד {paged.current} מתוך {paged.pages}</span>
+                    <button type="button" className="btn btn-ghost btn-sm" disabled={paged.current >= paged.pages} onClick={() => setPage(paged.current + 1)} aria-label="עמוד הבא">הבא ›</button>
+                  </>
+                )}
               </div>
             </div>
           </>
@@ -468,11 +480,12 @@ function DeleteConfirm({ label, onCancel, onConfirm }) {
   );
 }
 
-function Kpi({ icon, soft, color, label, value, onClick, active }) {
+function Kpi({ icon, soft, color, label, value, sub, onClick, active }) {
   const inner = (
     <>
       <div className="kpi-top"><div className="kpi-icon" style={{ background: soft }}>{icon}</div><span className="kpi-label">{label}</span></div>
-      <div className="kpi-value" style={{ color }}>{value}</div>
+      <div className={kpiValueClass(value)} style={{ color }}>{value}</div>
+      {sub && <div className="kpi-sub">{sub}</div>}
     </>
   );
   if (!onClick) return <div className="kpi-card">{inner}</div>;

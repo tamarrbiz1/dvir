@@ -17,7 +17,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
-import { formatNumber, formatDate, formatWeight, formatPercent, formatMoney } from '../utils/format.js';
+import { formatNumber, formatDate, formatWeight, formatPercent, formatMoney, kpiValueClass } from '../utils/format.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 import {
@@ -192,7 +192,7 @@ function InvoicePanel({ inv, push, canEdit, onEdit, onDelete }) {
         {kpis.map((k) => (
           <div key={k.l} className="kpi-card" style={{ padding: '14px 14px 0' }}>
             <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>{k.l}</span></div>
-            <div className="kpi-value" style={{ fontSize: 17, color: k.c }}>{k.v}</div>
+            <div className={kpiValueClass(k.v)} style={{ fontSize: 17, color: k.c }}>{k.v}</div>
           </div>
         ))}
       </div>
@@ -401,7 +401,7 @@ export function InvoicesMiniTable({ list, push, empty = 'אין חשבוניות
   );
 }
 
-function Totals({ list }) {
+function Totals({ list, sub }) {
   const nets = list.map(invNet).filter((v) => v !== null);
   const grosses = list.map(invGross).filter((v) => v !== null);
   const weights = list.map(invWeight).filter((v) => v !== null);
@@ -409,7 +409,8 @@ function Totals({ list }) {
   const cell = (l, v, c) => (
     <div className="kpi-card" style={{ padding: '14px 14px 0' }}>
       <div className="kpi-top"><span className="kpi-label" style={{ fontSize: 11 }}>{l}</span></div>
-      <div className="kpi-value" style={{ fontSize: 17, color: c }}>{v}</div>
+      <div className={kpiValueClass(v)} style={{ fontSize: 17, color: c }}>{v}</div>
+      {sub && <div className="kpi-sub">{sub}</div>}
     </div>
   );
   return (
@@ -469,8 +470,8 @@ function MarketerPanel({ entry, invoices, api, push }) {
         </div>
       </div>
       <div className="card" style={{ marginTop: 14 }}>
-        <div className="section-title" style={{ marginTop: 0 }}>חשבוניות המשווק</div>
-        <Totals list={list} />
+        <div className="section-title" style={{ marginTop: 0 }}>חשבוניות המשווק · כל התקופה</div>
+        <Totals list={list} sub="כל התקופה" />
         <div style={{ marginTop: 12 }}><InvoicesMiniTable list={list} push={push} empty="אין חשבוניות למשווק זה" /></div>
       </div>
     </div>

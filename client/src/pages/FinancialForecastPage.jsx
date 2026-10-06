@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { useAutoRefresh } from '../utils/live.js';
-import { formatMoney, formatNumber } from '../utils/format.js';
+import { formatMoney, formatNumber, kpiMoney, kpiValueClass } from '../utils/format.js';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
@@ -179,19 +179,23 @@ export default function FinancialForecastPage() {
       <div className="kpi-grid" style={{ marginBottom: 16 }}>
         <div className="kpi-card">
           <div className="kpi-top"><span className="kpi-label">הכנסה נטו שנתית</span></div>
-          <div className="kpi-value" style={{ color: '#08A878' }}>{formatMoney(annual.net)}</div>
+          <div className={kpiValueClass(kpiMoney(annual.net))} style={{ color: '#08A878' }}>{kpiMoney(annual.net)}</div>
+          <div className="kpi-sub">שנת {selectedYear}</div>
         </div>
         <div className="kpi-card">
           <div className="kpi-top"><span className="kpi-label">סה"כ ק"ג</span></div>
-          <div className="kpi-value">{formatNumber(annual.kg, 0)}</div>
+          <div className={kpiValueClass(formatNumber(annual.kg, 0))}>{formatNumber(annual.kg, 0)}</div>
+          <div className="kpi-sub">שנת {selectedYear}</div>
         </div>
         <div className="kpi-card">
           <div className="kpi-top"><span className="kpi-label">קרטונים</span></div>
-          <div className="kpi-value">{formatNumber(annual.cartons, 0)}</div>
+          <div className={kpiValueClass(formatNumber(annual.cartons, 0))}>{formatNumber(annual.cartons, 0)}</div>
+          <div className="kpi-sub">שנת {selectedYear}</div>
         </div>
         <div className="kpi-card">
           <div className="kpi-top"><span className="kpi-label">משטחים</span></div>
-          <div className="kpi-value">{formatNumber(annual.pallets, 0)}</div>
+          <div className={kpiValueClass(formatNumber(annual.pallets, 0))}>{formatNumber(annual.pallets, 0)}</div>
+          <div className="kpi-sub">שנת {selectedYear}</div>
         </div>
       </div>
 
@@ -266,7 +270,7 @@ export default function FinancialForecastPage() {
       {chartData.length > 0 && (
         <div className="grid-2" style={{ gap: 16 }}>
           <div className="card">
-            <div className="section-title" style={{ marginTop: 0 }}>הכנסה נטו לפי חודש</div>
+            <div className="section-title" style={{ marginTop: 0 }}>הכנסה נטו לפי חודש · שנת {selectedYear}</div>
             <ResponsiveContainer width="100%" height={260}>
               <BarChart data={chartData} margin={CHART_MARGIN_ROTATED}>
                 <CartesianGrid {...GRID_PROPS} />
@@ -278,7 +282,7 @@ export default function FinancialForecastPage() {
             </ResponsiveContainer>
           </div>
           <div className="card">
-            <div className="section-title" style={{ marginTop: 0 }}>ק"ג לפי חודש</div>
+            <div className="section-title" style={{ marginTop: 0 }}>ק"ג לפי חודש · שנת {selectedYear}</div>
             <ResponsiveContainer width="100%" height={260}>
               <BarChart data={chartData} margin={CHART_MARGIN_ROTATED}>
                 <CartesianGrid {...GRID_PROPS} />

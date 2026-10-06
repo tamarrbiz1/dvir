@@ -16,12 +16,14 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { sortStructures } from '../utils/structures.js';
 import { useAutoRefresh } from '../utils/live.js';
-import { formatNumber, formatDate, formatWeight, formatPercent } from '../utils/format.js';
+import { formatNumber, formatDate, formatWeight, formatPercent, kpiValueClass } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import DeliveryNoteDrawer, { ObjChip, CheckBadge } from '../components/DeliveryNoteDrawer.jsx';
 import { activatable } from '../utils/a11y.js';
-import { exportCsv, fileStamp, inDateRange, paginate, sortRows, dateValue } from '../utils/table.js';
+import { exportCsv, fileStamp, paginate, pagerSummary, sortRows, dateValue } from '../utils/table.js';
+import { periodRange, inPeriod, periodCaption } from '../utils/period.js';
+import PeriodSelect from '../components/PeriodSelect.jsx';
 import {
   DELIVERY_TABLE, noteNumber, noteDate, noteCartons, noteWeight, noteAvg, noteDeviation, noteCheck,
   noteWeekCode, noteStructure, noteMarketer, noteDocument, isWeightAnomaly, linkedTo,
@@ -66,6 +68,9 @@ export default function DeliveryNotesPage() {
   const [structureF, setStructureF] = useState(params.get('structure') || '');
   const [weekF, setWeekF] = useState(params.get('week') || '');
   const [checkF, setCheckF] = useState('');
+  // תקופה — אותו בורר כמו בלוח הבקרה; ברירת מחדל: החודש. בהגעה מקישור
+  // ממוקד (משווק/מבנה/שבוע) — "הכל", כדי שהרשומות המבוקשות לא יוסתרו
+  const [preset, setPreset] = useState(() => (params.get('marketer') || params.get('structure') || params.get('week')) ? 'all' : 'month');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
 
@@ -128,6 +133,8 @@ export default function DeliveryNotesPage() {
   const checks = useMemo(() => [...new Set(items.map(noteCheck).filter(Boolean).map(String))], [items]);
 
   // סינון (החיפוש עובד יחד עם הפילטרים, לא במקומם)
+  const range = useMemo(() => periodRange(preset, from, to), [preset, from, to]);
+  const caption = periodCaption(preset, from, to);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return items.filter((n) => {
@@ -135,7 +142,7 @@ export default function DeliveryNotesPage() {
       if (structureF && !linkedTo(n, 'מבנה', structureF)) return false;
       if (weekF && noteWeekCode(n) !== weekF) return false;
       if (checkF === '__anomaly' ? !isWeightAnomaly(n) : (checkF && String(noteCheck(n) || '') !== checkF)) return false;
-      if (!inDateRange(noteDate(n), from, to)) return false;
+      if (!inPeriod(noteDate(n), range)) return false;
       if (q) {
         const hay = [noteNumber(n), noteMarketer(n)?.name, noteStructure(n)?.name, noteWeekCode(n), noteDocument(n)?.filename]
           .filter((x) => x !== null && x !== undefined).join(' ').toLowerCase();
@@ -143,7 +150,7 @@ export default function DeliveryNotesPage() {
       }
       return true;
     });
-  }, [items, search, marketerF, structureF, weekF, checkF, from, to]);
+  }, [items, search, marketerF, structureF, weekF, checkF, range]);
 
   const sorted = useMemo(() => sortRows(filtered, sort.key, sort.dir, SORTERS), [filtered, sort]);
   const paged = useMemo(() => paginate(sorted, page, printing ? Math.max(sorted.length, 1) : pageSize), [sorted, page, pageSize, printing]);
@@ -163,16 +170,18 @@ export default function DeliveryNotesPage() {
     };
   }, [filtered]);
 
-  const hasFilters = search || marketerF || structureF || weekF || checkF || from || to;
+  const hasFilters = search || marketerF || structureF || weekF || checkF || preset !== 'month' || from || to;
+  // כיתוב התקופה בכרטיסים — בדיוק מה שהטבלה מסננת
+  const periodSub = (marketerF || structureF || weekF) ? `${caption} · לפי הסינון` : caption;
   const resetFilters = () => {
-    setSearch(''); setMarketerF(''); setStructureF(''); setWeekF(''); setCheckF(''); setFrom(''); setTo(''); setPage(1);
+    setSearch(''); setMarketerF(''); setStructureF(''); setWeekF(''); setCheckF(''); setPreset('month'); setFrom(''); setTo(''); setPage(1);
     setParams({}, { replace: true });
   };
   const changeSort = (key) => {
     setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'date' ? 'desc' : 'asc' }));
     setPage(1);
   };
-  useEffect(() => { setPage(1); }, [search, marketerF, structureF, weekF, checkF, from, to, pageSize]);
+  useEffect(() => { setPage(1); }, [search, marketerF, structureF, weekF, checkF, preset, from, to, pageSize]);
 
   const doExport = () => exportCsv(`תעודות-משלוח-${fileStamp()}`, [
     { label: 'מספר תעודה', get: (n) => noteNumber(n) ?? '' },
@@ -215,11 +224,11 @@ export default function DeliveryNotesPage() {
 
       {/* KPI */}
       <div className="kpi-grid">
-        <Kpi icon="📄" soft="var(--docs-soft, #EAF3FC)" color="var(--docs, #4A90E2)" label="תעודות" value={formatNumber(kpi.count)} />
-        <Kpi icon="📦" soft="var(--cartons-soft)" color="var(--cartons)" label='סה"כ קרטונים' value={kpi.cartons === null ? 'אין נתונים' : formatNumber(kpi.cartons)} />
-        <Kpi icon="⚖️" soft="var(--weight-soft)" color="var(--weight)" label='סה"כ משקל' value={kpi.weight === null ? 'אין נתונים' : formatWeight(kpi.weight)} />
-        <Kpi icon="📐" soft="var(--bg-secondary)" color="var(--text-main)" label='ק"ג לקרטון (ממוצע)' value={kpi.avg === null ? 'אין נתונים' : formatNumber(kpi.avg, 2)} />
-        <Kpi icon="⚠️" soft={kpi.anomalies ? 'var(--expense-soft)' : 'var(--profit-soft)'} color={kpi.anomalies ? 'var(--expense)' : 'var(--profit)'} label="חריגות משקל" value={formatNumber(kpi.anomalies)} onClick={() => setCheckF(checkF === '__anomaly' ? '' : '__anomaly')} active={checkF === '__anomaly'} />
+        <Kpi icon="📄" soft="var(--docs-soft, #EAF3FC)" color="var(--docs, #4A90E2)" label="תעודות" value={formatNumber(kpi.count)} sub={periodSub} />
+        <Kpi icon="📦" soft="var(--cartons-soft)" color="var(--cartons)" label='סה"כ קרטונים' value={kpi.cartons === null ? 'אין נתונים' : formatNumber(kpi.cartons)} sub={periodSub} />
+        <Kpi icon="⚖️" soft="var(--weight-soft)" color="var(--weight)" label='סה"כ משקל' value={kpi.weight === null ? 'אין נתונים' : formatWeight(kpi.weight)} sub={periodSub} />
+        <Kpi icon="📐" soft="var(--bg-secondary)" color="var(--text-main)" label='ק"ג לקרטון (ממוצע)' value={kpi.avg === null ? 'אין נתונים' : formatNumber(kpi.avg, 2)} sub={periodSub} />
+        <Kpi icon="⚠️" soft={kpi.anomalies ? 'var(--expense-soft)' : 'var(--profit-soft)'} color={kpi.anomalies ? 'var(--expense)' : 'var(--profit)'} label="חריגות משקל" value={formatNumber(kpi.anomalies)} sub={periodSub} onClick={() => setCheckF(checkF === '__anomaly' ? '' : '__anomaly')} active={checkF === '__anomaly'} />
       </div>
 
       {/* סרגל סינון */}
@@ -244,8 +253,7 @@ export default function DeliveryNotesPage() {
           <option value="__anomaly">חריגות בלבד</option>
           {checks.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
-        <label className="date-field"><span>מתאריך</span><input className="input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} aria-label="מתאריך" /></label>
-        <label className="date-field"><span>עד תאריך</span><input className="input" type="date" value={to} onChange={(e) => setTo(e.target.value)} aria-label="עד תאריך" /></label>
+        <PeriodSelect preset={preset} from={from} to={to} onPreset={setPreset} onFrom={setFrom} onTo={setTo} />
         {hasFilters && <button type="button" className="btn btn-ghost btn-sm" onClick={resetFilters}>נקה סינון</button>}
       </div>
 
@@ -313,16 +321,20 @@ export default function DeliveryNotesPage() {
 
             {/* עימוד */}
             <div className="pager no-print">
-              <span className="pager-info">מציג {formatNumber(paged.start + 1)}–{formatNumber(paged.end)} מתוך {formatNumber(paged.total)}</span>
+              <span className="pager-info">{pagerSummary(paged, formatNumber)}</span>
               <div className="pager-controls">
                 <label>שורות בעמוד
                   <select className="select" style={{ minHeight: 34, padding: '4px 8px', minWidth: 70, marginRight: 6 }} value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))} aria-label="שורות בעמוד">
                     {PAGE_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </label>
-                <button type="button" className="btn btn-ghost btn-sm" disabled={paged.current <= 1} onClick={() => setPage(paged.current - 1)} aria-label="עמוד קודם">‹ הקודם</button>
-                <span>עמוד {paged.current} מתוך {paged.pages}</span>
-                <button type="button" className="btn btn-ghost btn-sm" disabled={paged.current >= paged.pages} onClick={() => setPage(paged.current + 1)} aria-label="עמוד הבא">הבא ›</button>
+                {paged.pages > 1 && (
+                  <>
+                    <button type="button" className="btn btn-ghost btn-sm" disabled={paged.current <= 1} onClick={() => setPage(paged.current - 1)} aria-label="עמוד קודם">‹ הקודם</button>
+                    <span>עמוד {paged.current} מתוך {paged.pages}</span>
+                    <button type="button" className="btn btn-ghost btn-sm" disabled={paged.current >= paged.pages} onClick={() => setPage(paged.current + 1)} aria-label="עמוד הבא">הבא ›</button>
+                  </>
+                )}
               </div>
             </div>
           </>
@@ -367,11 +379,12 @@ export default function DeliveryNotesPage() {
   );
 }
 
-function Kpi({ icon, soft, color, label, value, onClick, active }) {
+function Kpi({ icon, soft, color, label, value, sub, onClick, active }) {
   const inner = (
     <>
       <div className="kpi-top"><div className="kpi-icon" style={{ background: soft }}>{icon}</div><span className="kpi-label">{label}</span></div>
-      <div className="kpi-value" style={{ color }}>{value}</div>
+      <div className={kpiValueClass(value)} style={{ color }}>{value}</div>
+      {sub && <div className="kpi-sub">{sub}</div>}
     </>
   );
   if (!onClick) return <div className="kpi-card">{inner}</div>;
