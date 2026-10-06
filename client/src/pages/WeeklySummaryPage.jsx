@@ -162,7 +162,6 @@ export default function WeeklySummaryPage() {
   }, []);
   const totalNeto = shown.reduce((s, w) => s + statsOf(w).net, 0);
   const totalWeight = shown.reduce((s, w) => s + statsOf(w).weight, 0);
-  const totalExpenses = expenses.reduce((s, e) => s + num(e['סכום כולל-AI']), 0);
   const missingDocs = shown.filter((w) => String(w[F.docStatus] || '').includes('חסר')).length;
 
   // כיתוב התקופה המסוננת — כמו בלוח הבקרה: כל מספר תלוי-זמן מציין את
@@ -196,6 +195,16 @@ export default function WeeklySummaryPage() {
     });
     return map;
   }, [expenses, weeks]);
+
+  // תיקון 2026-10-06 (ליל-בדיקות, M2.5.2): totalExpenses היה סוכם את כל
+  // "expenses" הגולמי (400 רשומות שנטענות פעם אחת, בלי קשר לסינון) בזמן
+  // שה-caption/periodSub שמוצג לצידו (על אותו tile KPI ועל "רווח" הסמוך,
+  // שמחסר totalExpenses מ-totalNeto) מתאר במפורש את התקופה המסוננת
+  // (שנה/חודש/שבוע) — הסכום לא תאם את הכיתוב בפועל. עכשיו מסכמים רק
+  // את ההוצאות של השבועות שנמצאים ב-shown (אחרי הסינון), בדיוק כמו
+  // totalNeto/totalWeight למעלה — ובאותה שיטת שיבוץ-לפי-שבוע (weeklyExpenses)
+  // שה-גרף כבר השתמש בה בלבד, כך שהתקציר וה-גרף תמיד מסכימים.
+  const totalExpenses = shown.reduce((s, w) => s + (weeklyExpenses[w[F.code]] || 0), 0);
 
   const chartData = useMemo(() => {
     // רק שבועות עם קוד תקין — רשומות עם תאריך שגוי לא מציירות "?"

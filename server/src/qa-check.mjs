@@ -1073,6 +1073,31 @@ await test('הוצאה ידנית + קובץ אמיתי: נוצרת, הקובץ 
 });
 
 // ============================================================
+// אבטחה (ליל-בדיקות 2026-10-06, M2.8): /api/expenses/manual — owner בלבד.
+// לא יוצרת שום רשומה — requireOwner חוסם manager/worker לפני שהבקשה
+// מגיעה בכלל ל-handler (ולידציה/יצירה), כך שבדיקת 403 בטוחה בלי קובץ/body.
+// ============================================================
+await test('אבטחה: POST /api/expenses/manual — owner בלבד', async () => {
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  const problems = [];
+  if (manager) {
+    const mLogin = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
+    try { await apiAs(mLogin.token, 'POST', 'expenses/manual', {}); problems.push('manager עבר - לא תקין!'); }
+    catch (e) { if (!String(e.message).startsWith('403')) problems.push(`manager שגיאה לא-צפויה: ${e.message}`); }
+  }
+  if (w) {
+    const wLogin = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    try { await apiAs(wLogin.token, 'POST', 'expenses/manual', {}); problems.push('worker עבר - לא תקין!'); }
+    catch (e) { if (!String(e.message).startsWith('403')) problems.push(`worker שגיאה לא-צפויה: ${e.message}`); }
+  }
+  try { await apiAs(null, 'POST', 'expenses/manual', {}); problems.push('בלי טוקן עבר - לא תקין!'); }
+  catch (e) { if (!String(e.message).startsWith('401')) problems.push(`בלי טוקן שגיאה לא-צפויה: ${e.message}`); }
+  if (problems.length) throw new Error(problems.join('; '));
+  return 'manager/worker נחסמו (403), בלי טוקן נחסם (401)';
+});
+
+// ============================================================
 // תוספת 2026-10-06 — הורדת מלאי נגזרת מתעודת משלוח/חשבונית (סעיף D)
 // בדיקות על הפונקציות הטהורות (deriveDeductions/computeDeviation/
 // findCounterpart) בלי שום כתיבה ל-Airtable — אין צורך ליצור רשומות
@@ -1171,6 +1196,123 @@ await test('computeDeviation: סימטרי ומחושב כאחוז מהערך ה
   if (Math.abs(computeDeviation(100, 100)) > 1e-9) throw new Error('זהים → סטייה 0');
   if (Math.abs(computeDeviation(100, 110) - computeDeviation(110, 100)) > 1e-9) throw new Error('צפוי סימטרי');
   if (computeDeviation(null, 100) !== null) throw new Error('ערך חסר → null (לא ניתן להצליב)');
+});
+
+// ============================================================
+// אבטחה (ליל-בדיקות 2026-10-06, M2.8): לוגיסטיקה (/api/logistics/...).
+// analyze-inventory (POST) — owner בלבד, בודקים עם רשומה פיקטיבית
+// (recFAKE...) כי requireOwner חוסם לפני שה-handler בכלל מנסה לקרוא
+// אותה. status (GET) — authenticate בלבד בכוונה (מטא-דאטה על מצב
+// עיבוד, לא מידע פיננסי — ר' ההערה ב-server.js מעל ה-route), אז
+// manager/worker *אמורים* לעבור, רק בלי טוקן נחסם.
+// ============================================================
+await test('אבטחה: POST /api/logistics/:table/:id/analyze-inventory — owner בלבד', async () => {
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  const target = `logistics/${enc('חשבוניות')}/recFAKE00000001/analyze-inventory`;
+  const problems = [];
+  if (manager) {
+    const mLogin = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
+    try { await apiAs(mLogin.token, 'POST', target); problems.push('manager עבר - לא תקין!'); }
+    catch (e) { if (!String(e.message).startsWith('403')) problems.push(`manager שגיאה לא-צפויה: ${e.message}`); }
+  }
+  if (w) {
+    const wLogin = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    try { await apiAs(wLogin.token, 'POST', target); problems.push('worker עבר - לא תקין!'); }
+    catch (e) { if (!String(e.message).startsWith('403')) problems.push(`worker שגיאה לא-צפויה: ${e.message}`); }
+  }
+  try { await apiAs(null, 'POST', target); problems.push('בלי טוקן עבר - לא תקין!'); }
+  catch (e) { if (!String(e.message).startsWith('401')) problems.push(`בלי טוקן שגיאה לא-צפויה: ${e.message}`); }
+  if (problems.length) throw new Error(problems.join('; '));
+  return 'manager/worker נחסמו (403), בלי טוקן נחסם (401)';
+});
+
+await test('אבטחה: GET /api/logistics/:table/status — authenticate בלבד (לא owner), בלי טוקן נחסם', async () => {
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  const path = `logistics/${enc('חשבוניות')}/status`;
+  try { await apiAs(null, 'GET', path); throw new Error('בלי טוקן עבר - לא תקין!'); }
+  catch (e) { if (!String(e.message).startsWith('401')) throw e; }
+  if (w) {
+    const wLogin = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    const res = await apiAs(wLogin.token, 'GET', path); // מטא-דאטה בלבד — עובד מורשה לקרוא
+    if (typeof res !== 'object') throw new Error('תגובה לא צפויה לעובד');
+  }
+  return 'בלי טוקן נחסם (401), עובד עם טוקן תקין קורא בהצלחה (מטא-דאטה, לא כספים)';
+});
+
+// ============================================================
+// אבטחה (ליל-בדיקות 2026-10-06, M2.8): /api/weekly/sync — GET תמיד
+// dryRun ופתוח לכל מחובר (authenticate בלבד); POST (הכתיבה בפועל)
+// owner בלבד. משתמשים כאן רק ב-dryRun=1 כך שאפילו אם ההרשאה הייתה
+// שבורה, שום דבר לא היה נכתב ל-Airtable מהבדיקה הזו עצמה.
+// ============================================================
+await test('אבטחה: /api/weekly/sync — GET פתוח לכל מחובר, POST owner בלבד', async () => {
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  const problems = [];
+  try { await apiAs(null, 'GET', 'weekly/sync'); problems.push('GET בלי טוקן עבר - לא תקין!'); }
+  catch (e) { if (!String(e.message).startsWith('401')) problems.push(`GET בלי טוקן שגיאה לא-צפויה: ${e.message}`); }
+  try { await apiAs(null, 'POST', 'weekly/sync?dryRun=1'); problems.push('POST בלי טוקן עבר - לא תקין!'); }
+  catch (e) { if (!String(e.message).startsWith('401')) problems.push(`POST בלי טוקן שגיאה לא-צפויה: ${e.message}`); }
+  if (manager) {
+    const mLogin = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
+    const getRes = await apiAs(mLogin.token, 'GET', 'weekly/sync');
+    if (getRes?.dryRun !== true) problems.push('GET עם מנהל-עבודה לא חזר dryRun=true');
+    try { await apiAs(mLogin.token, 'POST', 'weekly/sync?dryRun=1'); problems.push('POST מנהל-עבודה עבר - לא תקין!'); }
+    catch (e) { if (!String(e.message).startsWith('403')) problems.push(`POST מנהל-עבודה שגיאה לא-צפויה: ${e.message}`); }
+  }
+  if (w) {
+    const wLogin = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    try { await apiAs(wLogin.token, 'POST', 'weekly/sync?dryRun=1'); problems.push('POST עובד עבר - לא תקין!'); }
+    catch (e) { if (!String(e.message).startsWith('403')) problems.push(`POST עובד שגיאה לא-צפויה: ${e.message}`); }
+  }
+  if (problems.length) throw new Error(problems.join('; '));
+  return 'GET פתוח (dryRun=true) למחובר, POST חסום ל-403 למי שאינו owner, 401 בלי טוקן';
+});
+
+// ============================================================
+// אבטחה (ליל-בדיקות 2026-10-06, M2.8): /api/suppliers/auto-link —
+// owner בלבד גם ל-GET (בניגוד ל-weekly/sync!) כי זה חושף טקסט-AI
+// פיננסי (ספק-AI/משווק-AI) מהוצאות/צ'קים/חשבוניות/תעודות משלוח.
+// ============================================================
+await test('אבטחה: /api/suppliers/auto-link — owner בלבד (GET וגם POST)', async () => {
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  const problems = [];
+  try { await apiAs(null, 'GET', 'suppliers/auto-link'); problems.push('GET בלי טוקן עבר - לא תקין!'); }
+  catch (e) { if (!String(e.message).startsWith('401')) problems.push(`GET בלי טוקן שגיאה לא-צפויה: ${e.message}`); }
+  if (manager) {
+    const mLogin = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
+    try { await apiAs(mLogin.token, 'GET', 'suppliers/auto-link'); problems.push('GET מנהל-עבודה עבר - לא תקין!'); }
+    catch (e) { if (!String(e.message).startsWith('403')) problems.push(`GET מנהל-עבודה שגיאה לא-צפויה: ${e.message}`); }
+    try { await apiAs(mLogin.token, 'POST', 'suppliers/auto-link?dryRun=1'); problems.push('POST מנהל-עבודה עבר - לא תקין!'); }
+    catch (e) { if (!String(e.message).startsWith('403')) problems.push(`POST מנהל-עבודה שגיאה לא-צפויה: ${e.message}`); }
+  }
+  if (w) {
+    const wLogin = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    try { await apiAs(wLogin.token, 'GET', 'suppliers/auto-link'); problems.push('GET עובד עבר - לא תקין!'); }
+    catch (e) { if (!String(e.message).startsWith('403')) problems.push(`GET עובד שגיאה לא-צפויה: ${e.message}`); }
+  }
+  if (problems.length) throw new Error(problems.join('; '));
+  return 'owner-only נאכף בפועל גם על GET וגם על POST';
+});
+
+// ============================================================
+// אבטחה (ליל-בדיקות 2026-10-06, M2.8): /api/plans/:id/forecast-preflight —
+// authenticate בלבד (לא owner) בכוונה: בדיקת-מוכנות read-only, לא מידע
+// כספים. בלי טוקן → 401; עם טוקן עובד/מנהל-עבודה → 200 (לא 403).
+// ============================================================
+await test('אבטחה: GET /api/plans/:id/forecast-preflight — authenticate בלבד, פתוח לכל תפקיד', async () => {
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  const path = 'plans/recNONEXISTENT00000000/forecast-preflight';
+  try { await apiAs(null, 'GET', path); throw new Error('בלי טוקן עבר - לא תקין!'); }
+  catch (e) { if (!String(e.message).startsWith('401')) throw e; }
+  if (w) {
+    const wLogin = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    const res = await apiAs(wLogin.token, 'GET', path);
+    if (res?.ok !== false) throw new Error('עובד לא קיבל תגובה תקינה (ok=false לתוכנית לא-קיימת)');
+  }
+  return 'בלי טוקן נחסם (401), עובד עם טוקן תקין רואה preflight (לא 403)';
 });
 
 // ============================================================
