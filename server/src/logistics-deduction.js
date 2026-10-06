@@ -219,3 +219,103 @@ function sumOrNull(values) {
   if (!nums.length) return null;
   return nums.reduce((a, b) => a + b, 0);
 }
+
+// ============================================================
+// ביטול הורדה (תוספת 2026-10-06 לילה 2, ממצא M2.2#7) — מחיקת תעודת
+// משלוח/חשבונית לא החזירה עד כה שום דבר למלאי (בניגוד ל"הוצאות",
+// ר' reverseInventoryDeduction ב-inventory-deduction.js). אומת בפועל
+// בביקורת-הקוד הזו (לא רק תאוריה): ה-route DELETE הקיים קורא
+// ל-reverseInventoryDeduction רק לטבלת 'הוצאות'.
+//
+// אין state מבני על המסמך-המקור עצמו (אין שדה "הערות" ב"תעודות
+// משלוח"/"חשבוניות" — ר' הערת הכותרת למעלה) — כל מה שיש הוא תגית
+// [מלאי-D:טבלה:מזהה:קטגוריה] שנכתבה בעבר *בתוך שורת ה"↓" בהערות של
+// פריט המלאי עצמו* (ר' doneTag/deductOne). לכן סורקים את כל פריטי
+// "מלאי בסיסי" ומחפשים שורות-הורדה עם תגית תואמת למסמך הזה.
+//
+// מפוצל לפונקציה טהורה (planLogisticsReversal) + עטיפת I/O דקה
+// (reverseLogisticsDeduction), בדיוק כמו deriveDeductions/computeDeviation
+// למעלה — כדי שאפשר לבדוק את לוגיקת-הפענוח בלי לגעת ב-Airtable בכלל.
+// ============================================================
+
+/**
+ * פונקציה טהורה: לכל פריט ב-inventoryItems, מוצאת שורות-הורדה ("↓...")
+ * בהערות שלו עם תגית [מלאי-D:sourceTable:sourceId:...] שעדיין לא בוטלו
+ * (אין "↩ <אותה תגית>" קיימת), וגוזרת מתוך השורה את הכמות המדויקת
+ * שנרשמה בפועל (לא גוזרת מחדש מ-deriveDeductions — מה שבאמת ירד זה מה
+ * שמוחזר, גם אם הלוגיקה תשתנה בעתיד). מחזירה תוכנית-פעולה בלבד, בלי
+ * לקרוא/לכתוב שום דבר — ללא תופעות-לוואי, קל לבדיקה.
+ * @returns [{ itemId, currentNotes, currentStock, totalBack, reversalLines }]
+ */
+export function planLogisticsReversal(inventoryItems, sourceTable, sourceId) {
+  const tagPrefix = `[מלאי-D:${sourceTable}:${sourceId}:`;
+  const plan = [];
+  for (const item of inventoryItems || []) {
+    const notes = String(item['הערות'] || '');
+    if (!notes.includes(tagPrefix)) continue;
+
+    const toReverse = [];
+    for (const line of notes.split('\n')) {
+      if (!line.startsWith('↓') || !line.includes(tagPrefix)) continue;
+      const tagMatch = line.match(/(\[מלאי-D:[^\]]+\])/);
+      if (!tagMatch) continue;
+      const fullTag = tagMatch[1];
+      // כבר בוטל בעבר — אידמפוטנטי. בודקים שורה-שלמה שמתחילה ב-"↩" ומכילה
+      // את התגית (לא "↩ " צמוד לתגית — שורת-הביטול כותבת טקסט בין
+      // השניים: "↩ ביטול הורדה של X · ... נמחק · <תאריך> <תגית>").
+      const alreadyReversed = notes.split('\n').some((l) => l.startsWith('↩') && l.includes(fullTag));
+      if (alreadyReversed) continue;
+      const qtyMatch = line.match(/^↓\s*([\d.]+)\s*ממלאי:/);
+      if (!qtyMatch) continue;
+      const quantity = Number(qtyMatch[1]);
+      if (!Number.isFinite(quantity) || quantity <= 0) continue;
+      toReverse.push({ fullTag, quantity });
+    }
+    if (!toReverse.length) continue;
+
+    const totalBack = toReverse.reduce((a, r) => a + r.quantity, 0);
+    const today = new Date().toISOString().slice(0, 10);
+    const reversalLines = toReverse.map((r) => `↩ ביטול הורדה של ${r.quantity} · ${sourceTable} ${sourceId} נמחק · ${today} ${r.fullTag}`);
+    plan.push({
+      itemId: item.id,
+      currentNotes: notes,
+      currentStock: Number(item['מלאי נוכחי']) || 0,
+      totalBack,
+      reversalLines,
+    });
+  }
+  return plan;
+}
+
+/**
+ * מחזיר למלאי את כל ההורדות שבוצעו בעבר בפועל למסמך לוגיסטי (תעודת
+ * משלוח/חשבונית) שעומד להימחק — נקרא לפני המחיקה בפועל (ר' server.js,
+ * DELETE /api/:table/:id). כשל בעדכון פריט בודד לא עוצר את הפריטים
+ * האחרים (עד 3 קטגוריות לתעודה אחת) — מתועד בלוג, לא חוסם את המחיקה.
+ * מחזירה true אם משהו בפועל הוחזר, אחרת false (כולל "אין מה לבטל").
+ */
+export async function reverseLogisticsDeduction(sourceTable, sourceId) {
+  let inventoryItems;
+  try {
+    inventoryItems = await fetchRecords(INVENTORY_TABLE, {});
+  } catch (e) {
+    console.error(`[logistics-reverse] קריאת "מלאי בסיסי" נכשלה לפני ביטול הורדה ל-${sourceTable}/${sourceId}: ${e.message}`);
+    return false;
+  }
+
+  const plan = planLogisticsReversal(inventoryItems, sourceTable, sourceId);
+  let changedAny = false;
+  for (const p of plan) {
+    try {
+      await updateRecord(INVENTORY_TABLE, p.itemId, {
+        'מלאי נוכחי': p.currentStock + p.totalBack,
+        'הערות': `${p.currentNotes}\n${p.reversalLines.join('\n')}`,
+        'תאריך עדכון': new Date().toISOString().slice(0, 10),
+      });
+      changedAny = true;
+    } catch (e) {
+      console.error(`[logistics-reverse] עדכון פריט מלאי ${p.itemId} נכשל בביטול הורדה ל-${sourceTable}/${sourceId}: ${e.message}`);
+    }
+  }
+  return changedAny;
+}

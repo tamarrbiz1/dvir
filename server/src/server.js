@@ -13,7 +13,7 @@ import {
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
 import { analyzeExpenseInventory, approvePendingDeduction, readState, reverseInventoryDeduction, createManualExpense, validateManualExpenseInput } from './inventory-deduction.js';
-import { analyzeLogisticsInventory } from './logistics-deduction.js';
+import { analyzeLogisticsInventory, reverseLogisticsDeduction } from './logistics-deduction.js';
 import { fixFilenameEncoding } from './filename-utils.js';
 import { sweep as sweepWeeklySync, INVOICES_TABLE, NOTES_TABLE } from './weekly-sync.js';
 import { runAutoLink, SUPPLIERS_TABLE, MARKETERS_TABLE, EXPENSES_TABLE, CHECKS_TABLE, DELIVERY_TABLE } from './supplier-linking.js';
@@ -130,6 +130,26 @@ app.get('/api/select-options/:table/:field', authenticate, async (req, res) => {
 // ============================================================
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
+// ============================================================
+// מנעול-סדרתיות בזיכרון, לפי מפתח (למשל `expense:<id>` או
+// `logistics:<table>:<id>`) — תוספת 2026-10-06 לילה 2 (ממצא M3: שתי
+// בקשות analyze-inventory כמעט-בבת-אחת על אותה רשומה יכולות שתיהן
+// לקרוא "מלאי נוכחי" לפני ששתיהן כותבות → הורדה כפולה, בגלל שהתגית-
+// אידמפוטנטיות נכתבת רק *אחרי* ה-read-then-write, לא חוסמת את ה-race
+// עצמו). לא פותר race בין שתי רשומות-מקור שונות שמורידות מאותו פריט-
+// מלאי (זה ידרוש נעילה על הפריט, לא על המסמך — לא טופל הלילה, ר' לוג),
+// אבל סוגר את התרחיש הספציפי שהתבקש: double-click/שני קליקים על אותה
+// רשומה (אוטומטי+ידני, או שני טאבים). תור פשוט: כל קריאה עם מפתח נתון
+// מחכה לקודמתה (אם נכשלה — לא חוסם קריאות עתידיות).
+// ============================================================
+const inventoryLocks = new Map(); // key -> Promise (השרשרת הפעילה האחרונה)
+function withInventoryLock(key, fn) {
+  const prev = inventoryLocks.get(key) || Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  inventoryLocks.set(key, run.catch(() => {}));
+  return run;
+}
+
 /**
  * בדיקת תוכן הקובץ לפי "מספרי קסם" (magic bytes) — לא לפי סיומת/MIME שהדפדפן
  * מדווח (ניתנים לזיוף, למשל טקסט רגיל שנשמר בשם "קובץ.pdf"). מוודאת שהקובץ
@@ -170,7 +190,7 @@ app.post('/api/upload-document', authenticate, upload.single('file'), async (req
       const meta = await getMeta();
       const tableMeta = meta.find((t) => t.name === table);
       hasFilenameField = !!tableMeta?.fields?.some((f) => f.name === 'שם קובץ');
-    } catch { /* לא קריטי — ממשיכים בלי שדה שם הקובץ */ }
+    } catch (e) { console.error(`[upload-document] קריאת מטא-נתונים לבדיקת שדה "שם קובץ" נכשלה (לא חוסם — ממשיכים בלי השדה): ${e.message}`); }
 
     // 1) יצירת הרשומה (עם קוד שבוע כשנדרש) 2) העלאת הקובץ אליה.
     // אם ההעלאה נכשלת — הרשומה נמחקת, כדי שלא תישאר רשומה ריקה.
@@ -189,7 +209,12 @@ app.post('/api/upload-document', authenticate, upload.single('file'), async (req
         base64: req.file.buffer.toString('base64'),
       });
     } catch (uploadErr) {
-      await deleteRecord(table, created.id).catch(() => {});
+      // אם מחיקת-הניקוי הזו עצמה נכשלת (למשל כשל-רשת חולף) — נשארת
+      // רשומה ריקה-לגמרי בטבלה בלי שום לוג (ר' M3: ממצא אפשרי מאחורי
+      // רשומות-יתומות כמו #34/#51 שתועדו היום — "קובץ נדחה אחרי שהרשומה
+      // נוצרה"). עדיין לא חוסם את התגובה למשתמש (ההעלאה נכשלה ככה
+      // וככה), אבל חשוב שיהיה עקבות בלוג השרת.
+      await deleteRecord(table, created.id).catch((delErr) => console.error(`[upload-document] מחיקת רשומה ריקה ${created.id} (טבלה ${table}) נכשלה אחרי כשל העלאה: ${delErr.message} — ייתכן שנוצרה רשומה יתומה`));
       throw uploadErr;
     }
     invalidateReads(table);
@@ -220,7 +245,7 @@ app.post('/api/upload-document', authenticate, upload.single('file'), async (req
 async function autoAnalyzeExpenseInventory(expenseId, attempt = 0) {
   const MAX_ATTEMPTS = 4;
   try {
-    const result = await analyzeExpenseInventory(expenseId);
+    const result = await withInventoryLock(`expense:${expenseId}`, () => analyzeExpenseInventory(expenseId));
     if (result.status === 'failed' && /אין קובץ מצורף/.test(result.error || '') && attempt < MAX_ATTEMPTS - 1) {
       await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
       return autoAnalyzeExpenseInventory(expenseId, attempt + 1);
@@ -272,7 +297,7 @@ async function autoAnalyzeLogisticsInventory(table, recordId, attempt = 0) {
   try {
     const delay = Math.min(10000 * (attempt + 1), 45000);
     await new Promise((r) => setTimeout(r, delay));
-    const result = await analyzeLogisticsInventory(table, recordId);
+    const result = await withInventoryLock(`logistics:${table}:${recordId}`, () => analyzeLogisticsInventory(table, recordId));
     recordLogisticsStatus(table, recordId, result, attempt);
     const allPending = result.results.length > 0 && result.results.every((r) => r.pending);
     const nothingYet = result.results.length === 0 || allPending;
@@ -290,7 +315,7 @@ app.post('/api/logistics/:table/:id/analyze-inventory', authenticate, requireOwn
   try {
     const { table, id } = req.params;
     if (table !== 'תעודות משלוח' && table !== 'חשבוניות') return res.status(400).json({ error: 'טבלה לא נתמכת' });
-    const result = await analyzeLogisticsInventory(table, id);
+    const result = await withInventoryLock(`logistics:${table}:${id}`, () => analyzeLogisticsInventory(table, id));
     recordLogisticsStatus(table, id, result, 0);
     invalidateReads('מלאי בסיסי');
     res.json(result);
@@ -327,7 +352,7 @@ function requireOwner(req, res, next) {
 
 app.post('/api/expenses/:id/analyze-inventory', authenticate, requireOwner, async (req, res) => {
   try {
-    const result = await analyzeExpenseInventory(req.params.id, { force: req.query.force === '1' });
+    const result = await withInventoryLock(`expense:${req.params.id}`, () => analyzeExpenseInventory(req.params.id, { force: req.query.force === '1' }));
     invalidateReads('הוצאות');
     invalidateReads('מלאי בסיסי');
     res.json(result);
@@ -900,6 +925,13 @@ app.delete('/api/:table/:id', authorizeWrite, async (req, res) => {
     // (יישאר מתועד בלוג השרת לבדיקה ידנית).
     if (table === 'הוצאות') {
       await reverseInventoryDeduction(req.params.id).catch((e) => console.error(`[inventory-ai] ביטול הורדה נכשל להוצאה ${req.params.id}: ${e.message}`));
+      invalidateReads('מלאי בסיסי');
+    }
+    // תעודת משלוח / חשבונית — תוספת 2026-10-06 לילה 2 (ממצא M2.2#7):
+    // גם כאן ההורדה הנגזרת (קרטונים/נילונים/כובעים/משטחים) חוזרת למלאי
+    // לפני המחיקה, בדיוק כמו ל"הוצאות". ר' reverseLogisticsDeduction.
+    if (table === 'תעודות משלוח' || table === 'חשבוניות') {
+      await reverseLogisticsDeduction(table, req.params.id).catch((e) => console.error(`[logistics-reverse] ביטול הורדה נכשל ל-${table} ${req.params.id}: ${e.message}`));
       invalidateReads('מלאי בסיסי');
     }
     await deleteRecord(table, req.params.id);

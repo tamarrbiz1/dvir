@@ -22,7 +22,15 @@ const MARKER_RE = /\[מלאי-AI\](\{[^\n]*\})/;
 export function readState(notes) {
   const m = String(notes || '').match(MARKER_RE);
   if (!m) return null;
-  try { return JSON.parse(m[1]); } catch { return null; }
+  try {
+    return JSON.parse(m[1]);
+  } catch (e) {
+    // תגית קיימת אבל ה-JSON שבתוכה פגום (למשל נערך ידנית בטעות) — לא
+    // קורס, אבל חשוב לדעת שזה קרה (ללא לוג, ההוצאה הזו הייתה "מתנתחת
+    // מחדש בשקט" לנצח בלי שאף אחד ישים לב שהמצב הקודם אבד).
+    console.error(`[inventory-ai] פענוח מצב-מלאי קיים נכשל (JSON פגום בתגית [מלאי-AI]): ${e.message}`);
+    return null;
+  }
 }
 
 function writeStateIntoNotes(notes, state) {
@@ -192,15 +200,27 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
 async function deductMatchedLines(expenseId, startNotes, matched, meta) {
   let notesCursor = startNotes;
   const results = [];
+  // אם שמירת ה-state על ההוצאה עצמה נכשלת (למשל ההוצאה נמחקה "תחת
+  // הרגליים" באמצע העיבוד — ר' משימת M3, "רשומה נמחקת בין קריאה
+  // לכתיבה") — לא ממשיכים ללולאה: אין לאן לשמור את המשך ההתקדמות,
+  // וממשיכים להוריד מלאי נגד מסמך-מקור שאולי כבר לא קיים הוא יותר
+  // נזק מתועד גרוע מהפסקה מוקדמת עם לוג ברור.
+  let sourceGone = false;
   const saveProgress = async (status) => {
-    notesCursor = await saveState(expenseId, notesCursor, {
-      status, analyzedAt: new Date().toISOString(),
-      supplier: meta.supplier, date: meta.date, total: meta.total,
-      results,
-    });
+    try {
+      notesCursor = await saveState(expenseId, notesCursor, {
+        status, analyzedAt: new Date().toISOString(),
+        supplier: meta.supplier, date: meta.date, total: meta.total,
+        results,
+      });
+    } catch (e) {
+      console.error(`[inventory-ai] שמירת מצב להוצאה ${expenseId} נכשלה (ייתכן שהרשומה נמחקה באמצע העיבוד): ${e.message}`);
+      sourceGone = true;
+    }
   };
 
   for (const m of matched) {
+    if (sourceGone) break;
     if (m.needsApproval) {
       results.push({
         description: m.line.description, quantity: m.quantity, unit: m.line.unit,
@@ -374,7 +394,16 @@ export async function approvePendingDeduction(expenseId, lineIndex) {
 export async function reverseInventoryDeduction(expenseId) {
   const base = getBase();
   let rec;
-  try { rec = await base(EXPENSES_TABLE).find(expenseId); } catch { return null; } // כבר נמחקה/לא קיימת — אין מה לבטל
+  try {
+    rec = await base(EXPENSES_TABLE).find(expenseId);
+  } catch (e) {
+    // יכולה להיות "כבר נמחקה" (תקין, אין מה לבטל) *או* כשל-רשת/429 אמיתי
+    // (לא תקין — מבטל-בשוגג בלי לנסות שוב). אין לנו דרך פשוטה להבדיל בלי
+    // לבדוק קוד שגיאה (חבילת airtable לא חושפת סטטוס HTTP ישיר כאן), אז
+    // לפחות מתעדים כדי שאפשר לזהות דפוס אם זה קורה הרבה (ר' M3).
+    console.error(`[inventory-ai] קריאת הוצאה ${expenseId} לפני ביטול-הורדה נכשלה (יכול להיות שנמחקה בעבר, או כשל-רשת): ${e.message}`);
+    return null;
+  }
   const currentNotes = rec.fields['הערות'] || '';
   const state = readState(currentNotes);
   if (!state || !Array.isArray(state.results) || !state.results.length) return null;

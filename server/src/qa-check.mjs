@@ -22,7 +22,7 @@ import { LOGIN_CODES_TABLE, canReadTable, canWriteTable } from './auth.js';
 import { analyzeExpenseDocument } from './document-analysis.js';
 import { matchLinesToInventory, categoryOfDescription, normalize } from './inventory-matching.js';
 import { readState } from './inventory-deduction.js';
-import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD } from './logistics-deduction.js';
+import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD, planLogisticsReversal } from './logistics-deduction.js';
 import { fixFilenameEncoding } from './filename-utils.js';
 import { weekCodeFromDate, WEEK_CODE_RE } from './weekly-sync.js';
 import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggestions, summarizeSuggestions, AUTO_THRESHOLD } from './supplier-linking.js';
@@ -1171,6 +1171,56 @@ await test('computeDeviation: סימטרי ומחושב כאחוז מהערך ה
   if (Math.abs(computeDeviation(100, 100)) > 1e-9) throw new Error('זהים → סטייה 0');
   if (Math.abs(computeDeviation(100, 110) - computeDeviation(110, 100)) > 1e-9) throw new Error('צפוי סימטרי');
   if (computeDeviation(null, 100) !== null) throw new Error('ערך חסר → null (לא ניתן להצליב)');
+});
+
+// ============================================================
+// תוספת 2026-10-06 לילה 2 (M2.2#7 + M3) — planLogisticsReversal: פונקציה
+// טהורה, פענוח-בלבד, בלי קריאה/כתיבה ל-Airtable (ר' reverseLogisticsDeduction
+// ב-logistics-deduction.js). נוספה כי מחיקת תעודת-משלוח/חשבונית לא
+// החזירה עד כה שום דבר למלאי — אומת בפועל בביקורת-קוד שה-route DELETE
+// הקיים קרא ל-reverseInventoryDeduction רק לטבלת 'הוצאות'. בדיקת-יחידה
+// טהורה בלבד (לא נגד שרת חי) — ר' גם תקרית-פיתוח: הגרסה הראשונה של
+// בדיקת האידמפוטנטיות כאן נכשלה בפועל (notes.includes(`↩ ${tag}`) לא
+// תאם את הפורמט האמיתי של שורת-הביטול, שיש בה טקסט בין החץ לתגית) —
+// זה מה שגילה וגרם לתיקון התאמת-התגית בקוד עצמו, לפני שהגיע לפרודקשן.
+// ============================================================
+await test('ביטול הורדה-לוגיסטית (תוכנית): שורת-הורדה אחת לא-מבוטלת → תוכנית עם הכמות המדויקת שנרשמה', () => {
+  const items = [{ id: 'recItem1', 'קטגוריה': 'קרטונים', 'מלאי נוכחי': 100, 'הערות': '↓ 450 ממלאי: קרטונים (תעודה #45, שבוע 20260727-20260801) [מלאי-D:תעודות משלוח:recSRC:קרטונים]' }];
+  const plan = planLogisticsReversal(items, 'תעודות משלוח', 'recSRC');
+  if (plan.length !== 1) throw new Error(`צפוי פריט אחד בתוכנית, התקבלו ${plan.length}`);
+  if (plan[0].totalBack !== 450) throw new Error(`צפוי להחזיר 450, התקבל ${plan[0].totalBack}`);
+  if (plan[0].currentStock !== 100) throw new Error('מלאי נוכחי לא נקרא נכון מהפריט');
+});
+
+await test('ביטול הורדה-לוגיסטית (תוכנית): אידמפוטנטי — שורת "↩" קיימת לאותה תגית → אין תוכנית', () => {
+  const items = [{ id: 'recItem2', 'קטגוריה': 'קרטונים', 'מלאי נוכחי': 550, 'הערות': '↓ 450 ממלאי: קרטונים (x) [מלאי-D:תעודות משלוח:recSRC2:קרטונים]\n↩ ביטול הורדה של 450 · תעודות משלוח recSRC2 נמחק · 2026-10-06 [מלאי-D:תעודות משלוח:recSRC2:קרטונים]' }];
+  const plan = planLogisticsReversal(items, 'תעודות משלוח', 'recSRC2');
+  if (plan.length !== 0) throw new Error(`צפוי אין-תוכנית (כבר בוטל), התקבלו ${plan.length} פריטים`);
+});
+
+await test('ביטול הורדה-לוגיסטית (תוכנית): שלוש קטגוריות מתעודה אחת (קרטונים/נילונים/כובעים), פריטים שונים — כל אחד מסתכם בנפרד', () => {
+  const items = [
+    { id: 'recA', 'קטגוריה': 'קרטונים', 'מלאי נוכחי': 10, 'הערות': '↓ 50 ממלאי: קרטונים (x) [מלאי-D:תעודות משלוח:recSRC3:קרטונים]' },
+    { id: 'recB', 'קטגוריה': 'נילונים', 'מלאי נוכחי': 20, 'הערות': '↓ 50 ממלאי: נילונים (x) [מלאי-D:תעודות משלוח:recSRC3:נילונים]' },
+    { id: 'recC', 'קטגוריה': 'כובעים', 'מלאי נוכחי': 30, 'הערות': '↓ 50 ממלאי: כובעים (x) [מלאי-D:תעודות משלוח:recSRC3:כובעים]' },
+  ];
+  const plan = planLogisticsReversal(items, 'תעודות משלוח', 'recSRC3');
+  if (plan.length !== 3) throw new Error(`צפויים 3 פריטים בתוכנית, התקבלו ${plan.length}`);
+  for (const id of ['recA', 'recB', 'recC']) {
+    if (plan.find((p) => p.itemId === id)?.totalBack !== 50) throw new Error(`פריט ${id}: צפויה החזרה של 50`);
+  }
+});
+
+await test('ביטול הורדה-לוגיסטית (תוכנית): תגית של מסמך-מקור אחר (sourceId שונה) — לא נוגע בפריט', () => {
+  const items = [{ id: 'recD', 'קטגוריה': 'קרטונים', 'מלאי נוכחי': 10, 'הערות': '↓ 50 ממלאי: קרטונים (x) [מלאי-D:תעודות משלוח:recOTHER:קרטונים]' }];
+  const plan = planLogisticsReversal(items, 'תעודות משלוח', 'recSRC4');
+  if (plan.length !== 0) throw new Error(`תגית של מסמך אחר לא הייתה אמורה להתאים, התקבלו ${plan.length} פריטים`);
+});
+
+await test('ביטול הורדה-לוגיסטית (תוכנית): שורת "דורש אישור" בלבד (בלי תגית [מלאי-D:...]) — לא מטופלת כהורדה-לביטול', () => {
+  const items = [{ id: 'recE', 'קטגוריה': 'משטחי עץ', 'מלאי נוכחי': 10, 'הערות': '⚠ דורש אישור: 27 משטחי עץ (חשבונית #61, שבוע 20260926-20261001) — סטייה 5.58%' }];
+  const plan = planLogisticsReversal(items, 'חשבוניות', 'recINV61');
+  if (plan.length !== 0) throw new Error(`שורת-אזהרה בלי תגית [מלאי-D:...] לא הייתה אמורה להיחשב כהורדה לביטול, התקבלו ${plan.length}`);
 });
 
 // ============================================================
