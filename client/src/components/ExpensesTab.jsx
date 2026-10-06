@@ -57,6 +57,7 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
   const [drawer, setDrawer] = useState(null);
   const [linkFor, setLinkFor] = useState(null); // הוצאה שמקשרים לה ספק
   const [form, setForm] = useState(null);
+  const [manualOpen, setManualOpen] = useState(false);
 
   // כרטיס הוצאה פתוח ברענון ברקע של המסך ההורה מסונכרן לרשומה העדכנית
   useEffect(() => {
@@ -140,6 +141,7 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
           <button type="button" className="btn btn-ghost" onClick={() => window.print()}>🖨️ הדפסה</button>
           <button type="button" className="btn btn-ghost" onClick={doExport} disabled={!filtered.length}>⬇️ ייצוא</button>
           <button type="button" className="btn btn-primary" onClick={() => navigate('/upload', { state: { docType: 'חשבונית הוצאה' } })}>⬆️ העלאת חשבונית הוצאה</button>
+          {canEdit && <button type="button" className="btn btn-ghost" onClick={() => setManualOpen(true)}>➕ הוצאה ידנית</button>}
         </span>
       </div>
 
@@ -273,6 +275,14 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
           fields={EDIT_FIELDS}
           onClose={() => setForm(null)}
           onSaved={async () => { setForm(null); await onChanged(); }}
+        />
+      )}
+
+      {manualOpen && (
+        <ManualExpenseModal
+          categories={categories}
+          onClose={() => setManualOpen(false)}
+          onSaved={async () => { setManualOpen(false); await onChanged(); toast('ההוצאה הידנית נשמרה'); }}
         />
       )}
     </div>
@@ -432,6 +442,90 @@ function InventoryAiSection({ expense, onChanged }) {
         <button type="button" className="btn btn-ghost" disabled={busy} onClick={run}>
           {busy ? 'מנתח...' : state ? '🔄 נתח מחדש' : '🔍 נתח מלאי'}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// הוצאה ידנית (תוספת 2026-10-06) — טופס להזנת הוצאה בלי קובץ,
+// שנשמרת בדיוק כמו הוצאה שהועלתה ונותחה אוטומטית (ידני?=true,
+// אותם שדות -AI, אותה הורדת מלאי ואותה לוגיקת ביטול במחיקה).
+// ============================================================
+function ManualExpenseModal({ categories, onClose, onSaved }) {
+  const [supplier, setSupplier] = useState('');
+  const [date, setDate] = useState('');
+  const [total, setTotal] = useState('');
+  const [category, setCategory] = useState('');
+  const [notes, setNotes] = useState('');
+  const [lines, setLines] = useState([{ description: '', quantity: '', unit: '' }]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  useEscapeClose(onClose, !saving);
+
+  const setLine = (i, patch) => setLines((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  const addLine = () => setLines((ls) => [...ls, { description: '', quantity: '', unit: '' }]);
+  const removeLine = (i) => setLines((ls) => ls.filter((_, idx) => idx !== i));
+
+  const save = async () => {
+    if (saving) return;
+    if (!supplier.trim() && !total.trim()) { setError('יש למלא לפחות ספק או סכום'); return; }
+    setSaving(true); setError('');
+    try {
+      const cleanLines = lines
+        .filter((l) => l.description.trim())
+        .map((l) => ({ description: l.description.trim(), quantity: l.quantity === '' ? null : Number(l.quantity), unit: l.unit.trim() || null }));
+      const r = await authFetch('/api/expenses/manual', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ supplier: supplier.trim() || null, date: date || null, total: total === '' ? null : Number(total), category: category.trim() || null, notes: notes.trim() || null, lines: cleanLines }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'שגיאה');
+      await onSaved();
+    } catch (e) {
+      setError(`השמירה נכשלה: ${e.message || e}`);
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={() => !saving && onClose()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
+        <h3 style={{ textAlign: 'center' }}>➕ הוצאה ידנית</h3>
+        <div className="muted" style={{ textAlign: 'center', marginBottom: 12, fontSize: 13 }}>
+          ללא קובץ מצורף — לשימוש כשאין חשבונית סרוקה. הנתונים נכנסים לכל הדוחות בדיוק כמו הוצאה שהועלתה.
+        </div>
+        {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 12 }}>⚠️ {error}</div>}
+
+        <div className="form-grid-2" style={{ gap: '0 12px' }}>
+          <label>ספק<input className="input" value={supplier} onChange={(e) => setSupplier(e.target.value)} /></label>
+          <label>תאריך<input type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} /></label>
+          <label>סכום כולל (₪)<input type="number" className="input" value={total} onChange={(e) => setTotal(e.target.value)} /></label>
+          <label>קטגוריה
+            <input className="input" list="manual-expense-categories" value={category} onChange={(e) => setCategory(e.target.value)} />
+            <datalist id="manual-expense-categories">{categories.map((c) => <option key={c} value={c} />)}</datalist>
+          </label>
+        </div>
+        <label style={{ display: 'block', marginTop: 10 }}>הערות<textarea className="input" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
+
+        <div className="section-title" style={{ marginTop: 16 }}>פריטים למלאי (אופציונלי)</div>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+          כמות ויחידה שהוזנו כאן נחשבות סופיות — יורדות מהמלאי אוטומטית (ללא "דורש אישור"), בכפוף להתאמת קטגוריה קיימת.
+        </div>
+        {lines.map((l, i) => (
+          <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+            <input className="input" style={{ flex: 2 }} placeholder="תיאור (למשל: שקיות ניילון)" value={l.description} onChange={(e) => setLine(i, { description: e.target.value })} />
+            <input type="number" className="input" style={{ flex: 1 }} placeholder="כמות" value={l.quantity} onChange={(e) => setLine(i, { quantity: e.target.value })} />
+            <input className="input" style={{ flex: 1 }} placeholder="יחידה" value={l.unit} onChange={(e) => setLine(i, { unit: e.target.value })} />
+            <button type="button" className="btn btn-sm btn-ghost" aria-label="הסרת שורה" onClick={() => removeLine(i)} disabled={lines.length === 1}>✕</button>
+          </div>
+        ))}
+        <button type="button" className="btn btn-sm btn-ghost" onClick={addLine}>+ שורה</button>
+
+        <div className="form-actions" style={{ marginTop: 16 }}>
+          <button className="btn btn-ghost" disabled={saving} onClick={onClose}>ביטול</button>
+          <button className="btn btn-primary" disabled={saving} onClick={save}>{saving ? 'שומר...' : 'שמירה'}</button>
+        </div>
       </div>
     </div>
   );
