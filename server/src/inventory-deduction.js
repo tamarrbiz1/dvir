@@ -246,11 +246,51 @@ async function deductMatchedLines(expenseId, startNotes, matched, meta) {
 // ============================================================
 
 /**
+ * שגיאת ולידציה — מסומנת כ-400 (לא 500), כדי שה-route יידע להבדיל
+ * "קלט לא תקין מהמשתמש" מ"תקלת שרת" בלי לבדוק טקסט חופשי של ההודעה.
+ */
+export class ValidationError extends Error {
+  constructor(message) {
+    super(message);
+    this.statusCode = 400;
+  }
+}
+
+/**
+ * ולידציה עצמאית בצד השרת (תוספת 2026-10-06, הבהרת תמר) — לא מסתמכת
+ * על הלקוח, כי הבקשה יכולה לבוא גם ישירות מה-API ולא רק מהטופס.
+ * כל 4 שדות הראש חובה: ספק/תאריך/סכום/קטגוריה. שורת פריט שאינה
+ * ריקה-לגמרי (יש בה תיאור ו/או כמות ו/או יחידה) חייבת למלא את כל 3
+ * השדות — שורה חלקית = שגיאה. שורה ריקה-לגמרי מתעלמים ממנה בשקט.
+ */
+export function validateManualExpenseInput({ supplier, date, total, category, lines }) {
+  const missing = [];
+  if (!supplier || !String(supplier).trim()) missing.push('ספק');
+  if (!date || !String(date).trim()) missing.push('תאריך');
+  if (total == null || String(total).trim() === '' || Number.isNaN(Number(total))) missing.push('סכום');
+  if (!category || !String(category).trim()) missing.push('קטגוריה');
+  if (missing.length) throw new ValidationError(`חסר שדה חובה: ${missing.join(', ')}`);
+
+  (lines || []).forEach((l, i) => {
+    const desc = String(l?.description || '').trim();
+    const hasQty = l?.quantity !== null && l?.quantity !== undefined && String(l.quantity).trim() !== '';
+    const unit = String(l?.unit || '').trim();
+    if (!desc && !hasQty && !unit) return; // שורה ריקה-לגמרי — מתעלמים, לא שולחים שגיאה
+    const lineMissing = [];
+    if (!desc) lineMissing.push('מה נקנה');
+    if (!hasQty || Number.isNaN(Number(l.quantity))) lineMissing.push('כמות');
+    if (!unit) lineMissing.push('יחידה');
+    if (lineMissing.length) throw new ValidationError(`שורת פריט ${i + 1}: חסר/ה ${lineMissing.join(', ')}`);
+  });
+}
+
+/**
  * יוצר רשומת הוצאה ידנית (ידני?=true) עם שורות מלאי, וכותבת ישירות
  * לאותם שדות -AI שהניתוח האוטומטי כותב אליהם (השם היסטורי, לא משנים
  * אותו). ההורדה מתבצעת מיד עם היצירה. owner בלבד (נאכף ב-route).
  */
 export async function createManualExpense({ supplier, date, total, category, notes: freeNotes, lines }) {
+  validateManualExpenseInput({ supplier, date, total, category, lines });
   const fields = { 'ידני?': true };
   if (supplier) fields['ספק-AI'] = supplier;
   if (date) fields['תאריך חשבונית-AI'] = date;
