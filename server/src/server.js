@@ -12,7 +12,7 @@ import {
 } from './auth.js';
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
-import { analyzeExpenseInventory, approvePendingDeduction, readState } from './inventory-deduction.js';
+import { analyzeExpenseInventory, approvePendingDeduction, readState, reverseInventoryDeduction, createManualExpense } from './inventory-deduction.js';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -246,6 +246,23 @@ app.post('/api/expenses/:id/analyze-inventory/approve', authenticate, requireOwn
     invalidateReads('הוצאות');
     invalidateReads('מלאי בסיסי');
     res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// מסמך הוצאה ידני (תוספת 2026-10-06, סעיף E) — owner בלבד, בלי קובץ.
+// אותם שדות -AI שהניתוח האוטומטי כותב אליהם, הורדת מלאי מיידית.
+// ============================================================
+app.post('/api/expenses/manual', authenticate, requireOwner, async (req, res) => {
+  try {
+    const { supplier, date, total, category, notes, lines } = req.body || {};
+    if (!supplier && !total) return res.status(400).json({ error: 'יש למלא לפחות ספק או סכום' });
+    const created = await createManualExpense({ supplier, date, total, category, notes, lines });
+    invalidateReads('הוצאות');
+    invalidateReads('מלאי בסיסי');
+    res.status(201).json(created);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -606,6 +623,14 @@ app.delete('/api/:table/:id', authorizeWrite, async (req, res) => {
   try {
     const { table } = req.params;
     if (!(await assertOwnRecord(req, res, table))) return;
+    // מחיקת הוצאה (ידנית או אוטומטית) מחזירה למלאי כל מה שהיא הורידה —
+    // לפני המחיקה בפועל (ר' תוספת 2026-10-06, סעיף E). כשל בביטול לא
+    // חוסם את המחיקה עצמה — ההוצאה עדיין נמחקת, רק בלי שהמלאי יתעדכן
+    // (יישאר מתועד בלוג השרת לבדיקה ידנית).
+    if (table === 'הוצאות') {
+      await reverseInventoryDeduction(req.params.id).catch((e) => console.error(`[inventory-ai] ביטול הורדה נכשל להוצאה ${req.params.id}: ${e.message}`));
+      invalidateReads('מלאי בסיסי');
+    }
     await deleteRecord(table, req.params.id);
     invalidateReads(table);
     res.json({ ok: true });

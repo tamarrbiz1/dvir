@@ -855,6 +855,68 @@ await test('הורדת מלאי: החלמה מכשל-באמצע (restart מדו�
   return `ירידה של 5 בדיוק (לא 8) — אין הורדה כפולה לשורה שכבר הושלמה`;
 });
 
+// ============================================================
+// תוספת 2026-10-06 בבוקר — מסמך הוצאה ידני ("ידני?") + ביטול במחיקה
+// ------------------------------------------------------------
+// ⚠️ לא בדקתי את createManualExpense מקצה-לקצה (יצירת רשומת "הוצאות"
+// אמיתית **בלי קובץ מצורף**) — זו בדיוק התבנית שגרמה לתקרית 2026-09-02
+// (רשומה חשופה בטבלה מנוטרת ע"י Make, 3 כשלים רצופים, השבתה אוטומטית
+// של התרחיש). השדה "ידני?" קיים מראש ב-Airtable והשם שלו מרמז חזק
+// שה-Make automation כבר מסננת/מדלגת על רשומות עם ידני?=true — אבל
+// זו הנחה, לא אימות. **לא הרצתי את הבדיקה הזו הלילה** — ר' דוח הבוקר,
+// דורש אישור/אימות של תמר לפני שמישהו (אני או היא) יוצר ידנית הוצאה
+// בלי קובץ בטבלה האמיתית, גם דרך הטופס החדש.
+// בדיקת reverseInventoryDeduction כן רצה (מגודרת) — עם קובץ אמיתי
+// (createWithFile, התבנית הבטוחה הקיימת), לא עם רשומה חשופה.
+// ============================================================
+
+await test('התאמת מלאי: שורה ידנית (confidence=1) עוברת סף אוטומטית', () => {
+  const FAKE = [{ id: 'recFAKE_X', 'קטגוריה': 'נילונים', 'מלאי נוכחי': 50 }];
+  const matches = matchLinesToInventory([{ description: 'ניילון לחממה', quantity: 10, unit: 'יחידה', confidence: 1 }], FAKE);
+  if (!matches.length || matches[0].needsApproval) throw new Error('שורה ידנית (confidence=1) הייתה אמורה לעבור אוטומטית');
+});
+
+await test('הורדת מלאי: ביטול הורדה במחיקת הוצאה (reverseInventoryDeduction), אידמפוטנטי', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
+  const opts = await api('GET', `select-options/${enc('מלאי בסיסי')}/${enc('קטגוריה')}`);
+  const item = await create('מלאי בסיסי', { 'קטגוריה': opts.choices[0], 'מלאי נוכחי': 100, 'הערות': MARK });
+  const before = Number(item['מלאי נוכחי']);
+  const exp = await createWithFile('הוצאות', 'חשבונית', {});
+
+  const { reverseInventoryDeduction, readState: readState3 } = await import('./inventory-deduction.js');
+  const { fetchRecords: dfr3, updateRecord: upd3 } = await import('./airtable.js');
+
+  let settled = false;
+  for (let i = 0; i < 20 && !settled; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const cur = (await dfr3('הוצאות', {})).find((r) => r.id === exp.id);
+    if (readState3(cur?.['הערות'])) settled = true;
+  }
+  if (!settled) throw new Error('הטריגר האוטומטי לא הסתיים — לא ניתן להמשיך בבטחה');
+
+  // מזריקים state עם שורה שכבר "ירדה" (מדמה ניתוח שהוריד 7 יחידות),
+  // בלי לגעת במלאי האמיתי דרך API — מדמים רק את ה-state, ואז מבטלים
+  const fakeState = {
+    status: 'done', analyzedAt: new Date().toISOString(), supplier: 'QA', date: '2026-10-06',
+    results: [{ description: `${MARK}-rev`, quantity: 7, unit: 'יחידה', category: item['קטגוריה'], itemId: item.id, confidence: 0.95, deducted: true, deductedAt: new Date().toISOString() }],
+  };
+  await upd3('הוצאות', exp.id, { 'הערות': `${MARK}\n[מלאי-AI]${JSON.stringify(fakeState)}` });
+  // "מורידים" בפועל את המלאי (כאילו הניתוח המדומה באמת קרה) כדי שהביטול יהיה בדיקה אמיתית
+  await patch('מלאי בסיסי', item.id, { 'מלאי נוכחי': before - 7 });
+
+  const reversed = await reverseInventoryDeduction(exp.id);
+  if (!reversed) throw new Error('reverseInventoryDeduction החזיר null — צפוי state עם שינוי');
+  const afterRec = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
+  if (Number(afterRec['מלאי נוכחי']) !== before) throw new Error(`לא חזר במדויק ל-${before}, התקבל ${afterRec['מלאי נוכחי']}`);
+
+  // ביטול שני (אידמפוטנטיות) — לא אמור לשנות כלום יותר
+  const reversedAgain = await reverseInventoryDeduction(exp.id);
+  const afterRec2 = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
+  if (Number(afterRec2['מלאי נוכחי']) !== before) throw new Error('ביטול שני שינה את המלאי שוב — לא אידמפוטנטי');
+
+  return `חזר במדויק ל-${before} אחרי ביטול, ביטול שני לא שינה כלום (${reversedAgain ? 'סומן reversed' : 'no-op'})`;
+});
+
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
 // שרדה את הניקוי בריצה קודמת ונשארה בטבלה החיה עד שאותרה ידנית למחרת —

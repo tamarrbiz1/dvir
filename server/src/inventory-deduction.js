@@ -107,6 +107,13 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
   const currentNotes = fields['הערות'] || '';
   const existingState = readState(currentNotes);
 
+  // "ידני?" מסומן = המשתמש שולט בזה בעצמו (סעיף E, תוספת 2026-10-06) —
+  // אין ניתוח AI אוטומטי בכלל, גם אם המשתמש מסמן אותו אחרי שכבר הייתה
+  // הורדה אוטומטית (לא מבטלים את מה שכבר קרה, רק לא ממשיכים לנתח).
+  if (fields['ידני?'] && !force) {
+    return existingState || { status: 'manual', note: 'מסומן כ"ידני?" — ללא ניתוח אוטומטי' };
+  }
+
   // אידמפוטנטיות: כבר הושלם בעבר -> לא מנתחים שוב ולא נוגעים במלאי,
   // גם אם "נתח מחדש" נלחץ פעמיים או אחרי restart. force=true (רק
   // לשימוש פנימי בבדיקות) עוקף את זה במפורש.
@@ -166,17 +173,29 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
   const supplierLabel = analysis.supplier || fields['ספק-AI'] || '';
   const dateLabel = analysis.date || fields['תאריך חשבונית-AI'] || '';
 
-  // שמירה הדרגתית (לא רק בסוף!): אחרי כל שורה שהורדה בפועל נשמר סטטוס
-  // "processing" מעודכן. אם השרת ייפול/יופעל מחדש באמצע (בין שורה
-  // לשורה) — ה-state כבר משקף נכון מה הורד ומה לא, וניסיון חוזר
-  // ימשיך מאיפה שנעצר במקום להוריד שוב את מה שכבר ירד (ר' דרישה
-  // מפורשת במשימה: "כשל באמצע... לא חצי-הורדה, ניתן לנסות שוב").
-  let notesCursor = currentNotes;
+  const { status: finalStatus, results, notes } = await deductMatchedLines(
+    expenseId, currentNotes, matched,
+    { supplier: analysis.supplier, date: analysis.date, total: analysis.total, expenseNum, supplierLabel, dateLabel }
+  );
+  return { status: finalStatus, analyzedAt: new Date().toISOString(), supplier: analysis.supplier, date: analysis.date, total: analysis.total, results, notes };
+}
+
+/**
+ * מבצע את ההורדה בפועל לרשימת שורות-מותאמות (matchLinesToInventory),
+ * עם שמירה הדרגתית (לא רק בסוף!): אחרי כל שורה שהורדה בפועל נשמר
+ * סטטוס "processing" מעודכן. אם השרת ייפול/יופעל מחדש באמצע (בין
+ * שורה לשורה) — ה-state כבר משקף נכון מה הורד ומה לא, וניסיון חוזר
+ * ימשיך מאיפה שנעצר במקום להוריד שוב את מה שכבר ירד (ר' דרישה
+ * מפורשת במשימה: "כשל באמצע... לא חצי-הורדה, ניתן לנסות שוב").
+ * משותף לנתיב האוטומטי (AI) ולנתיב הידני (סעיף E, תוספת 2026-10-06).
+ */
+async function deductMatchedLines(expenseId, startNotes, matched, meta) {
+  let notesCursor = startNotes;
   const results = [];
   const saveProgress = async (status) => {
     notesCursor = await saveState(expenseId, notesCursor, {
       status, analyzedAt: new Date().toISOString(),
-      supplier: analysis.supplier, date: analysis.date, total: analysis.total,
+      supplier: meta.supplier, date: meta.date, total: meta.total,
       results,
     });
   };
@@ -197,7 +216,7 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
         'מלאי נוכחי': current - m.quantity,
         'תאריך עדכון': new Date().toISOString().slice(0, 10),
       });
-      await appendItemMovementNote(m.item, `↓ ${m.quantity} · הוצאה #${expenseNum ?? '?'} · ${supplierLabel || 'ספק לא ידוע'} · ${dateLabel || new Date().toISOString().slice(0, 10)}`);
+      await appendItemMovementNote(m.item, `↓ ${m.quantity} · הוצאה #${meta.expenseNum ?? '?'} · ${meta.supplierLabel || 'ספק לא ידוע'} · ${meta.dateLabel || new Date().toISOString().slice(0, 10)}`);
       results.push({
         description: m.line.description, quantity: m.quantity, unit: m.line.unit,
         category: m.category, itemId: m.item.id, confidence: m.confidence,
@@ -214,10 +233,61 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
     await saveProgress('processing');
   }
 
-  const anyFailed = results.some((r) => r.error);
-  const finalStatus = anyFailed ? 'partial' : 'done';
+  const finalStatus = results.some((r) => r.error) ? 'partial' : 'done';
   await saveProgress(finalStatus);
-  return { status: finalStatus, analyzedAt: new Date().toISOString(), supplier: analysis.supplier, date: analysis.date, total: analysis.total, results, notes: notesCursor };
+  return { status: finalStatus, results, notes: notesCursor };
+}
+
+// ============================================================
+// מסמך הוצאה ידני (תוספת 2026-10-06 בבוקר, סעיף E) — "ידני?"=true.
+// המשתמש מזין בעצמו שורות מלאי (לא AI) — ביטחון 1.0 תמיד (המשתמש
+// קבע את זה בעצמו, לא ניחוש), עדיין דרך matchLinesToInventory כדי
+// לאכוף "רק פריטים קיימים" ובדיקת יחידת-מידה עמומה.
+// ============================================================
+
+/**
+ * יוצר רשומת הוצאה ידנית (ידני?=true) עם שורות מלאי, וכותבת ישירות
+ * לאותם שדות -AI שהניתוח האוטומטי כותב אליהם (השם היסטורי, לא משנים
+ * אותו). ההורדה מתבצעת מיד עם היצירה. owner בלבד (נאכף ב-route).
+ */
+export async function createManualExpense({ supplier, date, total, category, notes: freeNotes, lines }) {
+  const fields = { 'ידני?': true };
+  if (supplier) fields['ספק-AI'] = supplier;
+  if (date) fields['תאריך חשבונית-AI'] = date;
+  if (total != null) fields['סכום כולל-AI'] = String(total);
+  if (category) fields['קטגוריית חשבונית-AI'] = category;
+  if (freeNotes) fields['הערות'] = freeNotes;
+
+  const base = getBase();
+  const created = await base(EXPENSES_TABLE).create(fields);
+  const expenseId = created.id;
+  const expenseNum = created.fields['מספר הוצאה'];
+
+  const cleanLines = (lines || [])
+    .map((l) => ({ description: String(l.description || '').trim(), quantity: l.quantity != null ? Number(l.quantity) : null, unit: l.unit ? String(l.unit).trim() : null, unitPrice: null, lineTotal: null, confidence: 1 }))
+    .filter((l) => l.description);
+
+  if (!cleanLines.length) {
+    const state = { status: 'done', analyzedAt: new Date().toISOString(), supplier, date, total, results: [], note: 'מסמך ידני בלי שורות מלאי' };
+    await saveState(expenseId, fields['הערות'] || '', state);
+    return { id: expenseId, ...created.fields, inventoryState: state };
+  }
+
+  let inventoryItems;
+  try {
+    inventoryItems = await fetchRecords(INVENTORY_TABLE, {});
+  } catch (e) {
+    const state = { status: 'failed', analyzedAt: new Date().toISOString(), supplier, date, total, error: `קריאת המלאי נכשלה: ${e.message}`, results: [] };
+    await saveState(expenseId, fields['הערות'] || '', state);
+    return { id: expenseId, ...created.fields, inventoryState: state };
+  }
+
+  const matched = matchLinesToInventory(cleanLines, inventoryItems);
+  const { status, results, notes: finalNotes } = await deductMatchedLines(
+    expenseId, fields['הערות'] || '', matched,
+    { supplier, date, total, expenseNum, supplierLabel: supplier || '', dateLabel: date || '' }
+  );
+  return { id: expenseId, ...created.fields, inventoryState: { status, analyzedAt: new Date().toISOString(), supplier, date, total, results, notes: finalNotes } };
 }
 
 /** אישור הורדה ידני לשורה שסומנה "דורש אישור" (lineIndex לפי מיקום ב-results) */
@@ -247,4 +317,52 @@ export async function approvePendingDeduction(expenseId, lineIndex) {
   state.status = state.results.every((r) => r.deducted || r.error) ? 'done' : 'partial';
   await saveState(expenseId, currentNotes, state);
   return state;
+}
+
+// ============================================================
+// ביטול הורדה (תוספת 2026-10-06 בבוקר, סעיף E) — מוחקים הוצאה (ידנית
+// או אוטומטית) → כל מה שהיא הורידה חוזר למלאי. נקרא **לפני** המחיקה
+// בפועל של רשומת ההוצאה (ר' server.js, DELETE /api/הוצאות/:id).
+// ============================================================
+
+/**
+ * מחזיר למלאי את כל מה שהוצאה הורידה, לפני שהיא נמחקת. אידמפוטנטי:
+ * אם כבר בוטלה (reversed:true בכל השורות שהורידו) — לא מחזיר שוב.
+ * לא חוסם במחיקה חלקית/מלאי שהשתנה בינתיים — מבצע ככל האפשר ומתעד
+ * הפרש, בדיוק כמו שהתבקש ("לא לחסום... לתעד את ההפרש").
+ */
+export async function reverseInventoryDeduction(expenseId) {
+  const base = getBase();
+  let rec;
+  try { rec = await base(EXPENSES_TABLE).find(expenseId); } catch { return null; } // כבר נמחקה/לא קיימת — אין מה לבטל
+  const currentNotes = rec.fields['הערות'] || '';
+  const state = readState(currentNotes);
+  if (!state || !Array.isArray(state.results) || !state.results.length) return null;
+
+  const expenseNum = rec.fields['מספר הוצאה'];
+  let notesCursor = currentNotes;
+  let changed = false;
+
+  for (let i = 0; i < state.results.length; i++) {
+    const r = state.results[i];
+    if (!r.deducted || r.reversed) continue; // לא ירד בכלל, או כבר בוטל — לא נוגעים
+    changed = true;
+    try {
+      const itemRec = await base(INVENTORY_TABLE).find(r.itemId);
+      const current = Number(itemRec.fields['מלאי נוכחי']) || 0;
+      await updateRecord(INVENTORY_TABLE, r.itemId, {
+        'מלאי נוכחי': current + r.quantity,
+        'תאריך עדכון': new Date().toISOString().slice(0, 10),
+      });
+      await appendItemMovementNote({ id: r.itemId, ...itemRec.fields }, `↩ ביטול הורדה של ${r.quantity} · הוצאה #${expenseNum ?? '?'} נמחקה · ${new Date().toISOString().slice(0, 10)}`);
+      state.results[i] = { ...r, reversed: true, reversedAt: new Date().toISOString() };
+    } catch (e) {
+      // הפריט עצמו נמחק בינתיים, או כשל רשת — מתעדים את ההפרש בלי לחסום
+      // את מחיקת ההוצאה (בדיוק כמו שהתבקש: "לבצע את ההחזרה ולתעד הפרש")
+      state.results[i] = { ...r, reversed: false, reverseError: e.message };
+    }
+    notesCursor = await saveState(expenseId, notesCursor, state);
+  }
+
+  return changed ? state : null;
 }
