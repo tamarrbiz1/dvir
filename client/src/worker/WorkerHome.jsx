@@ -4,7 +4,7 @@ import { workHours , workTypeName } from '../utils/field.js';
 // ============================================================
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { useAutoRefresh } from '../utils/live.js';
-import { formatMoney, formatNumber } from '../utils/format.js';
+import { formatMoney, formatNumber, kpiValueClass } from '../utils/format.js';
 import { t, translateStructureName } from '../i18n.js';
 import TranslatableNote from './TranslatableNote.jsx';
 
@@ -46,8 +46,8 @@ export default function WorkerHome({ api, worker }) {
   const cards = [
     { icon: '💰', label: t('w_thisMonth'), value: formatMoney(paid(monthRecs)), color: 'var(--revenue)' },
     { icon: '🕰️', label: t('w_lastMonth'), value: formatMoney(paid(prevRecs)), color: 'var(--profit)' },
-    { icon: '⏱️', label: t('w_hours'), value: formatNumber(hours(monthRecs)), color: 'var(--cartons)' },
-    { icon: '📋', label: t('w_jobs'), value: formatNumber(monthRecs.length), color: 'var(--pallets)' },
+    { icon: '⏱️', label: t('w_hours'), value: formatNumber(hours(monthRecs)), color: 'var(--cartons)', sub: t('w_thisMonth') },
+    { icon: '📋', label: t('w_jobs'), value: formatNumber(monthRecs.length), color: 'var(--pallets)', sub: t('w_thisMonth') },
   ];
 
   return (
@@ -66,7 +66,8 @@ export default function WorkerHome({ api, worker }) {
             {cards.map((c) => (
               <div key={c.label} className="kpi-card">
                 <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--bg-secondary)' }}>{c.icon}</div><span className="kpi-label">{c.label}</span></div>
-                <div className="kpi-value" style={{ color: c.color }}>{c.value}</div>
+                <div className={kpiValueClass(c.value)} style={{ color: c.color }}>{c.value}</div>
+                {c.sub && <div className="kpi-sub">{c.sub}</div>}
               </div>
             ))}
           </div>

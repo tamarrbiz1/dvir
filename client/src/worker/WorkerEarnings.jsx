@@ -5,7 +5,7 @@ import { workHours } from '../utils/field.js';
 // ============================================================
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useAutoRefresh } from '../utils/live.js';
-import { formatMoney, formatNumber, formatDate } from '../utils/format.js';
+import { formatMoney, formatNumber, formatDate, kpiValueClass } from '../utils/format.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { t, translateStructureName } from '../i18n.js';
@@ -135,22 +135,22 @@ export default function WorkerEarnings({ api, worker }) {
           <div className="kpi-grid">
             <div className="kpi-card">
               <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--revenue-soft)' }}>💰</div><span className="kpi-label">{t('w_earnedInRange')}</span></div>
-              <div className="kpi-value" style={{ color: 'var(--revenue)' }}>{formatMoney(totalEarned)}</div>
+              <div className={kpiValueClass(formatMoney(totalEarned))} style={{ color: 'var(--revenue)' }}>{formatMoney(totalEarned)}</div>
               <div className="kpi-sub">{periodCaption}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--cartons-soft)' }}>⏱️</div><span className="kpi-label">{t('w_hours')}</span></div>
-              <div className="kpi-value" style={{ color: 'var(--cartons)' }}>{formatNumber(totalHours)}</div>
+              <div className={kpiValueClass(formatNumber(totalHours))} style={{ color: 'var(--cartons)' }}>{formatNumber(totalHours)}</div>
               <div className="kpi-sub">{periodCaption}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--pallets-soft)' }}>📋</div><span className="kpi-label">{t('w_jobs')}</span></div>
-              <div className="kpi-value" style={{ color: 'var(--pallets)' }}>{formatNumber(rangeRecs.length)}</div>
+              <div className={kpiValueClass(formatNumber(rangeRecs.length))} style={{ color: 'var(--pallets)' }}>{formatNumber(rangeRecs.length)}</div>
               <div className="kpi-sub">{periodCaption}</div>
             </div>
             <div className="kpi-card">
               <div className="kpi-top"><div className="kpi-icon" style={{ background: 'var(--profit-soft)' }}>📈</div><span className="kpi-label">{t('w_avgPerDay')}</span></div>
-              <div className="kpi-value" style={{ color: 'var(--profit)' }}>{formatMoney(avgPerDay)}</div>
+              <div className={kpiValueClass(formatMoney(avgPerDay))} style={{ color: 'var(--profit)' }}>{formatMoney(avgPerDay)}</div>
               <div className="kpi-sub">{periodCaption}</div>
             </div>
           </div>

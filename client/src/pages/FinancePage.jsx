@@ -336,9 +336,9 @@ function MarketersTab({ marketers, invoices, deliveries = [], app, onChanged }) 
               {mk['תנאי תשלום'] && <div>תנאי תשלום: {mk['תנאי תשלום']}</div>}
             </div>
             <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 13 }}>
-              <div><span className="kpi-label">חשבוניות</span><div className="kpi-value" style={{ fontSize: 18 }}>{invoiceCount}</div></div>
-              <div><span className="kpi-label">תעודות משלוח</span><div className="kpi-value" style={{ fontSize: 18, color: 'var(--docs)' }}>{notesOfMarketer(deliveries, mk.id).length}</div></div>
-              <div><span className="kpi-label">פדיון · כל התקופה</span><div className="kpi-value" style={{ fontSize: 18, color: 'var(--revenue)' }}>{formatMoney(revenue)}</div></div>
+              <div><span className="kpi-label">חשבוניות</span><div className={kpiValueClass(invoiceCount)} style={{ fontSize: 18 }}>{invoiceCount}</div></div>
+              <div><span className="kpi-label">תעודות משלוח</span><div className={kpiValueClass(notesOfMarketer(deliveries, mk.id).length)} style={{ fontSize: 18, color: 'var(--docs)' }}>{notesOfMarketer(deliveries, mk.id).length}</div></div>
+              <div><span className="kpi-label">פדיון · כל התקופה</span><div className={kpiValueClass(formatMoney(revenue))} style={{ fontSize: 18, color: 'var(--revenue)' }}>{formatMoney(revenue)}</div></div>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
               <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); navigate(`/delivery-notes?marketer=${encodeURIComponent(mk.id)}`); }}>📄 תעודות משלוח</button>
