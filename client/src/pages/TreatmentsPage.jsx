@@ -91,6 +91,20 @@ function todayBadge(ev) {
   return 'היום';
 }
 
+/** תג בתוך תא או חלון של יום מסוים: מקום היום בטווח הטיפול. hot = להדגיש (רק כשזה היום בפועל) */
+function dayBadge(ev, day) {
+  if (!day) { const b = todayBadge(ev); return { label: b, hot: !!b }; }
+  const d = new Date(day.getFullYear(), day.getMonth(), day.getDate());
+  if (d < ev.start || d > ev.end) return { label: null, hot: false };
+  const isToday = d.getTime() === startOfToday().getTime();
+  if (ev.days <= 1) return { label: isToday ? 'היום' : null, hot: isToday };
+  const n = Math.round((d - ev.start) / 86400000) + 1;
+  const label = d.getTime() === ev.end.getTime() ? 'יום אחרון'
+    : d.getTime() === ev.start.getTime() ? (isToday ? 'מתחיל היום' : 'מתחיל')
+      : `יום ${n}/${ev.days}`;
+  return { label, hot: isToday };
+}
+
 // ============================================================
 const MATERIAL_FORM_FIELDS = [
   { name: 'שם חומר', label: 'שם חומר', type: 'text', required: true },
@@ -123,6 +137,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
   const [structures, setStructures] = useState([]);
   const [workers, setWorkers] = useState([]);
   const [plans, setPlans] = useState([]);
+  const [crops, setCrops] = useState([]); // לזן: "תיאור" של הגידול (אין שדה "זן" בתוכנית השתילה)
   const [options, setOptions] = useState({ status: [], sizes: [], basis: [] });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -144,14 +159,16 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
   const load = useCallback(async () => {
     setLoadError('');
     try {
-      const [t, m, s, w, p] = await Promise.all([
+      const [t, m, s, w, p, c] = await Promise.all([
         app.api.get('ריסוסים', '?maxRecords=1000'),
         app.api.get('חומרי ריסוס', '?maxRecords=300'),
         app.api.get('מבנים', '?maxRecords=300'),
         app.api.get('עובדים', '?maxRecords=300'),
         app.api.get('תוכניות שתילה', '?maxRecords=500'),
+        app.api.get('גידולים', '?maxRecords=200&raw=1').catch(() => []), // כשל כאן לא מפיל את המסך — רק בלי זן
       ]);
       setTreatments(Array.isArray(t) ? t : []);
+      setCrops(Array.isArray(c) ? c : []);
       setMaterials(Array.isArray(m) ? m : []);
       setStructures(Array.isArray(s) ? s : []);
       setWorkers(Array.isArray(w) ? w : []);
@@ -187,7 +204,9 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       const planId = firstId(t['תוכנית שתילה']);
       const plan = plans.find((p) => p.id === planId);
       const crop = plan ? (displayName(plan['גידולים'], '') || displayName(plan['סוג גידול'], '')) : '';
-      const variety = plan ? displayName(plan['זן'], '') : '';
+      // "זן" אינו שדה בתוכנית השתילה (נבדק בסכימה 6.10.2026) — הוא "תיאור" ברשומת הגידול, למשל "זן 67" / "אדום"
+      const cropRec = plan ? crops.find((x) => x.id === firstId(plan['גידולים'])) : null;
+      const variety = cropRec ? String(cropRec['תיאור'] || '').trim() : '';
       return {
         id: t.id, raw: t, ...range,
         type: inferType(t),
@@ -205,7 +224,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
         days: Math.round((range.end - range.start) / 86400000) + 1,
       };
     }).filter(Boolean);
-  }, [treatments, plans]);
+  }, [treatments, plans, crops]);
 
   const cropOptions = useMemo(() => [...new Set(events.map((e) => e.crop).filter((c) => c && c !== 'לא זמין'))].sort(), [events]);
   const varietyOptions = useMemo(() => [...new Set(events.map((e) => e.variety).filter(Boolean))].sort(), [events]);
@@ -287,8 +306,13 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
 
   const saveForm = async () => {
     const f = form;
+    if (!f.from) { setActionError('חסר שדה חובה: מתאריך'); return; }
     if (!f.structures.length) { setActionError('חסר שדה חובה: מבנה'); return; }
     if (!f.material) { setActionError('חסר שדה חובה: חומר ריסוס'); return; }
+    if (!f.plan) { setActionError('חסר שדה חובה: תוכנית שתילה (גידול / זן)'); return; }
+    if (!f.sprayerSize) { setActionError('חסר שדה חובה: גודל מרסס'); return; }
+    if (!f.basis) { setActionError('חסר שדה חובה: בסיס מינון'); return; }
+    if (f.dosage === '' || f.dosage == null || Number.isNaN(Number(f.dosage)) || Number(f.dosage) <= 0) { setActionError('חסר שדה חובה: מינון (מספר גדול מאפס)'); return; }
     // השדה "תאריך" ב-Airtable הוא תאריך בודד — טווח נשמר כתאריך התחלה + שורת סיום בהערות
     const fmt = (iso) => { const [y, m, d] = iso.split('-'); return `${d}/${m}/${y}`; };
     let notesValue = String(f.notes || '').replace(/\n?תאריך סיום:.*$/m, '').trim();
@@ -423,7 +447,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
             <button className="btn btn-ghost btn-sm" onClick={nextMonth}>הבא ›</button>
             <b style={{ fontSize: 16, marginRight: 10 }}>{MONTHS[month]} {year}</b>
           </div>
-          <MonthGrid year={year} month={month} onDate={onDate} onOpen={(d, evs) => setDayDrawer({ date: d, events: evs })} />
+          <MonthGrid year={year} month={month} onDate={onDate} onOpen={(d, evs) => setDayDrawer({ date: d, ids: evs.map((e) => e.id) })} />
         </div>
       )}
 
@@ -437,7 +461,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
               שבוע {formatDate(weekStart)} – {formatDate(new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 6))}
             </b>
           </div>
-          <WeekGrid weekStart={weekStart} onDate={onDate} onOpen={(ev) => setDayDrawer({ date: ev.start, events: [ev] })} />
+          <WeekGrid weekStart={weekStart} onDate={onDate} onOpen={(ev) => setDayDrawer({ date: ev.start, ids: [ev.id] })} />
         </div>
       )}
 
@@ -446,7 +470,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
           rows={listRows} search={listSearch} setSearch={setListSearch}
           canEdit={canEdit} busy={busy}
           limit={listLimit} onMore={() => setListLimit((l) => l + 50)}
-          onOpen={(ev) => setDayDrawer({ date: ev.start, events: [ev] })}
+          onOpen={(ev) => setDayDrawer({ date: ev.start, ids: [ev.id] })}
           onEdit={openForm} onToggle={toggleDone} onDelete={removeTreatment}
         />
       )}
@@ -468,7 +492,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
 
       {dayDrawer && (
         <DayDrawer
-          date={dayDrawer.date} events={dayDrawer.events} busy={busy} error={actionError}
+          date={dayDrawer.date} events={events.filter((e) => dayDrawer.ids.includes(e.id))} busy={busy} error={actionError}
           onClose={() => setDayDrawer(null)}
           onEdit={canEdit ? openForm : null} onToggle={canEdit ? toggleDone : null} onDelete={canEdit ? removeTreatment : null}
         />
@@ -511,15 +535,15 @@ function Sel({ label, value, onChange, options }) {
 }
 
 /** פס אירוע בתוך תא לוח — צבע לפי סוג, הדגשה כשפעיל היום */
-function EventChip({ ev, compact, onClick }) {
+function EventChip({ ev, day, compact, onClick }) {
   const c = TYPES[ev.type] || TYPES['אחר'];
-  const badge = todayBadge(ev);
+  const { label: badge, hot } = dayBadge(ev, day);
   return (
     <div onClick={(e) => { e.stopPropagation(); onClick?.(ev); }}
       title={`${c.label} · ${ev.material} · ${ev.structNames.join(', ')}`}
       style={{
-        background: badge ? TODAY_BG : c.bg, borderRight: `4px solid ${c.border}`,
-        border: badge ? `2px solid ${TODAY_BORDER}` : `1px solid ${c.border}`, borderRightWidth: 4, borderRightColor: c.border,
+        background: hot ? TODAY_BG : c.bg, borderRight: `4px solid ${c.border}`,
+        border: hot ? `2px solid ${TODAY_BORDER}` : `1px solid ${c.border}`, borderRightWidth: 4, borderRightColor: c.border,
         borderRadius: 6, padding: compact ? '2px 5px' : '5px 7px', marginTop: 3, fontSize: compact ? 10.5 : 12, cursor: 'pointer',
         opacity: ev.done ? 0.65 : 1,
       }}>
@@ -553,7 +577,7 @@ function MonthGrid({ year, month, onDate, onOpen }) {
               outline: isToday ? `2px solid ${TODAY_BORDER}` : 'none', outlineOffset: -2,
             }}>
             <div style={{ fontWeight: isToday ? 800 : 500, color: isToday ? TODAY_BORDER : 'inherit' }}>{day.getDate()}</div>
-            {evs.slice(0, 3).map((ev) => <EventChip key={ev.id} ev={ev} compact onClick={() => onOpen(day, evs)} />)}
+            {evs.slice(0, 3).map((ev) => <EventChip key={ev.id} ev={ev} day={day} compact onClick={() => onOpen(day, evs)} />)}
             {evs.length > 3 && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>+{evs.length - 3} עוד</div>}
           </div>
         );
@@ -579,7 +603,7 @@ function WeekGrid({ weekStart, onDate, onOpen }) {
               {DAYS[day.getDay()]} {day.getDate()}/{day.getMonth() + 1}
             </div>
             {evs.length === 0 && <div style={{ color: 'var(--text-muted)', textAlign: 'center', fontSize: 11, marginTop: 10 }}>—</div>}
-            {evs.map((ev) => <EventChip key={ev.id} ev={ev} onClick={onOpen} />)}
+            {evs.map((ev) => <EventChip key={ev.id} ev={ev} day={day} onClick={onOpen} />)}
           </div>
         );
       })}
@@ -647,10 +671,10 @@ function DayDrawer({ date, events, busy, error, onClose, onEdit, onToggle, onDel
           {error && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
           {events.map((ev) => {
             const c = TYPES[ev.type] || TYPES['אחר'];
-            const badge = todayBadge(ev);
+            const { label: badge, hot } = dayBadge(ev, date);
             const row = (l, v) => <div style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: '1px solid rgba(0,0,0,0.05)', fontSize: 13 }}><span style={{ color: 'var(--text-secondary)' }}>{l}</span><b>{v}</b></div>;
             return (
-              <div key={ev.id} className="card" style={{ marginBottom: 12, background: badge ? TODAY_BG : c.bg, border: `${badge ? 2 : 1}px solid ${badge ? TODAY_BORDER : c.border}` }}>
+              <div key={ev.id} className="card" style={{ marginBottom: 12, background: hot ? TODAY_BG : c.bg, border: `${hot ? 2 : 1}px solid ${hot ? TODAY_BORDER : c.border}` }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
                   <span className="badge" style={{ background: '#fff', color: c.border, border: `1px solid ${c.border}` }}>{c.label}</span>
                   {badge && <span className="badge" style={{ background: TODAY_BORDER, color: '#fff' }}>{badge}</span>}
@@ -731,9 +755,9 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
             </select>
           </div>
 
-          <div className="form-group"><label>תוכנית שתילה (גידול / זן)</label>
-            <select className="select" style={{ width: '100%' }} value={form.plan} onChange={(e) => set('plan', e.target.value)}>
-              <option value="">ללא</option>
+          <div className="form-group"><label>תוכנית שתילה (גידול / זן) <span className="required" /></label>
+            <select className="select" style={{ width: '100%' }} required value={form.plan} onChange={(e) => set('plan', e.target.value)}>
+              <option value="">בחר תוכנית...</option>
               {relevantPlans.map((p) => <option key={p.id} value={p.id}>{planLabel(p)}</option>)}
             </select>
           </div>
@@ -746,18 +770,18 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
               </select></div>
             <div className="form-group"><label>סוג מרסס</label>
               <input className="input" style={{ width: '100%' }} value={form.sprayer} onChange={(e) => set('sprayer', e.target.value)} /></div>
-            <div className="form-group"><label>גודל מרסס (ליטר)</label>
-              <select className="select" style={{ width: '100%' }} value={form.sprayerSize} onChange={(e) => set('sprayerSize', e.target.value)}>
-                <option value="">ללא</option>
+            <div className="form-group"><label>גודל מרסס (ליטר) <span className="required" /></label>
+              <select className="select" style={{ width: '100%' }} required value={form.sprayerSize} onChange={(e) => set('sprayerSize', e.target.value)}>
+                <option value="">בחר גודל...</option>
                 {withCurrent(options.sizes || [], String(form.sprayerSize || '')).filter(Boolean).map((s) => <option key={s} value={s}>{s}</option>)}
               </select></div>
-            <div className="form-group"><label>בסיס מינון</label>
-              <select className="select" style={{ width: '100%' }} value={form.basis} onChange={(e) => set('basis', e.target.value)}>
-                <option value="">ללא</option>
+            <div className="form-group"><label>בסיס מינון <span className="required" /></label>
+              <select className="select" style={{ width: '100%' }} required value={form.basis} onChange={(e) => set('basis', e.target.value)}>
+                <option value="">בחר בסיס...</option>
                 {withCurrent(options.basis, form.basis).map((s) => <option key={s} value={s}>{s}</option>)}
               </select></div>
-            <div className="form-group"><label>מינון</label>
-              <input className="input" type="number" step="any" min="0" style={{ width: '100%' }} value={form.dosage} onChange={(e) => set('dosage', e.target.value)} /></div>
+            <div className="form-group"><label>מינון <span className="required" /></label>
+              <input className="input" type="number" step="any" min="0.0001" required style={{ width: '100%' }} value={form.dosage} onChange={(e) => set('dosage', e.target.value)} /></div>
           </div>
 
           <div className="form-group"><label>הערות</label>
