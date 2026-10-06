@@ -23,6 +23,7 @@ import { analyzeExpenseDocument } from './document-analysis.js';
 import { matchLinesToInventory, categoryOfDescription, normalize } from './inventory-matching.js';
 import { readState } from './inventory-deduction.js';
 import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD } from './logistics-deduction.js';
+import { weekCodeFromDate, WEEK_CODE_RE } from './weekly-sync.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
@@ -970,6 +971,40 @@ await test('computeDeviation: סימטרי ומחושב כאחוז מהערך ה
   if (Math.abs(computeDeviation(100, 100)) > 1e-9) throw new Error('זהים → סטייה 0');
   if (Math.abs(computeDeviation(100, 110) - computeDeviation(110, 100)) > 1e-9) throw new Error('צפוי סימטרי');
   if (computeDeviation(null, 100) !== null) throw new Error('ערך חסר → null (לא ניתן להצליב)');
+});
+
+// ============================================================
+// תוספת 2026-10-06 — סנכרון "סיכום שבועי" (סעיף D): weekCodeFromDate
+// בלבד, פונקציה טהורה בלי שום קריאה ל-Airtable. הקודים הצפויים
+// אומתו ישירות מול רשומות אמיתיות בחשבוניות/תעודות משלוח (ר' תיעוד
+// ב-weekly-sync.js) — לא מהמרים על הפורמט.
+// sweep()/ensureWeekRecord() *לא* נבדקים כאן (כותבים ל-Airtable) —
+// הורצו בדיקת dry-run ידנית מול הנתונים האמיתיים לפני מיזוג, ר' דוח
+// ההתקדמות; ההרצה האמיתית (dryRun=false) ממתינה לאישור אחרי מיזוג.
+// ============================================================
+await test('weekCodeFromDate: תאריכים אמיתיים מחשבוניות/תעודות משלוח (שבת–חמישי)', () => {
+  const cases = [
+    ['2026-08-22', '20260822-20260827'], // שבת — תחילת שבוע
+    ['2026-08-27', '20260822-20260827'], // חמישי — סוף אותו שבוע
+    ['2026-08-28', '20260822-20260827'], // שישי (תאריך מסמך אמיתי) — עדיין השבוע שהסתיים
+    ['2026-09-12', '20260912-20260917'],
+    ['2026-09-13', '20260912-20260917'], // ראשון
+    ['2026-09-05', '20260905-20260910'],
+    ['2026-09-09', '20260905-20260910'], // רביעי
+  ];
+  for (const [input, expected] of cases) {
+    const got = weekCodeFromDate(input);
+    if (got !== expected) throw new Error(`${input} → "${got}", צפוי "${expected}"`);
+    if (!WEEK_CODE_RE.test(got)) throw new Error(`"${got}" לא תואם את הפורמט YYYYMMDD-YYYYMMDD`);
+  }
+  return `${cases.length} תאריכים (כולל יום שישי) תואמים בדיוק לקודים האמיתיים`;
+});
+
+await test('weekCodeFromDate: קלט לא תקין → null, בלי לזרוק', () => {
+  if (weekCodeFromDate('not-a-date') !== null) throw new Error('מחרוזת לא-תאריך צפויה null');
+  if (weekCodeFromDate(null) !== null) throw new Error('null צפוי null');
+  if (weekCodeFromDate(undefined) !== null) throw new Error('undefined צפוי null');
+  if (weekCodeFromDate(new Date('invalid')) !== null) throw new Error('Date לא תקין צפוי null');
 });
 
 // ⚠️ ניסיתי לכתוב כאן בדיקת-קצה-לקצה חיה (כמו ל-reverseInventoryDeduction
