@@ -23,6 +23,7 @@ import { analyzeExpenseDocument } from './document-analysis.js';
 import { matchLinesToInventory, categoryOfDescription, normalize } from './inventory-matching.js';
 import { readState } from './inventory-deduction.js';
 import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD } from './logistics-deduction.js';
+import { fixFilenameEncoding } from './filename-utils.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
@@ -833,6 +834,35 @@ await test('אבטחה: נתיבי /api/expenses/:id/analyze-inventory - owner �
   catch (e) { if (!String(e.message).startsWith('401')) results2.push(`בלי טוקן שגיאה לא-צפויה: ${e.message}`); }
   if (results2.length) throw new Error(results2.join('; '));
   return 'manager/worker נחסמו (403), בלי טוקן נחסם (401)';
+});
+
+// ============================================================
+// תוספת 2026-10-06 (סעיף H) — שם קובץ עברי שהתעקם ב-multer (mojibake,
+// למשל "ª ×�×�…pdf") עקב קידוד latin1 בטעות על מקור UTF-8.
+// ר' filename-utils.js. בדיקות טהורות (sync, בלי רשת) — אין להן תלות
+// ב-RUN_UPLOAD_TESTS כי הן לא יוצרות שום רשומה ב-Airtable.
+// ============================================================
+await test('fixFilenameEncoding: מתקן שם קובץ עברי שהתעקם (latin1 במקום utf8)', () => {
+  const real = 'בדיקה-עברית.pdf';
+  // כך בדיוק נראה req.file.originalname כשmulter מפענח כותרת UTF-8 כ-latin1 —
+  // כל בית UTF-8 מקורי הופך לתו-latin1 נפרד.
+  const mojibake = Buffer.from(real, 'utf8').toString('latin1');
+  const fixed = fixFilenameEncoding(mojibake);
+  if (fixed !== real) throw new Error(`התיקון לא החזיר את השם המקורי: קיבלנו ${JSON.stringify(fixed)}`);
+});
+
+await test('fixFilenameEncoding: שם קובץ תקין (עברית/אנגלית) לא משתנה', () => {
+  const samples = ['invoice-21.pdf', 'בדיקה-עברית.pdf', 'חשבונית 2026.jpg', 'a.pdf'];
+  for (const s of samples) {
+    const fixed = fixFilenameEncoding(s);
+    if (fixed !== s) throw new Error(`שם תקין "${s}" השתנה ל-"${fixed}"`);
+  }
+});
+
+await test('fixFilenameEncoding: קלט לא-תקין (ריק/undefined) לא קורס', () => {
+  if (fixFilenameEncoding('') !== '') throw new Error('מחרוזת ריקה אמורה להישאר ריקה');
+  if (fixFilenameEncoding(undefined) !== undefined) throw new Error('undefined אמור להישאר undefined');
+  if (fixFilenameEncoding(null) !== null) throw new Error('null אמור להישאר null');
 });
 
 await test('הוצאה אמיתית → ניתוח מלאי מקצה-לקצה (קובץ אמיתי, אידמפוטנטי)', async () => {
