@@ -294,6 +294,10 @@ async function applyGroup(entries, { sourceTable, linkField, targetTable, nameFi
       await sleep(WRITE_GAP_MS);
       out.push({ ...entry, applied: true, linkedTo: targetId });
     } catch (e) {
+      // 2026-10-06 (M3, ליל-בדיקות): כנ"ל ב-weekly-sync.js — error נשמר
+      // בפלט (ל-API) אבל בלי console.error אף תקלה לא הייתה נראית ביומן
+      // השרת עצמו למישהו שלא קורא את תגובת ה-JSON המלאה.
+      console.error(`[supplier-linking] קישור ${sourceTable}/${entry.id} ל-${targetTable} נכשל: ${e.message || e}`);
       out.push({ ...entry, applied: false, error: e.message || String(e) });
     }
   }

@@ -158,6 +158,10 @@ export async function sweep({ dryRun = true } = {}) {
       await updateRecord(item.table, item.id, { [WEEK_LINK_FIELD]: [week.id] });
       report.linksCreated++;
     } catch (e) {
+      // 2026-10-06 (M3, ליל-בדיקות): נשמר ב-linkErrors (הקורא דרך ה-API
+      // יכול לפספס שדה הזה ברשימה) — console.error עם הקשר מלא כדי שגם
+      // תקלה שלא נבדקת בתגובה תישאר גלויה ביומן השרת.
+      console.error(`[weekly-sync] קישור ${item.table}/${item.id} לשבוע ${item.code} נכשל: ${e.message}`);
       report.linkErrors.push({ ...item, error: e.message });
     }
   }
