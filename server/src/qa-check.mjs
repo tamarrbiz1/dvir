@@ -27,6 +27,8 @@ import { fixFilenameEncoding } from './filename-utils.js';
 import { weekCodeFromDate, WEEK_CODE_RE } from './weekly-sync.js';
 import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggestions, summarizeSuggestions, AUTO_THRESHOLD } from './supplier-linking.js';
 import { parseSummary, parseDateRange, parseDosage, markerOf } from './spray-report-import.js';
+import { cascadeDocumentDelete } from './document-cascade.js';
+import { parseInventoryLedger, resolveExpenseLinks, documentLink } from '../../client/src/utils/inventoryLedger.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
@@ -1677,6 +1679,106 @@ if (process.env.RUN_SCHEMA_TESTS !== "0") { // ברירת מחדל דלוק (ה�
     return `נוצרה אפשרות "${MARK}" — להסרה ידנית ב-Airtable (ה-API לא מוחק אפשרויות)`;
   });
 }
+
+// ============================================================
+// תוספת 2026-10-07 — יומן-ירידות למלאי + מחיקה מדורגת (סעיף P)
+// בדיקות-יחידה טהורות על הפרסר (בלי Airtable) + בדיקה חיה אחת מגודרת
+// (RUN_UPLOAD_TESTS) שמוודאת שה-cascade האמיתי עובד קצה-לקצה.
+// ============================================================
+await test('inventoryLedger: פרסור שורת-הורדה לוגיסטית (עם תגית) → שדות+קישור נכונים', () => {
+  const line = '↓ 328 ממלאי: כובעים (תעודה #44, שבוע 20260926-20261001 · 328 קרטונים × 1) ⚠ בלי הצלבה [מלאי-D:תעודות משלוח:recJx50ogFRvpYvxd:כובעים]';
+  const { movements } = parseInventoryLedger(line);
+  const m = movements[0];
+  if (m.kind !== 'deduction' || m.sourceTable !== 'תעודות משלוח' || m.sourceId !== 'recJx50ogFRvpYvxd') throw new Error(`שדות-מקור שגויים: ${JSON.stringify(m)}`);
+  if (m.quantity !== 328 || m.category !== 'כובעים') throw new Error('כמות/קטגוריה שגויים');
+  if (m.link !== '/delivery-notes?open=recJx50ogFRvpYvxd') throw new Error(`קישור שגוי: ${m.link}`);
+});
+
+await test('inventoryLedger: פרסור שורת-הוצאה (בלי תגית) → sourceNumber בלבד, link מתמלא ע"י resolveExpenseLinks', () => {
+  const line = '↓ 20 · הוצאה #48 · גיניגר · 2026-09-16';
+  const { movements } = parseInventoryLedger(line);
+  const m = movements[0];
+  if (m.sourceTable !== 'הוצאות' || m.sourceNumber !== '48' || m.link) throw new Error(`צפוי sourceNumber=48, link=null לפני resolve: ${JSON.stringify(m)}`);
+  const resolved = resolveExpenseLinks(movements, { 48: 'recEXPENSE1' });
+  if (resolved[0].link !== documentLink('הוצאות', 'recEXPENSE1')) throw new Error('resolveExpenseLinks לא מילא קישור נכון');
+});
+
+await test('inventoryLedger: שורת ביטול (↩) עם תגית → sourceId/category מהתגית, בלי קישור (המסמך כבר נמחק)', () => {
+  const line = '↩ ביטול הורדה של 450 · תעודות משלוח recPuhd0dotAhQAdF נמחק · 2026-10-06 [מלאי-D:תעודות משלוח:recPuhd0dotAhQAdF:כובעים]';
+  const { movements } = parseInventoryLedger(line);
+  const m = movements[0];
+  if (m.kind !== 'reversal' || m.sourceId !== 'recPuhd0dotAhQAdF' || m.category !== 'כובעים' || m.quantity !== 450) throw new Error(`שגוי: ${JSON.stringify(m)}`);
+  if (m.link) throw new Error('שורת-ביטול לא אמורה לקבל קישור (המסמך כבר נמחק)');
+});
+
+await test('inventoryLedger: הערה חופשית (בלי ↓/↩/⚠) נשארת ב-freeNotes, לא ב-movements', () => {
+  const { movements, freeNotes } = parseInventoryLedger('הערה חופשית של תמר\n↓ 10 · הוצאה #1 · ספק · 2026-01-01');
+  if (movements.length !== 1) throw new Error('צפויה שורת-תנועה אחת בלבד');
+  if (freeNotes !== 'הערה חופשית של תמר') throw new Error(`freeNotes שגוי: "${freeNotes}"`);
+});
+
+await test('cascade: dryRun על מסמך בלי שום השפעה על מלאי מחזיר inventory ריק, בלי לכתוב כלום', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
+  // תעודה-QA בלי "כמות קרטונים" בכלל (pending) — אין מה להחזיר, אין שבוע תואם אמיתי
+  const rec = await createWithFile('תעודות משלוח', 'תעודת משלוח', { 'קוד שבוע': MARK });
+  const { readFile: rf } = await import('node:fs/promises');
+  const report = await cascadeDocumentDelete('תעודות משלוח', rec.id, { dryRun: true });
+  if (report.inventory.length) throw new Error(`לא אמור להיות מה להחזיר: ${JSON.stringify(report.inventory)}`);
+  if (report.week) throw new Error('קוד-שבוע ייחודי-QA לא אמור להתאים לאף רשומת-שבוע אמיתית');
+  return 'dryRun נקי: אין מלאי להחזיר, אין שבוע תואם';
+});
+
+await test('cascade: מחיקה אמיתית של תעודה-QA שהורידה מלאי (קטגוריה "קרטונים", לא "נילונים" — ר\' ממצא כפילות 2026-10-07) מחזירה מלאי במדויק', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
+  const opts = await api('GET', `select-options/${enc('מלאי בסיסי')}/${enc('קטגוריה')}`);
+  if (!opts.choices.includes('קרטונים')) return 'דולג — אין פריט אמיתי בקטגוריית "קרטונים" כרגע';
+  const before = (await api('GET', `${enc('מלאי בסיסי')}?raw=1`)).find((i) => i['קטגוריה'] === 'קרטונים');
+  if (!before) return 'דולג — לא נמצא פריט קרטונים';
+  // ⚠️ analyze-inventory מוריד בבת-אחת משלוש הקטגוריות (קרטונים/נילונים/
+  // כובעים יחד, לא רק מהקטגוריה שבשמה קראנו לבדיקה) — אם קיימת כרגע
+  // כפילות-קטגוריה אמיתית (ר' ממצא 2026-10-07 בפועל: 2 פריטי "נילונים"),
+  // ה-deduction עלול לרדת מהפריט-הלא-צפוי. במקום להניח שזה לא יקרה,
+  // מצלמים snapshot של **כל** הקטגוריות לפני/אחרי ומוודאים שהכל חוזר
+  // במדויק — כך שגם אם כפילות קיימת, הבדיקה חייבת להוכיח שה-cascade
+  // מחזיר בדיוק את מה שהורד, לא "להניח" שרק קרטונים הושפעו.
+  const snapshot = async () => {
+    const items = await api('GET', `${enc('מלאי בסיסי')}?raw=1`);
+    const m = {};
+    for (const it of items) { const cat = it['קטגוריה']; if (cat) (m[cat] ||= []).push({ id: it.id, stock: Number(it['מלאי נוכחי']) || 0 }); }
+    return m;
+  };
+  const beforeSnap = await snapshot();
+
+  const rec = await createWithFile('תעודות משלוח', 'תעודת משלוח', { 'קוד שבוע': MARK, 'כמות קרטונים': '15' });
+  const owner = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && !String(a['סוג'] || '').includes('עבודה'));
+  const loginRes = await apiAs(null, 'POST', 'admin-login', { email: owner['מייל'], code: owner['קוד אישי'] });
+  await apiAs(loginRes.token, 'POST', `logistics/${enc('תעודות משלוח')}/${rec.id}/analyze-inventory`);
+
+  const afterAnalyze = (await api('GET', `${enc('מלאי בסיסי')}?raw=1`)).find((i) => i['קטגוריה'] === 'קרטונים');
+  if (Number(afterAnalyze['מלאי נוכחי']) !== beforeStock - 15) throw new Error(`הורדה ראשונית שגויה: ${afterAnalyze['מלאי נוכחי']} (צפוי ${beforeStock - 15})`);
+
+  const preview = await apiAs(loginRes.token, 'GET', `documents/${enc('תעודות משלוח')}/${rec.id}/cascade-preview`);
+  if (!preview.inventory.some((r) => r.category === 'קרטונים' && r.quantity === 15)) throw new Error(`preview לא הציג את ההחזרה הצפויה: ${JSON.stringify(preview.inventory)}`);
+  const afterPreview = (await api('GET', `${enc('מלאי בסיסי')}?raw=1`)).find((i) => i['קטגוריה'] === 'קרטונים');
+  if (Number(afterPreview['מלאי נוכחי']) !== beforeStock - 15) throw new Error('cascade-preview לא אמור לשנות כלום (dryRun), אבל המלאי השתנה');
+
+  await apiAs(loginRes.token, 'DELETE', `${enc('תעודות משלוח')}/${rec.id}`);
+  // כבר נמחק בכוונה — מסירים מרשימת הניקוי הסופית כדי שלא יידווח כ"נכשל"
+  const idx = cleanup.findIndex((c) => c.table === 'תעודות משלוח' && c.id === rec.id);
+  if (idx >= 0) cleanup.splice(idx, 1);
+
+  const afterSnap = await snapshot();
+  const mismatches = [];
+  for (const cat of Object.keys(beforeSnap)) {
+    const b = beforeSnap[cat], a = afterSnap[cat] || [];
+    for (const item of b) {
+      const match = a.find((x) => x.id === item.id);
+      if (!match || match.stock !== item.stock) mismatches.push(`${cat} (${item.id}): לפני=${item.stock}, אחרי=${match?.stock ?? 'נעלם'}`);
+    }
+  }
+  if (mismatches.length) throw new Error(`מלאי לא חזר במדויק בכל הקטגוריות (כולל אפשרות-כפילות): ${mismatches.join(' | ')}`);
+  return `מלאי חזר במדויק בכל הקטגוריות (${Object.keys(beforeSnap).length}) אחרי מחיקה-מדורגת (cascade) — כולל בדיקת-כפילות`;
+});
 
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)

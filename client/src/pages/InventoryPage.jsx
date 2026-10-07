@@ -3,11 +3,14 @@
 // ------------------------------------------------------------
 // Airtable הוא מקור האמת. האפליקציה כותבת ישירות ל"מלאי נוכחי"
 // לאחר אישור המשתמש, מעדכנת "תאריך עדכון", קוראת מחדש ומרעננת
-// גם את ההתראות. "מלאי להורדה" מחושב כברירת מחדל מנתוני השבוע
-// האחרון (שקית/כובע לקרטון, משטחים מהחשבוניות) וניתן לעריכה.
+// גם את ההתראות.
+// ⚠️ סעיף P1 (2026-10-07, הוראת תמר): "מלאי להורדה" (הצעה מחושבת
+// מהשבוע האחרון) **הוסר** — ההורדה כבר אוטומטית-לגמרי מהמסמכים עצמם
+// (תעודות משלוח/חשבוניות/הוצאות, ר' logistics-deduction.js/
+// inventory-deduction.js). כפתור "➖ הורדה" ידני נשאר לתיקון-ידני בלבד.
 // ============================================================
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { authFetch } from '../utils/authFetch.js';
 import { formatNumber, formatDate, kpiValueClass } from '../utils/format.js';
@@ -18,6 +21,7 @@ import { toast, confirmDialog } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useAutoRefresh } from '../utils/live.js';
+import { parseInventoryLedger, resolveExpenseLinks, summarizeRecentDrops } from '../utils/inventoryLedger.js';
 
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
@@ -46,12 +50,6 @@ function itemStatus(item) {
   return { key: 'ok', label: 'תקין', color: 'var(--ok)', soft: 'var(--ok-soft)' };
 }
 
-const parseAny = (v) => {
-  if (v == null || v === '') return null;
-  if (typeof v === 'object') return v;
-  try { return JSON.parse(String(v)); } catch { return null; }
-};
-
 export default function InventoryPage() {
   const app = useApp();
   // חריג שני להרשאת מנהל-עבודה (2026-09-07): עדכון מלאי מותר גם לו,
@@ -65,7 +63,7 @@ export default function InventoryPage() {
   const [editItem, setEditItem] = useState(null); // {item, mode: 'add'|'reduce', defaultAmount?}
   const [drawer, setDrawer] = useState(null);
   const [form, setForm] = useState(null);
-  const [lastWeek, setLastWeek] = useState(null); // {code, cartons, pallets}
+  const [ledgerItem, setLedgerItem] = useState(null); // פריט שה"היסטוריית ירידות" שלו פתוחה (סעיף P2)
 
   const load = useCallback(() => app.api.get(TABLE, '?maxRecords=200')
     .then((d) => {
@@ -91,27 +89,6 @@ export default function InventoryPage() {
   }, []);
   useAutoRefresh(load);
 
-  // השבוע האחרון מ"סיכום שבועי" — לחישוב "מלאי להורדה"
-  useEffect(() => {
-    const enc = encodeURIComponent;
-    const fields = ['קוד שבוע', 'תאריך התחלה', 'JSON לפי ימים מאוחד'].map(enc).join(',');
-    authFetch(`/api/${enc('סיכום שבועי')}?raw=1&fields=${fields}`)
-      .then((r) => (r.ok ? r.json() : []))
-      .then((rows) => {
-        const list = (Array.isArray(rows) ? rows : [])
-          .filter((w) => typeof w['תאריך התחלה'] === 'string')
-          .sort((a, b) => String(b['תאריך התחלה']).localeCompare(String(a['תאריך התחלה'])));
-        const w = list[0];
-        if (!w) return;
-        const daily = parseAny(w['JSON לפי ימים מאוחד']);
-        const days = Array.isArray(daily?.days) ? daily.days : [];
-        const cartons = days.reduce((s, d) => s + (Number(d.cartons) || 0), 0);
-        const pallets = days.reduce((s, d) => s + (Number(d.pallets) || 0), 0);
-        if (cartons || pallets) setLastWeek({ code: w['קוד שבוע'], cartons, pallets });
-      })
-      .catch(() => {});
-  }, []);
-
   const filtered = items.filter((i) => {
     if (statusFilter && itemStatus(i).key !== statusFilter) return false;
     if (!search) return true;
@@ -129,15 +106,6 @@ export default function InventoryPage() {
     'מלאי נוכחי': Number(i['מלאי נוכחי']) || 0,
     'מלאי מינימום': Number(i['מלאי מינימום']) || 0,
   })), [filtered]);
-
-  // ברירת מחדל של "מלאי להורדה" לפי האיפיון: שקית/כובע = קרטון; משטחים לפי החשבוניות
-  const plannedFor = (item) => {
-    if (!lastWeek) return null;
-    const cat = String(item['קטגוריה'] || '');
-    if (cat.includes('שקי') || cat.includes('כובע')) return lastWeek.cartons || null;
-    if (cat.includes('משטח')) return lastWeek.pallets || null;
-    return null;
-  };
 
   return (
     <div>
@@ -166,26 +134,6 @@ export default function InventoryPage() {
             </div>
           )}
 
-          {/* מלאי להורדה — הצעה מחושבת מהשבוע האחרון */}
-          {lastWeek && filtered.some((i) => plannedFor(i)) && (
-            <div className="card" style={{ marginTop: 18, borderRight: '4px solid var(--inventory)' }}>
-              <div className="section-title" style={{ marginTop: 0 }}>
-                מלאי להורדה — לפי שבוע {lastWeek.code || 'אחרון'}
-                <span style={{ fontWeight: 400, fontSize: 13, color: 'var(--text-secondary)', marginInlineStart: 8 }}>
-                  ({formatNumber(lastWeek.cartons)} קרטונים · {formatNumber(lastWeek.pallets)} משטחים)
-                </span>
-              </div>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                {filtered.filter((i) => plannedFor(i)).map((i) => (
-                  <button key={i.id} type="button" className="btn btn-ghost"
-                    onClick={() => setEditItem({ item: i, mode: 'reduce', defaultAmount: plannedFor(i) })}>
-                    ➖ {i['קטגוריה']}: {formatNumber(plannedFor(i))}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
           {/* כרטיסי פריטים */}
           <div style={{ marginTop: 18 }} className="grid">
             {filtered.length === 0 && <div className="empty-state" style={{ gridColumn: '1 / -1' }}><div className="icon">📦</div>אין נתונים לתקופה זו</div>}
@@ -197,13 +145,15 @@ export default function InventoryPage() {
               // אחוז מילוי חסום ל-0..100: מלאי שלילי או ערך לא-סופי לא ישברו את הפס
               const ratio = (cur / denom) * 100;
               const pct = Number.isFinite(ratio) ? Math.min(100, Math.max(0, Math.round(ratio))) : 0;
+              const ledger = parseInventoryLedger(item['הערות']);
+              const recent = summarizeRecentDrops(ledger.movements);
               return (
                 <div key={item.id} className="card clickable" {...activatable(() => setDrawer(item), `פתיחת פריט ${item['קטגוריה'] || ''}`)}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
                     <b style={{ fontSize: 16 }}>📦 {item['קטגוריה'] || 'פריט'}</b>
                     <span className="badge" style={{ background: st.soft, color: st.color }}>{st.label}</span>
                   </div>
-                  <div style={{ display: 'flex', gap: 20, marginBottom: 10 }}>
+                  <div style={{ display: 'flex', gap: 20, marginBottom: 4 }}>
                     <div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>נוכחי</div><b style={{ fontSize: 24, color: st.color }}>{formatNumber(cur)}</b></div>
                     <div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>מינימום</div><b style={{ fontSize: 18 }}>{formatNumber(min)}</b></div>
                     {item['תאריך עדכון'] && (
@@ -213,12 +163,17 @@ export default function InventoryPage() {
                       </div>
                     )}
                   </div>
+                  {(recent.today > 0 || recent.week > 0) && (
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
+                      ירד היום: {formatNumber(recent.today)} · השבוע: {formatNumber(recent.week)}
+                    </div>
+                  )}
                   <div className="progress" style={{ marginBottom: 12 }} aria-hidden="true">
                     <span style={{ width: `${pct}%`, background: st.color }} />
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <button className="btn btn-sm btn-success" onClick={(e) => { e.stopPropagation(); setEditItem({ item, mode: 'add' }); }}>+ הוספת מלאי</button>
-                    <button className="btn btn-sm btn-ghost" onClick={(e) => { e.stopPropagation(); setEditItem({ item, mode: 'reduce', defaultAmount: plannedFor(item) }); }}>➖ הורדה</button>
+                    <button className="btn btn-sm btn-ghost" onClick={(e) => { e.stopPropagation(); setEditItem({ item, mode: 'reduce' }); }}>➖ הורדה</button>
                     {canEdit && (
                       <span style={{ marginInlineStart: 'auto', display: 'flex', gap: 4 }}>
                         <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={(e) => { e.stopPropagation(); setForm(item); }}>✎</button>
@@ -275,6 +230,14 @@ export default function InventoryPage() {
           onClose={() => setDrawer(null)}
           onAdd={() => setEditItem({ item: drawer, mode: 'add' })}
           onEdit={() => setForm(drawer)}
+          onOpenLedger={() => setLedgerItem(items.find((x) => x.id === drawer.id) || drawer)}
+        />
+      )}
+
+      {ledgerItem && (
+        <LedgerDrawer
+          item={items.find((x) => x.id === ledgerItem.id) || ledgerItem}
+          onClose={() => setLedgerItem(null)}
         />
       )}
 
@@ -390,14 +353,13 @@ function StockModal({ api, item, mode, defaultAmount, onClose, onSaved }) {
 // ============================================================
 // כרטיס פריט — פרטים מלאים (רק שדות שיש בהם מידע) + פעולות
 // ============================================================
-function ItemDrawer({ item, canEdit, onClose, onAdd, onEdit }) {
+function ItemDrawer({ item, canEdit, onClose, onAdd, onEdit, onOpenLedger }) {
   useEscapeClose(onClose);
   const st = itemStatus(item);
-  // שורות "↓ ..." נוספות אוטומטית ע"י ניתוח מלאי-AI (ר' inventory-deduction.js)
-  // — מוצגות בנפרד כ"תנועות אחרונות", לא מעורבבות עם הערות חופשיות
-  const allNotes = String(item['הערות'] || '').split('\n');
-  const movements = allNotes.filter((l) => l.trim().startsWith('↓')).reverse();
-  const freeNotes = allNotes.filter((l) => !l.trim().startsWith('↓')).join('\n').trim();
+  // שורות-תנועה (↓/↩/⚠) נכתבות אוטומטית ע"י ניתוח-המלאי (logistics-deduction.js/
+  // inventory-deduction.js) — מוצגות בנפרד ב"היסטוריית ירידות" (סעיף P2), לא
+  // מעורבבות עם הערות חופשיות כאן.
+  const { movements, freeNotes } = parseInventoryLedger(item['הערות']);
   const rows = [
     ['קטגוריה', item['קטגוריה']],
     ['מלאי נוכחי', item['מלאי נוכחי'] != null ? formatNumber(item['מלאי נוכחי']) : null],
@@ -431,10 +393,92 @@ function ItemDrawer({ item, canEdit, onClose, onAdd, onEdit }) {
 
           {movements.length > 0 && (
             <div className="card">
-              <div className="section-title" style={{ marginTop: 0 }}>📦 תנועות אחרונות</div>
-              {movements.map((line, i) => (
-                <div key={i} style={{ fontSize: 13, padding: '6px 0', borderBottom: i < movements.length - 1 ? '1px solid var(--border)' : 'none' }}>{line}</div>
-              ))}
+              <div className="section-title" style={{ marginTop: 0 }}>📦 תנועות מלאי</div>
+              <button type="button" className="btn btn-ghost" onClick={onOpenLedger}>
+                📜 היסטוריית ירידות ({movements.length})
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// היסטוריית ירידות מפורטת (סעיף P2, 2026-10-07) — שורה לכל תנועה:
+// תאריך · מסמך (קישור) · כמות שירדה · ממה נגזר · הערה (אי-התאמה/ביטול).
+// קישורי-הוצאות (שאין להם מזהה-רשומה בשורה עצמה, רק "הוצאה #מספר")
+// נפתרים מול רשימת הוצאות אמיתית — נטענת פעם אחת כשהדרואר נפתח.
+// ============================================================
+function LedgerDrawer({ item, onClose }) {
+  const navigate = useNavigate();
+  useEscapeClose(onClose);
+  const { movements: rawMovements, freeNotes } = useMemo(() => parseInventoryLedger(item['הערות']), [item]);
+  const [movements, setMovements] = useState(rawMovements);
+  useEffect(() => {
+    setMovements(rawMovements);
+    const needsExpenseResolve = rawMovements.some((m) => m.sourceTable === 'הוצאות' && !m.link && m.sourceNumber);
+    if (!needsExpenseResolve) return;
+    authFetch(`/api/${encodeURIComponent('הוצאות')}?raw=1&fields=${encodeURIComponent('מספר הוצאה')}`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows) => {
+        const byNumber = {};
+        (Array.isArray(rows) ? rows : []).forEach((r) => { if (r['מספר הוצאה'] != null) byNumber[String(r['מספר הוצאה'])] = r.id; });
+        setMovements(resolveExpenseLinks(rawMovements, byNumber));
+      })
+      .catch(() => {});
+  }, [rawMovements]);
+
+  return (
+    <div className="drawer-overlay" onClick={onClose}>
+      <div className="drawer" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 720 }}>
+        <div className="drawer-header">
+          <span>📜 היסטוריית ירידות · {item['קטגוריה'] || 'פריט מלאי'}</span>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
+        </div>
+        <div className="drawer-body">
+          <div className="card">
+            {movements.length === 0 ? (
+              <div className="empty-state">אין תנועות מתועדות עדיין</div>
+            ) : (
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr><th>תאריך</th><th>מסמך</th><th>כמות</th><th>ממה נגזר</th><th>הערה</th></tr>
+                  </thead>
+                  <tbody>
+                    {movements.map((m, i) => (
+                      <tr key={i}>
+                        <td>{m.date ? formatDate(m.date) : <span className="muted">—</span>}</td>
+                        <td>
+                          {m.link ? (
+                            <span className="obj-chip" role="button" tabIndex={0}
+                              onClick={() => navigate(m.link)}
+                              onKeyDown={(e) => { if (e.key === 'Enter') navigate(m.link); }}>
+                              {m.sourceLabel}
+                            </span>
+                          ) : (m.sourceLabel || <span className="muted">לא זמין</span>)}
+                        </td>
+                        <td style={{ color: m.kind === 'reversal' ? 'var(--ok)' : undefined, fontWeight: 600 }}>
+                          {m.kind === 'reversal' ? '+' : '−'}{formatNumber(m.quantity)}
+                        </td>
+                        <td>{m.derivedFrom || <span className="muted">—</span>}</td>
+                        <td>
+                          {m.warning ? <span className="badge badge-warn" style={{ fontSize: 12 }}>{m.warning}</span>
+                            : (m.kind === 'reversal' ? <span className="muted">בוטל במחיקת מסמך</span> : <span className="muted">—</span>)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          {freeNotes && (
+            <div className="card">
+              <div className="section-title" style={{ marginTop: 0 }}>הערות ידניות</div>
+              <div style={{ whiteSpace: 'pre-wrap' }}>{freeNotes}</div>
             </div>
           )}
         </div>
