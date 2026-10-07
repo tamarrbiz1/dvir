@@ -662,7 +662,11 @@ function ManualExpenseModal({ categories, suppliers, onClose, onSaved }) {
 
   return (
     <div className="modal-overlay" onClick={() => !saving && onClose()}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 620 }}>
+      {/* min(...) כדי לא לבטל את `max-width: 92vw` של `.modal` — maxWidth:620
+          לבדו היה עוקף אותו לגמרי (סטייל אינליין > CSS), והמודאל (width:480
+          מה-CSS) היה גולש מעבר לרוחב-מסך של נייד (ר' תיקון דומה בדראור
+          יומן-הירידות במלאי, מקבץ 2 של משימה U) */}
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 'min(620px, 92vw)' }}>
         <h3 style={{ textAlign: 'center' }}>➕ הוצאה ידנית</h3>
         <div className="muted" style={{ textAlign: 'center', marginBottom: 12, fontSize: 13 }}>
           ניתן להזין הוצאה עם או בלי קובץ מצורף — הנתונים נכנסים לכל הדוחות בדיוק כמו הוצאה שהועלתה.

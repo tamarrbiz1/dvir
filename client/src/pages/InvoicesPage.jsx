@@ -356,7 +356,10 @@ export default function InvoicesPage() {
       </div>
 
       {hiddenByPeriod > 0 && (
-        <div className="badge badge-warn no-print" style={{ width: '100%', marginBottom: 12 }}>
+        // .notice-warn (לא badge-warn) — אותה בעיית-ניגודיות/גודל-גופן שתוקנה
+        // בבאנר "קטגוריות כפולות" במלאי (משימה U, מקבץ 1): badge-warn הוא
+        // 12px על ניגודיות 2.15:1, מתאים לתג מילה-אחת, לא לפסקת-אזהרה שלמה.
+        <div className="notice notice-warn no-print" role="status">
           ⚠ {hiddenByPeriod} חשבוניות קיימות אך מוסתרות כי התאריך מחוץ ל"{caption}" (לדוגמה: חשבונית שהועלתה היום עם תאריך-מסמך מחודש קודם).{' '}
           <button type="button" className="btn btn-sm btn-ghost" onClick={() => setPreset('all')}>הצג הכל</button>
         </div>
