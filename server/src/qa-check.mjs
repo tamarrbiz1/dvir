@@ -856,6 +856,62 @@ await test('forecast-sync: שני מחירים חופפים (טווח-תאריכ
   return `שתי הריצות בחרו את מחיר-הטווח (9) על פני ברירת-המחדל-השנתית (5) — עקבי`;
 }, 350000);
 
+// ============================================================
+// מחיקת "תפוקה רבעונית" *בזמן* שרענון-תחזית באמצע-ריצה (מצוד מפורש
+// בתדריך): מפעילים "רענן תחזית" ומיד, בלי להמתין שיסיים, מוחקים את
+// רשומת-התפוקה-הרבעונית שהרבעון הזה תלוי בה. בודקים שאין קריסה/כפילות
+// — לכל היותר שורה אחת לכל שבוע (תעודת-הזהות של שורת-תחזית), ו-
+// forecast-preflight אחרי שהאבק שקע חייב לדווח "חסרה תפוקה רבעונית"
+// (לא לקרוס, לא "לשקר" שהכל תקין).
+// ============================================================
+await test('forecast-sync: מחיקת תפוקה-רבעונית באמצע "רענן תחזית" — בלי קריסה/כפילות', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const crop = await create('גידולים', { 'שם גידול': `${MARK}-midflight-crop` });
+  const qYield = await create('תפוקה רבעונית', { 'גידול': [crop.id], 'רבעון': '1', 'קג לדונם לשבוע': 40 });
+  await create('מחירי גידול משוערים', { 'גידול': [crop.id], 'שנה': 2036, 'מחיר משוער לקג': 7, 'ברירת מחדל שנתית': true });
+  const plan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'גידולים': [crop.id], 'שנת תוכנית': 2036,
+    'תחילת שתילה מקורית': '2036-01-01', 'מספר ימי שתילה': 10,
+    'תחילת קטיף מקורית': '2036-02-01', 'מספר ימי קטיף': 20,
+  });
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': false });
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': true });
+  const calcDone = await pollUntil(async () => {
+    const p = await api('GET', `${enc('תוכניות שתילה')}/${plan.id}`);
+    return p['תחילת קטיף מעודכנת'] ? p : null;
+  }, { timeoutMs: 60000, intervalMs: 3000 });
+  if (!calcDone) return 'דולג (לא נכשל) — "חשב תוכנית" לא השלים תוך זמן סביר, לא קשור לקוד הנבדק';
+
+  // מפעילים "רענן תחזית" **ומיד** (בלי להמתין) מוחקים את התפוקה הרבעונית
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': false });
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': true });
+  await del('תפוקה רבעונית', qYield.id);
+  cleanup.splice(cleanup.findIndex((c) => c.table === 'תפוקה רבעונית' && c.id === qYield.id), 1); // כבר נמחק
+
+  // ממתינים שהאבק ישקע (אין "אירוע-סיום" לצפות לו — פשוט זמן סביר)
+  await new Promise((r) => setTimeout(r, 20000));
+  const rows = await forecastRowsForPlan(plan.id);
+  cleanup.push(...rows.map((r) => ({ table: 'תחזית שתילה שבועית', id: r.id })));
+
+  // בדיקת-השפיות העיקרית: לא נוצרה יותר משורת-תחזית אחת לכל שבוע
+  // (אין race שמכפיל שורות כשהאוטומציה "מתבלבלת" בין delete לבין יצירה)
+  const byWeek = new Map();
+  for (const r of rows) {
+    const w = r['תחילת שבוע'] || '?';
+    byWeek.set(w, (byWeek.get(w) || 0) + 1);
+  }
+  const dup = [...byWeek.entries()].filter(([, n]) => n > 1);
+  if (dup.length) throw new Error(`כפילות שורות-תחזית לאותו שבוע אחרי מחיקה-באמצע-ריצה: ${JSON.stringify(dup)}`);
+
+  // forecast-preflight אחרי שהתפוקה נמחקה — לא יכול "לשקר" שהכל תקין
+  const after = await api('GET', `plans/${plan.id}/forecast-preflight`);
+  if (!after.missing.some((m) => m.includes('תפוקה רבעונית'))) {
+    throw new Error(`אחרי מחיקת התפוקה הרבעונית, preflight היה אמור לדווח עליה כחסרה. התקבל: ${JSON.stringify(after.missing)}`);
+  }
+  forecastSyncOrphanRanges.push({ from: '2036-02-01', to: '2036-03-31' });
+  return `${rows.length} שורות-תחזית, בלי כפילות שבוע; preflight מדווח נכון על התפוקה החסרה`;
+}, 120000);
+
 await test('אבטחה: DELETE על "תפוקה רבעונית" — owner מצליח (200), manager/worker נדחים (403)', async () => {
   const crop = await create('גידולים', { 'שם גידול': `${MARK}-perm-crop` });
   const rec = await create('תפוקה רבעונית', { 'גידול': [crop.id], 'רבעון': '2', 'קג לדונם לשבוע': 1 });
