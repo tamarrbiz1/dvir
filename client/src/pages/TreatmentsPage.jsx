@@ -1047,6 +1047,32 @@ function ReportsTab({ canEdit, onImported, onOpenInCalendar }) {
 
   const rangeText = (r) => (r.range ? (r.range.from === r.range.to ? formatDate(r.range.from) : `${formatDate(r.range.from)} – ${formatDate(r.range.to)}`) : '—');
 
+  // מחיקת דוח ריסוסים (הוראת תמר 7.10): דורשת אישור מפורש, כי היא עלולה
+  // למחוק גם טיפולים שיובאו מהדוח. טיפולים שסומנו ידנית "בוצע" נשארים.
+  const removeReport = async (r) => {
+    const yes = await confirmDialog({
+      title: `מחיקת דוח ריסוסים #${r.number ?? '—'}`,
+      message: (r.imported
+        ? `הדוח יימחק, ואיתו ${formatNumber(r.imported, 0)} הטיפולים שנוצרו ממנו ביומן.\nטיפולים שסומנו ידנית "בוצע" יישארו.\nלא ניתן לשחזור — להמשיך?`
+        : 'הדוח יימחק ולא יינתן לשחזור.\nלהמשיך?'),
+      confirmLabel: 'מחק דוח', danger: true,
+    });
+    if (!yes) return;
+    setBusyId(r.id);
+    try {
+      const res = await authFetch(`/api/spray-reports/${r.id}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || `שגיאת שרת (${res.status})`);
+      const kept = data?.keptMarkedDone || 0;
+      toast(`הדוח נמחק${data?.deletedTreatments ? ` · ${formatNumber(data.deletedTreatments, 0)} טיפולים הוסרו מהיומן` : ''}${kept ? ` · ${formatNumber(kept, 0)} טיפולים שנסמנו "בוצע" נשארו` : ''}`);
+      await loadHistory();
+      onImported?.();
+    } catch (e) {
+      toast(`המחיקה נכשלה: ${e.message}`, 'error');
+    }
+    setBusyId(null);
+  };
+
   return (
     <>
       <div className="filter-bar no-print">
@@ -1098,6 +1124,7 @@ function ReportsTab({ canEdit, onImported, onOpenInCalendar }) {
                 </div>
                 <div className="no-print" style={{ display: 'flex', gap: 4, justifyContent: 'flex-end', marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 8, flexWrap: 'wrap' }}>
                   {r.imported > 0 && <button className="btn btn-sm btn-ghost" onClick={() => onOpenInCalendar(r.range?.from)}>📅 פתח ביומן</button>}
+                  {canEdit && <button className="btn btn-sm btn-ghost" style={{ color: 'var(--danger, #b91c1c)' }} disabled={!!busyId} onClick={() => removeReport(r)}>🗑️ מחק דוח</button>}
                   {canEdit && r.summary === 'ready' && (
                     <>
                       <button className="btn btn-sm btn-ghost" disabled={!!busyId} onClick={() => runImport(r, true)}>{busy ? '...' : '👁 תצוגה מקדימה'}</button>
@@ -1148,7 +1175,11 @@ function ImportPreview({ report, result, canEdit, busy, onClose, onImport }) {
                       <td>{(r.structureNames || []).map((n) => <span key={n} className="obj-chip static" style={(r.unresolvedStructures || []).includes(n) ? { background: '#FEE2E2', color: '#991B1B' } : undefined}>🏗️ {n}</span>)}</td>
                       <td>{r.material || '—'} {r.materialIsNew && <span className="badge badge-warn" style={{ fontSize: 10 }}>חדש</span>}</td>
                       <td>{r.dosage != null ? `${formatNumber(r.dosage)}${r.basis ? ` ${r.basis}` : ''}` : (r.dosageText || '—')}</td>
-                      <td>{[r.crop, r.variety].filter(Boolean).join(' · ') || '—'}</td>
+                      <td>
+                        {[r.crop, r.variety].filter(Boolean).join(' · ') || '—'}
+                        {r.cropFromPlan && <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>לפי תוכנית {r.planNumber ?? '—'}: {r.cropFromPlan}</div>}
+                        {!r.cropFromPlan && r.date && <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>לא נמצאה תוכנית מתאימה לתאריך</div>}
+                      </td>
                       <td><span className={`badge ${cls}`}>{label}</span>{r.warnings?.length ? <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{r.warnings.join(' · ')}</div> : null}</td>
                     </tr>
                   );

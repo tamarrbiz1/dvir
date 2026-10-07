@@ -21,7 +21,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getBase, fetchRecords, createRecord } from './airtable.js';
+import { getBase, fetchRecords, createRecord, deleteRecord } from './airtable.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -31,6 +31,8 @@ export const REPORTS_TABLE = 'דוחות ריסוסים';
 export const TREATMENTS_TABLE = 'ריסוסים';
 const MATERIALS_TABLE = 'חומרי ריסוס';
 const STRUCTURES_TABLE = 'מבנים';
+const PLANS_TABLE = 'תוכניות שתילה';
+const CROPS_TABLE = 'גידולים';
 
 const SUMMARY_FIELD = 'Attachment Summary';
 const REPORT_FILE_FIELD = 'דוח ריסוסים';
@@ -170,6 +172,42 @@ function structureIndex(structures) {
 }
 
 // ============================================================
+// פתרון הגידול מתוכנית השתילה (הוראת תמר 7.10.2026)
+// ------------------------------------------------------------
+// "בגידול אני רוצה שיופיע הגידול שקיים באותה תקופה לפי תוכנית
+// השתילה המתאימה". שורת דוח נוקבת במבנה ובתאריך; הגידול אינו בהכרח
+// כתוב בדוח. לכן מחפשים את תוכנית השתילה של אותו מבנה שטווח הקטיף
+// שלה (המעודכן אם קיים, אחרת המקורי) מכיל את תאריך הריסוס.
+// מחזירים גם את מזהה התוכנית — הוא נשמר בשדה 'תוכנית שתילה' (טקסט
+// ב-Airtable, בדיוק כמו בטופס הידני) וכך מסך הטיפולים מציג גידול+זן.
+// ============================================================
+function cropResolver(plans, crops, structureIds) {
+  // שם גידול לפי מזהה רשומת "גידולים"; נפילה-לאחור ל"סוג גידול" (lookup)
+  const cropNameById = new Map(crops.map((c) => [c.id, normSpaces(c['שם גידול'])]));
+  const wanted = new Set(structureIds);
+  const candidates = plans
+    .map((plan) => {
+      const planStructs = (Array.isArray(plan['מבנה']) ? plan['מבנה'] : []).map((x) => (x && typeof x === 'object' ? x.id : String(x)));
+      const cropId = (Array.isArray(plan['גידולים']) ? plan['גידולים'] : []).map((x) => (x && typeof x === 'object' ? x.id : String(x)))[0] || null;
+      // הטווח המעודכן גובר, ותחילת/סוף קטיף קודמים לשתילה בשם
+      const from = plan['תחילת קטיף מעודכנת'] || plan['תחילת קטיף מקורית'] || plan['תחילת שתילה מעודכנת'] || plan['תחילת שתילה מקורית'] || null;
+      const to = plan['סוף קטיף מעודכן'] || plan['סוף קטיף מקורי'] || plan['סוף שתילה מעודכן'] || plan['סוף שתילה מקורי'] || null;
+      const name = cropId ? (cropNameById.get(cropId) || '') : '';
+      return { id: plan.id, number: plan['מספר תוכנית'], structs: planStructs, cropId, name: name || normSpaces([].concat(plan['סוג גידול'] || [])[0]), from, to };
+    })
+    .filter((c) => c.name && c.structs.some((id) => wanted.has(id)));
+  const dayKey = (d) => (d ? String(d).slice(0, 10) : null);
+  return (date) => {
+    const day = dayKey(date);
+    if (!day) return null;
+    for (const c of candidates) {
+      if (c.from && c.to && c.from <= day && day <= c.to) return c;
+    }
+    return null;
+  };
+}
+
+// ============================================================
 // פתרון חומרים: התאמה מדויקת (ללא רגישות לרווחים/אותיות), ואז "מכיל"
 // כשיש מועמד יחיד. אין התאמה → יוצרים חומר חדש (הלקוחה רוצה שכל מה
 // שבדוח ינחת ביומן), וזוכרים אותו לשורות הבאות של אותו ייבוא.
@@ -214,7 +252,7 @@ async function importedLinesOf(number) {
 }
 
 /** בניית שדות רשומת "ריסוסים" משורת דוח אחת (ללא כתיבה) */
-async function buildRow(row, { line, number, resolveStructure, materials, attachment }) {
+async function buildRow(row, { line, number, resolveStructure, materials, attachment, cropResolverFor }) {
   const warnings = [];
   const notes = [`${markerOf(number)} שורה ${line}`];
   const type = normSpaces(row['סוג טיפול']);
@@ -250,9 +288,17 @@ async function buildRow(row, { line, number, resolveStructure, materials, attach
 
   if (range && range.end !== range.start) notes.push(`תאריך סיום: ${toDMY(range.end)}`);
 
+  // דוח ריסוסים מתעד ריסוס שתוכנן/בוצע בשטח, אבל במערכת הוא נוצר כהצעה
+  // שממתינה לאישור תמר — ולכן 'מתוכנן' ובוצע=false. היא תסמן "בוצע" בעצמה
+  // אחרי שתאמת. (הוראת תמר 7.10.2026)
+  // הגידול מתוכנית השתילה של אותו מבנה שטווח הקטיף שלה מכיל את תאריך
+  // הריסוס (הוראת תמר 7.10). אם הרשומה זוהתה — נשמר מזהה התוכנית בשדה
+  // 'תוכנית שתילה', ומסך הטיפולים יגזור ממנו גידול+זן בעצמו. הגידול
+  // שבדוח עצמו נשאר בהערות כמידע גולמי.
+  const matchedPlan = range && cropResolverFor && structureIds.length ? cropResolverFor(structureIds)(range.start) : null;
   const fields = {
-    'סטטוס': 'בוצע', // דוח מתעד ריסוסים שכבר בוצעו
-    'בוצע': true,
+    'סטטוס': 'מתוכנן',
+    'בוצע': false,
     'הערות': notes.join('\n'),
   };
   if (range) fields['תאריך'] = range.start;
@@ -263,6 +309,7 @@ async function buildRow(row, { line, number, resolveStructure, materials, attach
   // אין שדה "סוג טיפול" ב"ריסוסים"; inferType בלקוח קורא גם את "סוג מרסס" —
   // כך הגמעה/פיזור מועילים מהדוח מקבלים את הצבע הנכון ביומן
   if (type && type !== 'ריסוס') fields['סוג מרסס'] = type;
+  if (matchedPlan) fields['תוכנית שתילה'] = matchedPlan.id;
   if (attachment) fields[REPORT_FILE_FIELD] = [{ url: attachment.url, filename: attachment.filename || 'דוח ריסוסים' }];
 
   return {
@@ -272,6 +319,7 @@ async function buildRow(row, { line, number, resolveStructure, materials, attach
       structures: structureIds.length, structureNames: structNames, unresolvedStructures,
       material: material.name, materialIsNew: material.isNew,
       dosage: dosage.value, basis: dosage.basis, dosageText: dosage.note, crop, variety, sprayNo, location,
+      cropFromPlan: matchedPlan ? matchedPlan.name : null, planNumber: matchedPlan?.number ?? null,
       warnings,
     },
   };
@@ -318,9 +366,13 @@ export async function importSprayReport(reportId, { dryRun = false } = {}) {
   if (parsed.status === 'pending' && !attachments.length) result.status = 'no-file';
   if (parsed.status !== 'ready') return result;
 
-  const [structures, materialsList, imported] = await Promise.all([
+  const [structures, materialsList, plans, cropsList, imported] = await Promise.all([
     fetchRecords(STRUCTURES_TABLE, { fields: ['מספר מבנה'] }),
     fetchRecords(MATERIALS_TABLE, { fields: ['שם חומר'] }),
+    fetchRecords(PLANS_TABLE, { fields: ['מספר תוכנית', 'מבנה', 'גידולים', 'סוג גידול',
+      'תחילת שתילה מקורית', 'סוף שתילה מקורי', 'תחילת קטיף מקורית', 'סוף קטיף מקורי',
+      'תחילת שתילה מעודכנת', 'סוף שתילה מעודכן', 'תחילת קטיף מעודכנת', 'סוף קטיף מעודכן'] }),
+    fetchRecords(CROPS_TABLE, { fields: ['שם גידול'] }),
     importedLinesOf(number),
   ]);
   const resolveStructure = structureIndex(structures);
@@ -335,7 +387,10 @@ export async function importSprayReport(reportId, { dryRun = false } = {}) {
       result.rows.push({ line, status: 'exists' });
       continue;
     }
-    const built = await buildRow(parsed.rows[i], { line, number, resolveStructure, materials, attachment });
+    const built = await buildRow(parsed.rows[i], {
+      line, number, resolveStructure, materials, attachment,
+      cropResolverFor: (ids) => cropResolver(plans, cropsList, ids),
+    });
     for (const u of built.summary.unresolvedStructures) if (!result.unresolvedStructures.includes(u)) result.unresolvedStructures.push(u);
     if (!built.fields['תאריך']) {
       // בלי תאריך הטיפול לא יופיע ביומן — לא יוצרים רשומה "עיוורת"
@@ -364,6 +419,75 @@ export async function importSprayReport(reportId, { dryRun = false } = {}) {
 // ============================================================
 // היסטוריית הדוחות — לטאב "דוחות" במסך הטיפולים
 // ============================================================
+/**
+ * מחיקת דוח ריסוסים — כולל הטיפולים שיובאו ממנו ליומן (הוראת תמר
+ * 7.10.2026: "אפשרות מחיקה שלא קיימת שם כרגע"). בלי זה, מחיקת הדוח
+ * הייתה משאירה טיפולים יתומים ביומן בלי שום הפניה למקור.
+ *
+ * מה נמחק: רשומת הדוח, וכל רשומת "ריסוסים" שההערות שלה נושאות את
+ * הסמן [מדוח ריסוסים #N] של אותו דוח. טיפול שסומן ידנית "בוצע" על-ידי
+ * תמר לא נמחק אוטומטית — הוא נשאר ביומן עם הערה שהדוח נמחק (כדי לא
+ * לאבד תיעוד של עבודה אמיתית בשטח).
+ *
+ * מחזיר { ok, deleted, keptMarkedDone, orphanedAttachments } לפידבק ב-UI.
+ */
+export async function deleteSprayReport(reportId) {
+  const base = getBase();
+  const rec = await base(REPORTS_TABLE).find(reportId);
+  const number = rec.fields[REPORT_NUMBER_FIELD];
+  const marker = number != null ? markerOf(number) : null;
+
+  // 1. איסוף הטיפולים שיובאו מהדוח הזה
+  let treatments = [];
+  if (marker) {
+    treatments = await fetchRecords(TREATMENTS_TABLE, {
+      filterByFormula: `FIND('${marker}', {הערות})`,
+      fields: ['הערות', 'בוצע', 'תאריך'],
+    });
+  }
+  const toDelete = treatments.filter((t) => !t['בוצע']).map((t) => t.id);
+  const keptMarkedDone = treatments.length - toDelete.length;
+
+  // 2. השהיה: מנקים את הדוח קודם כדי שתגובת ההצלחה לא תלויה בניקוי
+  await deleteRecord(REPORTS_TABLE, reportId);
+
+  // 3. הטיפולים — מחיקה במנות (Airtable: 10 לבקשה)
+  let deleted = 0;
+  const errors = [];
+  for (let i = 0; i < toDelete.length; i += 10) {
+    const chunk = toDelete.slice(i, i + 10);
+    try {
+      await base(TREATMENTS_TABLE).destroy(chunk);
+      deleted += chunk.length;
+    } catch (e) {
+      errors.push(e.message);
+      console.error(`[spray-delete] מחיקת טיפולים מדוח #${number} נכשלה בחלק מהמנות: ${e.message}`);
+    }
+    if (i + 10 < toDelete.length) await sleep(250);
+  }
+
+  // 4. הטיפולים שנשארו (סומנו בוצע ידנית) — מוסיפים הערה שהדוח נמחק,
+  //    כדי שלא יישארו עם הפניה למסמך שכבר אינו קיים.
+  if (keptMarkedDone) {
+    const kept = treatments.filter((t) => t['בוצע']).map((t) => t.id);
+    for (let i = 0; i < kept.length; i += 10) {
+      const chunk = kept.slice(i, i + 10);
+      const updates = chunk.map((id) => {
+        const src = treatments.find((t) => t.id === id);
+        const note = `${String(src?.['הערות'] || '').trim()}
+⚠ הדוח #${number} נמחק — הטיפול סומן ידנית "בוצע" ולכן נשאר ביומן`;
+        return { id, fields: { 'הערות': note } };
+      });
+      try { await base(TREATMENTS_TABLE).update(updates); }
+      catch (e) { console.error(`[spray-delete] סימון טיפולים שנשארו נכשל: ${e.message}`); }
+      if (i + 10 < kept.length) await sleep(250);
+    }
+  }
+
+  console.log(`[spray-delete] דוח #${number ?? reportId} נמחק: ${deleted} טיפולים נמחקו, ${keptMarkedDone} נשארו (סומנו בוצע)${errors.length ? `, ${errors.length} שגיאות` : ''}`);
+  return { ok: true, number, deletedTreatments: deleted, keptMarkedDone, errors };
+}
+
 export async function sprayReportsHistory() {
   const [reports, marked] = await Promise.all([
     fetchRecords(REPORTS_TABLE, {}),

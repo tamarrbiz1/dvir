@@ -17,7 +17,7 @@ import { analyzeLogisticsInventory, reverseLogisticsDeduction } from './logistic
 import { fixFilenameEncoding } from './filename-utils.js';
 import { sweep as sweepWeeklySync, INVOICES_TABLE, NOTES_TABLE } from './weekly-sync.js';
 import { runAutoLink, SUPPLIERS_TABLE, MARKETERS_TABLE, EXPENSES_TABLE, CHECKS_TABLE, DELIVERY_TABLE } from './supplier-linking.js';
-import { importSprayReport, sprayReportsHistory, scheduleSprayReportImport, startSprayImportSweep, REPORTS_TABLE as SPRAY_REPORTS_TABLE } from './spray-report-import.js';
+import { importSprayReport, deleteSprayReport, sprayReportsHistory, scheduleSprayReportImport, startSprayImportSweep, REPORTS_TABLE as SPRAY_REPORTS_TABLE } from './spray-report-import.js';
 import { checkForecastPreflight } from './forecast-preflight.js';
 
 const app = express();
@@ -537,6 +537,19 @@ app.get('/api/spray-reports/history', authenticate, requireOwnerOrManager, async
     res.json(stripTestRecords(list, req));
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// מחיקת דוח ריסוסים — owner בלבד, כי היא מוחקת גם טיפולים שיובאו ממנו.
+// הטיפולים שסומנו ידנית "בוצע" נשארים (ר' deleteSprayReport).
+app.delete('/api/spray-reports/:id', authenticate, requireOwner, async (req, res) => {
+  try {
+    const result = await deleteSprayReport(req.params.id);
+    onSprayImported();
+    res.json(result);
+  } catch (e) {
+    console.error(`[api] DELETE /api/spray-reports/${req.params.id}: ${e.message}`);
+    sendApiError(res, e);
   }
 });
 
