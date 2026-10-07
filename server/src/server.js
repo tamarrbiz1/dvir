@@ -1199,6 +1199,56 @@ app.delete('/api/:table/:id', authorizeWrite, async (req, res) => {
   }
 });
 
+// ============================================================
+// שובר-מעגל אחרון לכל שגיאה ולכל נתיב-API לא מוכר (לילה 3, 7.10.2026 —
+// בדיקת עמידות). הבלוק הזה חייב להיות **אחרי כל הראוטים**: מטפל-שגיאות
+// ב-Express נבחר לפי סדר ההרשמה, ולכן המטפל שרשום בראש הקובץ (JSON לא
+// תקין) לא תופס שגיאות שנזרקות בראוטים/ב-multer שמוגדרים אחריו — הן
+// נפלו עד כה למטפל ברירת-המחדל של Express שמחזיר **HTML**.
+//
+// למה זה חשוב: כל קריאות הלקוח עוברות ב-serverErrorMessage (App.jsx)
+// שעושה `res.json()` ונכשל בשקט על HTML. אומת בפועל מול השרת:
+//   • גוף JSON מעל 100kb        → HTML 413  → המשתמש ראה טוסט "שגיאה" חשוף
+//   • קובץ העלאה מעל 15MB       → HTML 500  → "תקלה בתקשורת עם השרת"
+//     (במקום "הקובץ גדול מדי") — התרחיש הסביר ביותר בפועל: סריקת PDF
+//     מהטלפון עוברת 15MB בקלות, והמשתמש חושב שהשרת שבור.
+//   • multipart פגום/קטוע       → HTML 500
+//   • נתיב /api לא מוכר         → HTML 404 "Cannot GET ..."
+// מעתה כל אלה מוחזרים כ-JSON עם הודעה בעברית, בדיוק כמו כל שאר ה-API.
+// ============================================================
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: `נתיב לא קיים: ${req.method} ${req.originalUrl.split('?')[0]}` });
+});
+
+app.use((err, req, res, _next) => {
+  // הודעת השגיאה המקורית נרשמת תמיד ללוג השרת — אבל לעולם לא מוחזרת
+  // ללקוח כמו-שהיא (היא כוללת stack ונתיבי-קבצים מוחלטים).
+  console.error(`[api] שגיאה לא-מטופלת ב-${req.method} ${req.originalUrl}: ${err?.message || err}`);
+
+  if (res.headersSent) return; // התשובה כבר יצאה (למשל 207 בהוצאה ידנית)
+
+  const code = err?.code || err?.type;
+  if (code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: 'הקובץ גדול מדי. יש להעלות קובץ עד 5MB.' });
+  }
+  if (code === 'entity.too.large' || err?.status === 413 || err?.statusCode === 413) {
+    return res.status(413).json({ error: 'הבקשה גדולה מדי. יש לקצר את התוכן ולנסות שוב.' });
+  }
+  if (code === 'LIMIT_UNEXPECTED_FILE' || code === 'LIMIT_FILE_COUNT' || code === 'LIMIT_PART_COUNT') {
+    return res.status(400).json({ error: 'שגיאה בשדות הקובץ בבקשה.' });
+  }
+  // multipart קטוע (חיבור שנקטע באמצע העלאה / גוף פגום) — busboy זורק
+  // "Unexpected end of form". זו שגיאת-קלט, לא תקלת-שרת.
+  if (/Unexpected end of form|Malformed part|Unsupported content type|Boundary not found/i.test(err?.message || '')) {
+    return res.status(400).json({ error: 'ההעלאה נקטעה או שהבקשה פגומה. יש לנסות שוב.' });
+  }
+  const status = err?.statusCode || err?.status;
+  if (status >= 400 && status < 500) {
+    return res.status(status).json({ error: err.message });
+  }
+  res.status(500).json({ error: 'תקלה בשרת. יש לנסות שוב בעוד רגע.' });
+});
+
 app.listen(PORT, () => {
   console.log(`✅ שרת Zite רץ על http://localhost:${PORT}`);
   warmUpLinkIndex();
