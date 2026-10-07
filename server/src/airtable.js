@@ -113,15 +113,50 @@ export async function getMeta() {
 // ============================================================
 // קריאת רשומות / כתיבה
 // ============================================================
+// ⚠️ 7.10.2026 (R3, עמידות): options.maxRecords ו-options.filter יחד.
+// הבעיה שתוקנה כאן: אם הקורא מעביר גם maxRecords וגם צריך לסנן את
+// התוצאות אחר-כך (stripTestRecords, סינון "הרשומות שלי" לעובד), אסור
+// להעביר את maxRecords כמו שהוא ל-Airtable — ה-SDK עוצר שם אחרי N
+// *שורות גולמיות*, ורק אחר כך הסינון מצמצם את זה ל-פחות (או אפס).
+// אומת בפועל: GET מבנים?maxRecords=1 החזיר [] כי הרשומה הגולמית
+// היחידה שהוחזרה הייתה רשומת-QA שנופלת בסינון. maxRecords חייב
+// להתפרש כ-"N תוצאות אחרי סינון" — לכן כש-filter מועבר, דוגמים
+// עמוד-עמוד (ללא maxRecords ב-select עצמו), מסננים כל שורה בזמן-אמת,
+// ועוצרים לבקש עוד עמודים ברגע שיש מספיק תוצאות שעברו את הסינון (או
+// שנגמר המקור ב-Airtable). ללא filter ההתנהגות נשארת כמו שהייתה.
 export async function fetchRecords(tableName, options = {}) {
   maybeFail('fetch', tableName);
   const base = getBase();
+  const { filter, maxRecords, ...rest } = options;
+
+  if (typeof filter !== 'function') {
+    const selectOptions = maxRecords !== undefined ? { ...rest, maxRecords } : rest;
+    const records = [];
+    await base(tableName).select(selectOptions).eachPage((page, fetchNextPage) => {
+      records.push(...page.map((r) => ({ id: r.id, ...r.fields })));
+      fetchNextPage();
+    });
+    return records;
+  }
+
   const records = [];
-  await base(tableName).select(options).eachPage((page, fetchNextPage) => {
-    records.push(...page.map((r) => ({ id: r.id, ...r.fields })));
-    fetchNextPage();
+  await new Promise((resolve, reject) => {
+    base(tableName).select(rest).eachPage(
+      (page, fetchNextPage) => {
+        for (const r of page) {
+          const rec = { id: r.id, ...r.fields };
+          if (filter(rec)) records.push(rec);
+        }
+        if (maxRecords !== undefined && records.length >= maxRecords) {
+          resolve(); // מספיק תוצאות אחרי סינון — לא מבקשים עוד עמודים
+        } else {
+          fetchNextPage();
+        }
+      },
+      (err) => (err ? reject(err) : resolve()), // עמודים נגמרו (או שגיאה)
+    );
   });
-  return records;
+  return maxRecords !== undefined ? records.slice(0, maxRecords) : records;
 }
 
 export async function createRecord(tableName, fields, { typecast = false } = {}) {

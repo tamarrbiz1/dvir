@@ -127,19 +127,24 @@ async function computedFieldNames(table) {
   }
 }
 
-function stripTestRecords(records, req, table, computed) {
-  if (!Array.isArray(records) || req?.query?.includeTest === '1') return records;
+// פרדיקט על רשומה בודדת (מופרד מ-stripTestRecords כדי שגם fetchRecords
+// (airtable.js) יוכל להשתמש בו כ-filter תוך-כדי-דגימת-עמודים — ר' R3
+// למטה: maxRecords חייב להתפרש כ-"N אחרי סינון", לא "N גולמי מ-Airtable").
+function isTestRecord(rec, table, computed) {
   if (table === 'מלאי בסיסי') {
-    return records.filter((r) => !TEST_RECORD_PATTERN.test(String(r['קטגוריה'] || '')));
+    return TEST_RECORD_PATTERN.test(String(rec['קטגוריה'] || ''));
   }
   if (computed?.size) {
-    return records.filter((r) => {
-      const own = {};
-      for (const [k, v] of Object.entries(r)) if (!computed.has(k)) own[k] = v;
-      return !TEST_RECORD_PATTERN.test(JSON.stringify(own));
-    });
+    const own = {};
+    for (const [k, v] of Object.entries(rec)) if (!computed.has(k)) own[k] = v;
+    return TEST_RECORD_PATTERN.test(JSON.stringify(own));
   }
-  return records.filter((r) => !TEST_RECORD_PATTERN.test(JSON.stringify(r)));
+  return TEST_RECORD_PATTERN.test(JSON.stringify(rec));
+}
+
+function stripTestRecords(records, req, table, computed) {
+  if (!Array.isArray(records) || req?.query?.includeTest === '1') return records;
+  return records.filter((r) => !isTestRecord(r, table, computed));
 }
 
 // מטא-נתונים — שדות של טבלה ספציפית
@@ -948,19 +953,31 @@ app.get('/api/:table', authorizeRead, async (req, res) => {
     // עובד: רק הרשומות ששייכות אליו. הערה חשובה: אי-אפשר לסנן את זה עם
     // filterByFormula ישירות על שדה קישור — ARRAYJOIN על שדה מקושר מחזיר
     // את שם הרשומה המקושרת (Primary Field), לא את מזהה ה-record שלה,
-    // כך שהשוואה למזהה תמיד נכשלת בשקט. לכן מסננים כאן ב-Node, אחרי
-    // הקריאה — לא ניתן לעקוף מהלקוח (opts.fields תמיד כולל את שדה
-    // השיוך גם אם הלקוח לא ביקש אותו, כדי שהסינון יהיה אפשרי).
+    // כך שהשוואה למזהה תמיד נכשלת בשקט. לכן מסננים כאן ב-Node (opts.fields
+    // תמיד כולל את שדה השיוך גם אם הלקוח לא ביקש אותו, כדי שהסינון יהיה
+    // אפשרי) — לא ניתן לעקוף מהלקוח.
     const ownField = ownFilterField(req.auth.role, table);
     if (ownField && opts.fields && !opts.fields.includes(ownField)) opts.fields.push(ownField);
-    let records = stripTestRecords(await fetchRecords(table, opts), req, table, await computedFieldNames(table));
-    if (ownField) {
-      records = records.filter((r) => {
-        const linked = r[ownField];
+
+    // ⚠️ 7.10.2026 (R3): כשיש ?maxRecords=N, אי-אפשר יותר לקרוא
+    // fetchRecords(opts) עם maxRecords ואז לסנן (stripTestRecords +
+    // ownField) אחרי — כי אז N הוא "N גולמי מ-Airtable", וסינון יכול
+    // לצמצם אותו ל-פחות או לאפס (אומת בפועל: מבנים?maxRecords=1 החזיר
+    // []). במקום זה בונים פרדיקט יחיד ומעבירים אותו ל-fetchRecords יחד
+    // עם maxRecords; airtable.js דוגם עמוד-עמוד ועוצר רק כשיש מספיק
+    // תוצאות *אחרי* הסינון (או שאזל המקור ב-Airtable).
+    const includeTest = req.query.includeTest === '1';
+    const computed = includeTest ? null : await computedFieldNames(table);
+    const filter = (rec) => {
+      if (!includeTest && isTestRecord(rec, table, computed)) return false;
+      if (ownField) {
+        const linked = rec[ownField];
         const ids = Array.isArray(linked) ? linked.map((x) => (x && typeof x === 'object' ? x.id : x)) : [];
-        return ids.includes(req.auth.sub);
-      });
-    }
+        if (!ids.includes(req.auth.sub)) return false;
+      }
+      return true;
+    };
+    const records = await fetchRecords(table, { ...opts, filter });
 
     // העשרה: שדות מקושרים -> אובייקטים עם שם (אלא אם raw=1)
     const payload = req.query.raw === '1' ? records : await attachLinkedNames(table, records);
