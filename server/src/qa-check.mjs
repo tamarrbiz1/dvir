@@ -2191,12 +2191,37 @@ await test('inventoryLedger: תווים מיוחדים בשם-מסמך (גרשי
   if (m.link !== '/delivery-notes?open=recSPECIAL1') throw new Error(`קישור שגוי: ${m.link}`);
 });
 
-await test('inventoryLedger: 250 שורות-הערות (היסטוריה שצברה שנה של תנועות) נפרסות נכון ובמהירות, בלי לקרוס', () => {
+// ⚠️ 7.10.2026 (לילה 3), באג אמיתי שנתפס חי (דווח ע"י סוכן-ה-UI, ר' לוג-
+// המשימה): מאז שנוסף תאריך-ISO מוביל לשורות-תנועה חדשות (todayStamp(),
+// logistics-deduction.js/inventory-deduction.js), הדיספאצ'ר הראשי
+// ב-parseInventoryLedger בדק `line.startsWith('↓')` על ה-raw line —
+// *לפני* הסרת-התאריך — ושורה שמתחילה ב-"2026-10-07 ↓..." כבר לא
+// מתחילה ב-"↓" בעצמה. התוצאה: השורה נפלה **בשלמותה** ל-freeNotes, לא
+// הופיעה ביומן בכלל (לא "תאריך לא ידוע" — נעלמה לגמרי מרשימת-התנועות).
+// זה בדיוק מה שגרם לעמודת "תאריך" להיראות שבורה בפועל. תוקן ב-
+// inventoryLedger.js: הדיספאצ'ר בודק את התו-הראשון *אחרי* stripLeadingDate.
+await test('inventoryLedger: שורה חדשה עם תאריך-ISO מוביל (הפורמט הנוכחי בפועל) מזוהה כתנועה ע"י הדיספאצ\'ר הראשי, לא נופלת ל-freeNotes (רגרסיה שנתפסה חי)', () => {
+  const line = '2026-10-07 ↓ 27 ממלאי: משטחי עץ (חשבונית #61, שבוע 20260926-20261001) — אין התאמה לתעודת המשלוח (סטייה 5.58%) · חשבונית #61 · תעודות #45, #47 [מלאי-D:חשבוניות:recxVMx3Fw5rKwY57:משטחי עץ]';
+  const { movements, freeNotes } = parseInventoryLedger(line);
+  if (freeNotes) throw new Error(`השורה נפלה ל-freeNotes במקום להיות מזוהה כתנועה: "${freeNotes}"`);
+  if (movements.length !== 1) throw new Error(`צפויה שורת-תנועה אחת, נמצאו ${movements.length}`);
+  const m = movements[0];
+  if (m.kind !== 'deduction' || m.date !== '2026-10-07') throw new Error(`תאריך/סוג שגויים: ${JSON.stringify(m)}`);
+  if (m.category !== 'משטחי עץ' || m.quantity !== 27) throw new Error(`קטגוריה/כמות שגויים: ${JSON.stringify(m)}`);
+
+  const reversalLine = '2026-10-07 ↩ ביטול הורדה של 450 · תעודות משלוח recPuhd0dotAhQAdF נמחק · 2026-10-06 [מלאי-D:תעודות משלוח:recPuhd0dotAhQAdF:כובעים]';
+  const r = parseInventoryLedger(reversalLine);
+  if (r.freeNotes) throw new Error(`שורת-ביטול עם תאריך-מוביל נפלה ל-freeNotes: "${r.freeNotes}"`);
+  if (r.movements[0]?.kind !== 'reversal' || r.movements[0]?.date !== '2026-10-07') throw new Error(`שורת-ביטול עם תאריך-מוביל לא פוענחה נכון: ${JSON.stringify(r.movements[0])}`);
+});
+
+await test('inventoryLedger: 250 שורות-הערות עם תאריך-ISO מוביל (הפורמט הנוכחי בפועל, היסטוריה שצברה שנה של תנועות) נפרסות נכון ובמהירות, בלי לקרוס', () => {
   const lines = [];
   for (let i = 0; i < 250; i++) {
+    const d = `2026-0${(i % 9) + 1}-0${(i % 8) + 1}`;
     if (i % 50 === 0) lines.push(`הערה חופשית מספר ${i}`); // כל 50 — שורה חופשית
-    else if (i % 7 === 0) lines.push(`↩ ביטול הורדה של ${i} · תעודות משלוח recBULK${i} נמחק · 2026-0${(i % 9) + 1}-01 [מלאי-D:תעודות משלוח:recBULK${i}:כובעים]`);
-    else lines.push(`↓ ${i} ממלאי: כובעים (תעודה #${i}, שבוע 2026090${(i % 9) + 1}-2026090${(i % 9) + 2} · ${i} קרטונים × 1) [מלאי-D:תעודות משלוח:recBULK${i}:כובעים]`);
+    else if (i % 7 === 0) lines.push(`${d} ↩ ביטול הורדה של ${i} · תעודות משלוח recBULK${i} נמחק · ${d} [מלאי-D:תעודות משלוח:recBULK${i}:כובעים]`);
+    else lines.push(`${d} ↓ ${i} ממלאי: כובעים (תעודה #${i}, שבוע 2026090${(i % 9) + 1}-2026090${(i % 9) + 2} · ${i} קרטונים × 1) [מלאי-D:תעודות משלוח:recBULK${i}:כובעים]`);
   }
   const t0 = Date.now();
   const { movements, freeNotes } = parseInventoryLedger(lines.join('\n'));
@@ -2384,7 +2409,14 @@ await test('cascade: שתי מחיקות מקבילות לאותו מסמך → 
 
 await test('cascade: מחיקת הוצאה-ידנית *בזמן* שהורדת-המלאי שלה עוד רצה ברקע (fire-and-forget) → המנעול מסדר בתור, מלאי חוזר במדויק בכל הקטגוריות שהושפעו', async () => {
   if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
-  if (!suppliersList[0]?.id) return 'דולג — אין ספק קיים ליצירת הוצאה-ידנית';
+  // ⚠️ נבדקת חי מול הטבלה כאן (לא suppliersList המוקדם שנקרא בתחילת
+  // הקובץ) — אומת בפועל שבריצה אחת suppliersList[0] יצא falsy למרות
+  // שהטבלה האמיתית מכילה ספקים (תועד בלוג-המשימה; הסיבה לא אותרה
+  // סופית, אולי תזמון/מטמון-קריאה בעלייה הקרה של שרת-הבדיקה — קריאה
+  // טרייה כאן עמידה בפני זה בכל מקרה).
+  const freshSuppliers = await api('GET', `${enc('ספקים')}?raw=1&maxRecords=3`);
+  const supplierId = freshSuppliers[0]?.id;
+  if (!supplierId) return 'דולג — אין ספק קיים ליצירת הוצאה-ידנית';
 
   const snapshot = async () => {
     const items = await api('GET', `${enc('מלאי בסיסי')}?raw=1`);
@@ -2397,7 +2429,7 @@ await test('cascade: מחיקת הוצאה-ידנית *בזמן* שהורדת-ה
   const fileBuf = await readFile(REAL_FIXTURE_PATH);
   const fd = new FormData();
   fd.append('file', new Blob([fileBuf], { type: 'application/pdf' }), REAL_FIXTURE_NAME);
-  fd.append('supplierId', suppliersList[0].id);
+  fd.append('supplierId', supplierId);
   fd.append('date', today);
   fd.append('total', '1');
   fd.append('category', MARK);
@@ -2441,12 +2473,19 @@ await test('cascade: מחיקת הוצאה-ידנית *בזמן* שהורדת-ה
 
 await test('cascade: כשל-Airtable אמיתי באמצע ביטול-ההורדה (itemId מומצא, מדומה דרך מצב-[מלאי-AI] מפוברק) → ה-DELETE חסום (500), ההוצאה לא נמחקת, אף פריט-מלאי אמיתי לא נוגע', async () => {
   if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
-  if (!suppliersList[0]?.id) return 'דולג — אין ספק קיים ליצירת הוצאה-ידנית';
+  // ⚠️ נבדקת חי מול הטבלה כאן (לא suppliersList המוקדם שנקרא בתחילת
+  // הקובץ) — אומת בפועל שבריצה אחת suppliersList[0] יצא falsy למרות
+  // שהטבלה האמיתית מכילה ספקים (תועד בלוג-המשימה; הסיבה לא אותרה
+  // סופית, אולי תזמון/מטמון-קריאה בעלייה הקרה של שרת-הבדיקה — קריאה
+  // טרייה כאן עמידה בפני זה בכל מקרה).
+  const freshSuppliers = await api('GET', `${enc('ספקים')}?raw=1&maxRecords=3`);
+  const supplierId = freshSuppliers[0]?.id;
+  if (!supplierId) return 'דולג — אין ספק קיים ליצירת הוצאה-ידנית';
 
   const fileBuf = await readFile(REAL_FIXTURE_PATH);
   const fd = new FormData();
   fd.append('file', new Blob([fileBuf], { type: 'application/pdf' }), REAL_FIXTURE_NAME);
-  fd.append('supplierId', suppliersList[0].id);
+  fd.append('supplierId', supplierId);
   fd.append('date', today);
   fd.append('total', '1');
   fd.append('category', MARK);

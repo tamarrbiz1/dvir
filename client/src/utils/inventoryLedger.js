@@ -187,9 +187,21 @@ export function parseInventoryLedger(notes) {
   const movements = [];
   const freeNotes = [];
   for (const line of lines) {
-    if (line.startsWith('↓')) movements.push(parseDeductionLine(line));
-    else if (line.startsWith('↩')) movements.push(parseReversalLine(line));
-    else if (line.startsWith('⚠')) movements.push(parseWarningOnlyLine(line));
+    // ⚠️ 7.10.2026 (לילה 3), באג אמיתי שנתפס (ר' לוג-המשימה): מאז
+    // שנוספה חתימת-תאריך-ISO מובילה לשורות-תנועה חדשות (todayStamp(),
+    // ר' logistics-deduction.js/inventory-deduction.js), השורה כבר לא
+    // *מתחילה* ב-"↓"/"↩"/"⚠" — היא מתחילה בספרת-השנה. הבדיקה הזו הייתה
+    // ממשיכה להסתכל רק על התו הראשון של ה-raw line, לפני כל הסרת-תאריך,
+    // כך ששורה חדשה כזו נפלה **בשלמותה** ל-freeNotes (לא נספרה כתנועה
+    // בכלל, לא רק "תאריך לא ידוע") — אומת: parseInventoryLedger על שורת
+    // "2026-10-07 ↓ 27 ממלאי: ..." החזירה movements:[] ריק לגמרי. בודקים
+    // לכן את התו הראשון של *אחרי* הסרת-תאריך (stripLeadingDate), לא של
+    // ה-raw line; מעבירים את ה-line המקורי (עם התאריך) הלאה לפונקציות-
+    // הפרסור הספציפיות — הן כבר מסירות את התאריך בעצמן.
+    const { rest } = stripLeadingDate(line);
+    if (rest.startsWith('↓')) movements.push(parseDeductionLine(line));
+    else if (rest.startsWith('↩')) movements.push(parseReversalLine(line));
+    else if (rest.startsWith('⚠')) movements.push(parseWarningOnlyLine(line));
     else freeNotes.push(line);
   }
   return { movements: movements.reverse(), freeNotes: freeNotes.join('\n') }; // חדש-ביותר קודם
