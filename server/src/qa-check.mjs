@@ -22,12 +22,12 @@ import { LOGIN_CODES_TABLE, canReadTable, canWriteTable } from './auth.js';
 import { analyzeExpenseDocument } from './document-analysis.js';
 import { matchLinesToInventory, categoryOfDescription, normalize } from './inventory-matching.js';
 import { readState } from './inventory-deduction.js';
-import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD, planLogisticsReversal } from './logistics-deduction.js';
+import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD, planLogisticsReversal, reverseLogisticsDeduction } from './logistics-deduction.js';
 import { fixFilenameEncoding } from './filename-utils.js';
 import { weekCodeFromDate, WEEK_CODE_RE } from './weekly-sync.js';
 import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggestions, summarizeSuggestions, AUTO_THRESHOLD } from './supplier-linking.js';
 import { parseSummary, parseDateRange, parseDosage, markerOf } from './spray-report-import.js';
-import { cascadeDocumentDelete } from './document-cascade.js';
+import { cascadeDocumentDelete, inventoryReverseFailures, weekRecordHasOwnData } from './document-cascade.js';
 import { parseInventoryLedger, resolveExpenseLinks, documentLink } from '../../client/src/utils/inventoryLedger.js';
 import { stripInventoryAiMarker, withPreservedInventoryTags } from '../../client/src/utils/inventoryAi.js';
 import { yearFromWeekValue } from '../../client/src/utils/weekYear.js';
@@ -2050,7 +2050,61 @@ if (process.env.RUN_SCHEMA_TESTS !== '0') { // יוצרת אפשרות-select ח
     cleanup.push({ table: 'מלאי בסיסי', id: recB.id });
     return `שתי רשומות-QA נוצרו בקטגוריית-QA "${MARK}" בלי חסימה הדדית, כצפוי — להסרה ידנית של האפשרות ב-Airtable`;
   });
+
+  // ⚠️ 7.10.2026 (לילה 3) — דרישת-הבדיקה המפורשת: typecast=1 (שיוצר
+  // אפשרות-select חדשה-לצמיתות) ביחד עם בדיקת-הייחודיות של סעיף Q.
+  // typecast חייב להוסיף את האפשרות החדשה **בלי לעקוף** את חסימת-הכפילות —
+  // בודקים: יצירה ראשונה עם typecast=1 לקטגוריה חדשה-לגמרי → 201 (והאפשרות
+  // נוצרת), ואז יצירה שנייה לאותה קטגוריה בדיוק (גם עם typecast=1 — האפשרות
+  // כבר קיימת אז typecast לא אמור לשנות כלום) → 409, בלי רשומה שנייה.
+  await test('Q + typecast=1: יצירת קטגוריה חדשה עם typecast (בוחרת אפשרות חדשה) → 201, ואז כפילות לאותה קטגוריה (גם עם typecast=1) → 409', async () => {
+    const catMark = `${MARK}-TC`;
+    const recA = await api('POST', `${enc('מלאי בסיסי')}?typecast=1`, { 'קטגוריה': catMark, 'הערות': MARK });
+    cleanup.push({ table: 'מלאי בסיסי', id: recA.id });
+    if (!recA?.id) throw new Error('היצירה הראשונה (typecast=1) לא החזירה רשומה');
+    try {
+      await api('POST', `${enc('מלאי בסיסי')}?typecast=1`, { 'קטגוריה': catMark, 'הערות': MARK });
+    } catch (e) {
+      if (!String(e.message).startsWith('409')) throw new Error(`קוד-שגיאה לא צפוי: ${e.message}`);
+      const leaked = (await api('GET', `${enc('מלאי בסיסי')}?raw=1&includeTest=1`))
+        .filter((i) => i['קטגוריה'] === catMark);
+      if (leaked.length !== 1) throw new Error(`צפויה רשומה אחת בקטגוריה "${catMark}", נמצאו ${leaked.length}`);
+      return `typecast=1 יצר אפשרות חדשה (201) ולא עקף את חסימת-הכפילות בפעם השנייה (409, גם עם typecast=1) — להסרה ידנית של האפשרות "${catMark}" ב-Airtable`;
+    }
+    throw new Error('יצירה כפולה עם typecast=1 עברה בהצלחה — אסור');
+  });
+
 }
+
+// ⚠️ 7.10.2026 (לילה 3), מרוץ שתוקן (ר' withInventoryLock+INVENTORY_CATEGORY_LOCK
+// ב-server.js): findDuplicateInventoryCategory היא read-then-write
+// (fetchRecords מלא) — בלי המנעול, כמה בקשות-POST מקבילות לאותה קטגוריה
+// *פנויה* יכלו כולן "לא למצוא כפילות" ולהצליח, ויוצרות כמה רשומות באותה
+// קטגוריה. יורים 6 בקשות-יצירה מקבילות לאותה קטגוריה — קטגוריה אמיתית
+// שכבר קיימת ברשימת האפשרויות אבל פנויה כרגע (freeInventoryCategory,
+// כמו בדיקת "יצירה בקטגוריה פנויה" למעלה) כדי שלא יידרש typecast=1 ולא
+// תיווצר אפשרות-select חדשה-לצמיתות — ומוודאים: בדיוק הצלחה אחת (201),
+// כל השאר 409, ובפועל נוצרה רשומה אחת בלבד בטבלה. רץ תמיד (לא מגודר
+// RUN_SCHEMA_TESTS — לא יוצר שום שריד).
+await test('Q: מרוץ — 6 יצירות מקבילות לאותה קטגוריה-פנויה → הצלחה אחת בלבד (201), השאר 409, רשומה אחת בפועל', async () => {
+  const raceCat = await freeInventoryCategory();
+  if (!raceCat) return 'דולג — אין קטגוריה פנויה ברשימת האפשרויות כרגע';
+  const attempts = await Promise.allSettled(
+    Array.from({ length: 6 }, () => api('POST', enc('מלאי בסיסי'), { 'קטגוריה': raceCat, 'הערות': MARK }))
+  );
+  const succeeded = attempts.filter((a) => a.status === 'fulfilled');
+  succeeded.forEach((a) => a.value?.id && cleanup.push({ table: 'מלאי בסיסי', id: a.value.id }));
+  const failed = attempts.filter((a) => a.status === 'rejected');
+  if (succeeded.length !== 1) {
+    throw new Error(`צפויה הצלחה אחת בדיוק, נמצאו ${succeeded.length} (מתוך 6) — המרוץ חזר`);
+  }
+  if (failed.some((a) => !String(a.reason?.message || '').startsWith('409'))) {
+    throw new Error(`בקשה שנכשלה לא עם 409: ${failed.map((a) => a.reason?.message).join(' | ')}`);
+  }
+  const actual = (await api('GET', `${enc('מלאי בסיסי')}?raw=1&includeTest=1`)).filter((i) => i['קטגוריה'] === raceCat);
+  if (actual.length !== 1) throw new Error(`נוצרו בפועל ${actual.length} רשומות בקטגוריה "${raceCat}" (צפוי 1 — המנעול לא עצר את המרוץ)`);
+  return `1/6 הצליחו (201), 5/6 נדחו (409), רשומה אחת בפועל בקטגוריה-פנויה "${raceCat}"`;
+});
 
 // ============================================================
 // תוספת 2026-10-07 — יומן-ירידות למלאי + מחיקה מדורגת (סעיף P)
@@ -2087,6 +2141,51 @@ await test('inventoryLedger: הערה חופשית (בלי ↓/↩/⚠) נשאר
   const { movements, freeNotes } = parseInventoryLedger('הערה חופשית של תמר\n↓ 10 · הוצאה #1 · ספק · 2026-01-01');
   if (movements.length !== 1) throw new Error('צפויה שורת-תנועה אחת בלבד');
   if (freeNotes !== 'הערה חופשית של תמר') throw new Error(`freeNotes שגוי: "${freeNotes}"`);
+});
+
+await test('inventoryLedger: פריט בלי הערות בכלל (undefined/null/ריק) → רשימות ריקות, בלי לזרוק', () => {
+  for (const v of [undefined, null, '']) {
+    const { movements, freeNotes } = parseInventoryLedger(v);
+    if (movements.length !== 0 || freeNotes !== '') throw new Error(`צפוי ריק לגמרי עבור ${JSON.stringify(v)}, קיבלנו movements=${movements.length} freeNotes="${freeNotes}"`);
+  }
+});
+
+await test('inventoryLedger: שורת-פורמט-ישן (⚠ דורש אישור, בלי תגית [מלאי-D:...] בכלל — לפני N1) מזוהה כ-"warning", לא נופלת ל-unknown', () => {
+  const line = '⚠ דורש אישור: 0 משטחי עץ (חשבונית #61, שבוע 20260920-20260925) — הנתון עוד לא מולא';
+  const { movements } = parseInventoryLedger(line);
+  const m = movements[0];
+  if (m.kind !== 'warning') throw new Error(`צפוי kind='warning' (פורמט-ישן בלי תגית), קיבלנו: ${JSON.stringify(m)}`);
+  if (m.sourceTable || m.sourceId || m.link) throw new Error('בלי תגית — אין sourceTable/sourceId/link לפענח, אלה חייבים להיות null');
+  if (m.category !== 'משטחי עץ' || m.quantity !== 0) throw new Error(`קטגוריה/כמות שגויים: ${JSON.stringify(m)}`);
+});
+
+await test('inventoryLedger: תווים מיוחדים בשם-מסמך (גרשיים, סוגריים מקוננים, "&") בתוך שורת-הורדה לוגיסטית נשמרים במלואם ב-sourceLabel', () => {
+  const line = '↓ 12 ממלאי: קרטונים (תעודה #17 - ח"כ "מיוחד" (עם סוגריים) & תו&תו, שבוע 20261003-20261008 · 12 קרטונים × 1) [מלאי-D:תעודות משלוח:recSPECIAL1:קרטונים]';
+  const { movements } = parseInventoryLedger(line);
+  const m = movements[0];
+  if (m.kind !== 'deduction') throw new Error(`לא פוענח כהורדה-לוגיסטית בכלל: ${JSON.stringify(m)}`);
+  if (m.sourceLabel !== 'תעודה #17 - ח"כ "מיוחד" (עם סוגריים) & תו&תו') throw new Error(`sourceLabel נחתך/שובש: "${m.sourceLabel}"`);
+  if (m.category !== 'קרטונים' || m.quantity !== 12) throw new Error(`קטגוריה/כמות שגויים: ${JSON.stringify(m)}`);
+  if (m.derivedFrom !== '12 קרטונים × 1') throw new Error(`derivedFrom שגוי: "${m.derivedFrom}"`);
+  if (m.link !== '/delivery-notes?open=recSPECIAL1') throw new Error(`קישור שגוי: ${m.link}`);
+});
+
+await test('inventoryLedger: 250 שורות-הערות (היסטוריה שצברה שנה של תנועות) נפרסות נכון ובמהירות, בלי לקרוס', () => {
+  const lines = [];
+  for (let i = 0; i < 250; i++) {
+    if (i % 50 === 0) lines.push(`הערה חופשית מספר ${i}`); // כל 50 — שורה חופשית
+    else if (i % 7 === 0) lines.push(`↩ ביטול הורדה של ${i} · תעודות משלוח recBULK${i} נמחק · 2026-0${(i % 9) + 1}-01 [מלאי-D:תעודות משלוח:recBULK${i}:כובעים]`);
+    else lines.push(`↓ ${i} ממלאי: כובעים (תעודה #${i}, שבוע 2026090${(i % 9) + 1}-2026090${(i % 9) + 2} · ${i} קרטונים × 1) [מלאי-D:תעודות משלוח:recBULK${i}:כובעים]`);
+  }
+  const t0 = Date.now();
+  const { movements, freeNotes } = parseInventoryLedger(lines.join('\n'));
+  const ms = Date.now() - t0;
+  const expectedFree = Math.ceil(250 / 50); // i=0,50,100,150,200 → 5 שורות חופשיות
+  if (freeNotes.split('\n').length !== expectedFree) throw new Error(`צפויות ${expectedFree} שורות freeNotes, נמצאו ${freeNotes.split('\n').length}`);
+  if (movements.length !== 250 - expectedFree) throw new Error(`צפויות ${250 - expectedFree} שורות-תנועה, נמצאו ${movements.length}`);
+  if (movements.some((m) => m.kind === 'unknown')) throw new Error('נמצאה שורה שלא פוענחה (unknown) בתוך 250 השורות — כולן אמורות להיות בפורמט תקין');
+  if (ms > 200) throw new Error(`פענוח 250 שורות לקח ${ms}ms — אמור להיות כמעט-מיידי`);
+  return `250 שורות: ${movements.length} תנועות + ${expectedFree} חופשיות, ב-${ms}ms`;
 });
 
 await test('cascade: dryRun על מסמך בלי שום השפעה על מלאי מחזיר inventory ריק, בלי לכתוב כלום', async () => {
@@ -2171,6 +2270,201 @@ await test('cascade: מחיקה אמיתית של תעודה-QA שהורידה �
   }
   if (mismatches.length) throw new Error(`מלאי לא חזר במדויק בכל הקטגוריות (כולל אפשרות-כפילות): ${mismatches.join(' | ')}`);
   return `מלאי חזר במדויק בכל הקטגוריות (${Object.keys(beforeSnap).length}) אחרי מחיקה-מדורגת (cascade) — כולל בדיקת-כפילות`;
+});
+
+// ============================================================
+// תוספת 2026-10-07 (לילה 3, המשך) — בדיקות-יחידה טהורות על הפונקציות
+// שה-WIP הוסיף ל-document-cascade.js (בלי Airtable בכלל, רצות תמיד).
+// ============================================================
+await test('document-cascade (טהור): inventoryReverseFailures מזהה שורה שירדה ולא חזרה, גם בלי reverseError מפורש, ומתעלמת משורות שלא ירדו/שכן חזרו', () => {
+  const state = {
+    results: [
+      { deducted: true, reversed: true, quantity: 5, category: 'קרטונים', itemId: 'recA' }, // הצליח — לא רלוונטי
+      { deducted: true, reversed: false, quantity: 3, category: 'כובעים', itemId: 'recB', reverseError: 'כשל רשת' }, // נכשל עם שגיאה מתועדת
+      { deducted: true, reversed: false, quantity: 7, itemId: 'recC' }, // נכשל בלי reverseError בכלל
+      { deducted: false, quantity: 2, itemId: 'recD' }, // לא ירד בכלל — לא רלוונטי
+    ],
+  };
+  const failures = inventoryReverseFailures(state);
+  if (failures.length !== 2) throw new Error(`צפויות 2 שורות-כשל, נמצאו ${failures.length}: ${JSON.stringify(failures)}`);
+  if (!failures.some((f) => f.includes('כשל רשת'))) throw new Error('הודעת-השגיאה המקורית (reverseError) לא נכללה בתיאור');
+  if (!failures.some((f) => f.includes('recC'))) throw new Error('שורה בלי reverseError כלל (נופלת-ל-itemId בתיאור) לא דווחה');
+  if (inventoryReverseFailures(null).length !== 0) throw new Error('state=null אמור להחזיר רשימה ריקה, לא לזרוק');
+  if (inventoryReverseFailures({}).length !== 0) throw new Error('state בלי results בכלל אמור להחזיר רשימה ריקה');
+});
+
+await test('document-cascade (טהור): weekRecordHasOwnData מבדילה בין שבוע ריק-אמיתי (ניתן למחוק) לשבוע עם נתוני-קטיף/הכנסה משל עצמו (אסור למחוק)', () => {
+  const emptyWeek = { id: 'recW1', 'קוד שבוע': '20261003-20261008', 'חשבוניות': [], 'תעודות משלוח': [], 'תאריך התחלה': '2026-10-03', 'תאריך סיום': '2026-10-08' };
+  if (weekRecordHasOwnData(emptyWeek)) throw new Error('שבוע ריק-לגמרי (רק שדות-מסגרת) סומן כ"יש בו נתונים" — ימנע מחיקה שצריכה לקרות בפועל');
+  const withPicking = { ...emptyWeek, 'JSON עבודות קטיף לפי ימים': '{"א":5}' };
+  if (!weekRecordHasOwnData(withPicking)) throw new Error('שבוע עם נתוני-קטיף לא זוהה כ"יש בו נתונים" — מחיקה כזו הייתה מאבדת נתון שלא ניתן לשחזור');
+  const withRollupOnly = { ...emptyWeek, 'תפוקה בפועל Rollup': 999 }; // שדה rollup/lookup, גם עם ערך — לא "נתון עצמאי"
+  if (weekRecordHasOwnData(withRollupOnly)) throw new Error('שדה rollup/lookup (שמתרוקן מעצמו כשהקישור מנותק) נחשב בטעות כ"נתון עצמאי" שחוסם מחיקה');
+  if (weekRecordHasOwnData(null)) throw new Error('week=null אמור להחזיר false, לא לזרוק');
+});
+
+// ============================================================
+// תוספת 2026-10-07 (לילה 3, המשך) — "כשל-Airtable באמצע ה-cascade": בודקים
+// שכשל-עדכון אמיתי (לא תיאורטי — קריאת-API אמיתית ל-Airtable שנכשלת, לא
+// mock) בפריט-מלאי בודד מדווח כ-failure ולא "נבלע בשקט" (ר' ההערה המפורטת
+// ב-reverseLogisticsDeduction). itemId מומצא-לגמרי (recQAGHOST...) — לא
+// נוגע בשום רשומת-מלאי אמיתית; ה"כשל" הוא תגובת-404 אמיתית מ-Airtable
+// עצמה על מזהה שלא קיים, לא סימולציה. רץ תמיד (לא גודר RUN_UPLOAD_TESTS —
+// לא יוצר/נוגע בשום רשומה בטבלה עם אוטומציית Make).
+// ============================================================
+await test('ביטול הורדה-לוגיסטית: כשל-Airtable אמיתי בעדכון פריט בודד (itemId מומצא) מדווח ב-failures, לא זורק, לא "מצליח בשקט"', async () => {
+  const fakeId = 'recQAGHOST000FAKE';
+  const sourceId = 'recQASRC000FAKE01';
+  const tag = `[מלאי-D:תעודות משלוח:${sourceId}:קרטונים]`;
+  const items = [{ id: fakeId, 'הערות': `↓ 9 ממלאי: קרטונים (תעודה #1, שבוע 20260101-20260106) ${tag}`, 'מלאי נוכחי': 50 }];
+  const { changedAny, failures } = await reverseLogisticsDeduction('תעודות משלוח', sourceId, { items });
+  if (changedAny) throw new Error('changedAny=true — ה"עדכון" נחשב כהצלחה, אבל הפריט לא קיים ב-Airtable בכלל');
+  if (!failures.length) throw new Error('הכשל לא דווח ב-failures — ה-cascade לא היה יודע לחסום את המחיקה ומידע-ההחזרה היה אובד');
+  return `כשל-עדכון דווח כראוי (לא חסם פריטים אחרים, לא נזרק): ${failures[0].slice(0, 90)}`;
+});
+
+// ============================================================
+// תוספת 2026-10-07 (לילה 3, המשך) — תרחישים חיים נוספים (RUN_UPLOAD_TESTS):
+// שתי מחיקות מקבילות לאותו מסמך, cascade-preview על מזהה שלא קיים,
+// מחיקה-בזמן-שהורדת-רקע-עוד-רצה (fire-and-forget), וחסימת-מחיקה אמיתית
+// כשביטול-ההורדה נכשל (כשל-Airtable-באמצע, עם מידע מפוברק שלא נוגע בשום
+// פריט אמיתי). שלושתן גודרות מאחורי RUN_UPLOAD_TESTS: כל אחת יוצרת רשומה
+// אחת בטבלה עם אוטומציית-Make, עם קובץ אמיתי מצורף מהרגע הראשון.
+// ============================================================
+await test('cascade: שתי מחיקות מקבילות לאותו מסמך → הצלחה אחת בדיוק (השנייה 404 "כבר נמחק"); cascade-preview על אותו מזהה אחרי המחיקה → 404; שבוע-QA שמעולם לא סונכרן → week=null (מכסה גם "רשומת-שבוע כבר הוסרה")', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
+  // בלי "כמות קרטונים" בכלל — pending, בלי שום השפעה אמיתית על מלאי
+  const rec = await createWithFile('תעודות משלוח', 'תעודת משלוח', { 'קוד שבוע': MARK });
+
+  const preview = await api('GET', `documents/${enc('תעודות משלוח')}/${rec.id}/cascade-preview`);
+  if (preview.week) throw new Error(`לא אמור להיות שבוע תואם לקוד-QA ייחודי לפני כל מחיקה: ${JSON.stringify(preview.week)}`);
+  if (preview.inventory?.length) throw new Error('מסמך pending בלי "כמות קרטונים" לא אמור להראות שום החזר-מלאי ב-preview');
+
+  const [r1, r2] = await Promise.allSettled([del('תעודות משלוח', rec.id), del('תעודות משלוח', rec.id)]);
+  const idx = cleanup.findIndex((c) => c.table === 'תעודות משלוח' && c.id === rec.id);
+  if (idx >= 0) cleanup.splice(idx, 1); // כבר נמחק (לפחות פעם אחת) בכוונה, לא "נכשל"
+
+  const succeeded = [r1, r2].filter((r) => r.status === 'fulfilled');
+  const failed = [r1, r2].filter((r) => r.status === 'rejected');
+  if (succeeded.length !== 1) throw new Error(`צפויה הצלחה אחת בדיוק משתי מחיקות מקבילות לאותו מסמך, נמצאו ${succeeded.length}/2 — המנעול לא עצר את המרוץ`);
+  if (failed.length !== 1 || !String(failed[0].reason?.message || '').startsWith('404')) {
+    throw new Error(`המחיקה השנייה (המקבילה) אמורה לקבל 404 ("כבר נמחק, לא בוצעה פעולת-מלאי"), קיבלנו: ${failed[0]?.reason?.message}`);
+  }
+  if (succeeded[0].value?.cascade?.week) throw new Error('cascade.week אמור להיות null — אין רשומת-שבוע תואמת לקוד-QA ייחודי שמעולם לא סונכרן (מכסה גם מקרה שרשומת-השבוע כבר הוסרה)');
+
+  try {
+    await api('GET', `documents/${enc('תעודות משלוח')}/${rec.id}/cascade-preview`);
+    throw new Error('cascade-preview על מסמך שכבר נמחק לגמרי הצליח — אסור, אמור להיות 404');
+  } catch (e) {
+    if (!String(e.message).startsWith('404')) throw e;
+  }
+  return 'הצלחה אחת מתוך שתי מחיקות מקבילות (השנייה 404), week=null כצפוי, cascade-preview אחרי-מחיקה → 404';
+});
+
+await test('cascade: מחיקת הוצאה-ידנית *בזמן* שהורדת-המלאי שלה עוד רצה ברקע (fire-and-forget) → המנעול מסדר בתור, מלאי חוזר במדויק בכל הקטגוריות שהושפעו', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
+  if (!suppliersList[0]?.id) return 'דולג — אין ספק קיים ליצירת הוצאה-ידנית';
+
+  const snapshot = async () => {
+    const items = await api('GET', `${enc('מלאי בסיסי')}?raw=1`);
+    const m = {};
+    for (const it of items) { const cat = it['קטגוריה']; if (cat) (m[cat] ||= []).push({ id: it.id, stock: Number(it['מלאי נוכחי']) || 0 }); }
+    return m;
+  };
+  const beforeSnap = await snapshot();
+
+  const fileBuf = await readFile(REAL_FIXTURE_PATH);
+  const fd = new FormData();
+  fd.append('file', new Blob([fileBuf], { type: 'application/pdf' }), REAL_FIXTURE_NAME);
+  fd.append('supplierId', suppliersList[0].id);
+  fd.append('date', today);
+  fd.append('total', '1');
+  fd.append('category', MARK);
+  // שתי קטגוריות אמיתיות (קרטונים/כובעים) — מספיק עבודה ברקע (כמה כתיבות
+  // סדרתיות ל-Airtable) כדי שה-DELETE שיורה מיד אחרי התגובה יגיע כשההורדה
+  // עדיין רצה בפועל, לא רק תיאורטית.
+  fd.append('lines', JSON.stringify([
+    { description: 'קרטונים', quantity: 1 },
+    { description: 'כובעים', quantity: 1 },
+  ]));
+  const created = await api('POST', 'expenses/manual', fd, true);
+  if (!created?.id) throw new Error('לא נוצרה הוצאה-ידנית');
+  // לא דוחפים ל-cleanup בכוונה — הבדיקה עצמה מוחקת את הרשומה מיד למטה.
+
+  // בלי להמתין בכלל — ה-DELETE יורה ברגע שהתגובה חזרה, בדיוק כשההורדה-ברקע
+  // (fire-and-forget, התחילה באותה בקשה) עשויה עדיין לרוץ. המנעול
+  // (withInventoryLock, אותו מפתח expense:<id>) אמור לסדר בתור, לא לתת מרוץ.
+  const delResult = await del('הוצאות', created.id);
+  if (!delResult?.ok) throw new Error('המחיקה לא הצליחה');
+
+  // פולינג קצר: גם אחרי שהמנעול הבטיח סדר-פעולות, עדכוני-Airtable אחרי
+  // כתיבה מקבילה-כבדה לא תמיד נקראים-חזרה מיידית (ר' דפוס זהה בבדיקת ה-
+  // cascade האמיתית למעלה).
+  let mismatches = [];
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const afterSnap = await snapshot();
+    mismatches = [];
+    for (const cat of Object.keys(beforeSnap)) {
+      const b = beforeSnap[cat], a = afterSnap[cat] || [];
+      for (const item of b) {
+        const match = a.find((x) => x.id === item.id);
+        if (!match || match.stock !== item.stock) mismatches.push(`${cat} (${item.id}): לפני=${item.stock}, אחרי=${match?.stock ?? 'נעלם'}`);
+      }
+    }
+    if (!mismatches.length) break;
+    await new Promise((r) => setTimeout(r, 700));
+  }
+  if (mismatches.length) throw new Error(`מלאי לא חזר במדויק אחרי מחיקה-בזמן-ריצת-רקע: ${mismatches.join(' | ')}`);
+  return 'מחיקה בזמן שהורדת-הרקע עוד רצה (fire-and-forget) הסתדרה בתור (מנעול) — מלאי חזר במדויק בכל הקטגוריות שהושפעו';
+});
+
+await test('cascade: כשל-Airtable אמיתי באמצע ביטול-ההורדה (itemId מומצא, מדומה דרך מצב-[מלאי-AI] מפוברק) → ה-DELETE חסום (500), ההוצאה לא נמחקת, אף פריט-מלאי אמיתי לא נוגע', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
+  if (!suppliersList[0]?.id) return 'דולג — אין ספק קיים ליצירת הוצאה-ידנית';
+
+  const fileBuf = await readFile(REAL_FIXTURE_PATH);
+  const fd = new FormData();
+  fd.append('file', new Blob([fileBuf], { type: 'application/pdf' }), REAL_FIXTURE_NAME);
+  fd.append('supplierId', suppliersList[0].id);
+  fd.append('date', today);
+  fd.append('total', '1');
+  fd.append('category', MARK);
+  fd.append('lines', JSON.stringify([])); // בלי שורות מלאי בכלל — ה-fire-and-forget לא נוגע בשום פריט אמיתי
+  const created = await api('POST', 'expenses/manual', fd, true);
+  if (!created?.id) throw new Error('לא נוצרה הוצאה-ידנית');
+  cleanup.push({ table: 'הוצאות', id: created.id });
+
+  // ממתינים שה-fire-and-forget (בלי שורות — מסתיים כמעט-מיידית, 'done' ריק)
+  // יסיים לכתוב את מצבו-שלו, כדי שהפיברוק למטה לא יתנגש/יידרס על-ידו.
+  for (let i = 0; i < 6; i++) {
+    const cur = await api('GET', `${enc('הוצאות')}/${created.id}`);
+    if (String(cur['הערות'] || '').includes('[מלאי-AI]')) break;
+    await new Promise((r) => setTimeout(r, 400));
+  }
+
+  // מפברקים מצב [מלאי-AI] שמצביע על itemId שלא קיים בכלל ב-Airtable —
+  // אף פריט-מלאי אמיתי לא נוגע כאן בשום שלב (לא "הורד" באמת, לא "מבוטל"
+  // באמת); זו סימולציה-ישירה של "כשל-Airtable באמצע ה-cascade", באותה
+  // שיטה כמו בדיקת reverseLogisticsDeduction למעלה — בצד ההוצאות הפעם.
+  const fakeState = {
+    status: 'done', analyzedAt: new Date().toISOString(),
+    results: [{ description: 'פריט-רפאים', quantity: 4, category: 'QA-GHOST', itemId: 'recQAGHOSTITEM001', deducted: true }],
+  };
+  await patch('הוצאות', created.id, { 'הערות': `[מלאי-AI]${JSON.stringify(fakeState)}` });
+
+  try {
+    await del('הוצאות', created.id);
+    throw new Error('המחיקה הצליחה — אסור, הייתה אמורה להיחסם (500) כי ביטול-ההורדה נכשל (itemId לא קיים)');
+  } catch (e) {
+    if (!String(e.message).startsWith('500')) throw e;
+  }
+  const stillThere = await api('GET', `${enc('הוצאות')}/${created.id}`);
+  if (!stillThere?.id) throw new Error('ההוצאה נעלמה בכל זאת למרות שהמחיקה הייתה אמורה להיחסם — אובדן-מעקב');
+
+  // מנקים את המצב המפוברק כדי שהניקוי הסופי של הריצה יצליח למחוק את
+  // הרשומה בלי להיתקל שוב בניסיון-ביטול שיכשל (אף פריט אמיתי לא נגענו בו).
+  await patch('הוצאות', created.id, { 'הערות': '' });
+  return 'מחיקה נחסמה (500) כשביטול-ההורדה נכשל באמצע (itemId מומצא), ההוצאה נשארה קיימת, נוקתה בחזרה למצב-נקי';
 });
 
 // ============ 4. ניקוי מלא ============
