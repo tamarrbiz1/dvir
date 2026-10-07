@@ -30,7 +30,7 @@ import { parseSummary, parseDateRange, parseDosage, markerOf, isTestRecord as is
 import { cascadeDocumentDelete } from './document-cascade.js';
 import { parseInventoryLedger, resolveExpenseLinks, documentLink } from '../../client/src/utils/inventoryLedger.js';
 import { stripInventoryAiMarker, withPreservedInventoryTags } from '../../client/src/utils/inventoryAi.js';
-import { yearFromWeekValue } from '../../client/src/utils/weekYear.js';
+import { yearFromWeekValue, dateFromWeekValue, invoiceDate } from '../../client/src/utils/weekYear.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
@@ -1799,6 +1799,73 @@ await test('yearFromWeekValue: קוד-שבוע / תאריך ISO / ריק-וחס�
   if (yearFromWeekValue('לא-תאריך-בכלל') !== null) throw new Error('טקסט חסר-משמעות אמור להחזיר null, לא לזרוק');
   return 'כל המקרים פוענחו/נדחו כצפוי';
 });
+
+// ============================================================
+// חלק C4 (לילה 3, 2026-10-07) — dateFromWeekValue + invoiceDate
+// ------------------------------------------------------------
+// שתי מלכודות אמיתיות שנמצאו בכרטיס-המשווק:
+//  1. `new Date(null)` הוא 1.1.1970 — Date תקין לכל דבר ש-isNaN לא תופס.
+//     שדה-תאריך ריק הופך לנקודת-נתון פנטום ב-1970 שמותחת כל גרף.
+//  2. טבלת "חשבוניות" **אין בה שדה "תאריך"** בכלל. הקוד קרא אותו, קיבל
+//     undefined, וכל חשבונית נזרקה — גרף "פדיון לפי חודש" הציג "אין
+//     נתוני פדיון בתקופה זו" לכל משווק ובכל שלוש התקופות.
+// ============================================================
+await test('dateFromWeekValue: חצות מקומית, 1970 לא נוצר מ-null, תאריך לא-חוקי נדחה', () => {
+  const iso = dateFromWeekValue('2026-08-28');
+  if (!iso || iso.getFullYear() !== 2026 || iso.getMonth() !== 7 || iso.getDate() !== 28) throw new Error(`ISO שגוי: ${iso}`);
+  if (iso.getHours() !== 0) throw new Error('צפויה חצות מקומית (לא UTC) — אחרת החודש זז באזור-זמן שלילי');
+  const week = dateFromWeekValue('20260822-20260827');
+  if (!week || week.getFullYear() !== 2026 || week.getMonth() !== 7 || week.getDate() !== 22) throw new Error(`קוד-שבוע שגוי: ${week}`);
+  const stamp = dateFromWeekValue('2026-09-09T19:17:58.630Z');
+  if (!stamp || stamp.getMonth() !== 8 || stamp.getDate() !== 9) throw new Error(`חותמת-זמן ISO שגויה: ${stamp}`);
+  for (const bad of [null, undefined, '', '  ', 'לא תאריך', '2026-02-31', '05/12/2026']) {
+    const d = dateFromWeekValue(bad);
+    if (d !== null) throw new Error(`${JSON.stringify(bad)} אמור להחזיר null, התקבל ${d?.toISOString?.() || d}`);
+  }
+  return 'ISO/קוד-שבוע/חותמת → חצות מקומית; null/ריק/לא-חוקי/dd-mm → null (בלי 1970)';
+});
+
+await test('invoiceDate: סדר העדיפות "תאריך-AI" > "קוד שבוע" > תאריכי העלאה, ו-null כשאין כלום', () => {
+  const full = invoiceDate({ 'תאריך-AI': '2026-07-31', 'קוד שבוע': '20260926-20261001', 'תאריך העלאת קובץ': '2026-10-06T12:18:04.749Z' });
+  if (full.getMonth() !== 6 || full.getDate() !== 31) throw new Error(`"תאריך-AI" חייב לגבור (זו חשבונית 61 האמיתית): ${full}`);
+  const byWeek = invoiceDate({ 'קוד שבוע': '20260822-20260827', 'תאריך העלאת קובץ': '2026-09-09T19:17:58.630Z' });
+  if (byWeek.getMonth() !== 7 || byWeek.getDate() !== 22) throw new Error(`"קוד שבוע" חייב לגבור על תאריך-ההעלאה: ${byWeek}`);
+  const byUpload = invoiceDate({ 'תאריך העלאת קובץ': '2026-10-06T06:18:53.712Z' });
+  if (byUpload.getMonth() !== 9 || byUpload.getDate() !== 6) throw new Error(`נפילה-לאחור לתאריך-העלאה נכשלה: ${byUpload}`);
+  if (invoiceDate({}) !== null) throw new Error('רשומה בלי שום תאריך אמורה להחזיר null');
+  if (invoiceDate(null) !== null) throw new Error('null אמור להחזיר null, לא לזרוק');
+  // המלכודת שהפילה את הפיצ'ר: השדה שהקוד קרא ("תאריך") פשוט לא קיים
+  if (invoiceDate({ 'תאריך': '2026-05-05' }) !== null) throw new Error('"תאריך" אינו שדה בטבלת "חשבוניות" — אסור שייחשב מקור-תאריך');
+  return 'תאריך-AI > קוד שבוע > העלאה; חסר → null';
+});
+
+// בדיקה חיה (קריאה בלבד) שסוגרת את הבאג מקצה-לקצה: כל חשבונית אמיתית
+// שיש לה "סכום נטו" חייבת להניב תאריך שמיש דרך invoiceDate — אחרת
+// כרטיס-המשווק יציג שוב "אין נתוני פדיון בתקופה זו" בכל התקופות. לולא
+// זה, שינוי-שם-שדה ב-Airtable היה שובר את הגרף בשקט מוחלט פעם נוספת.
+await test('כרטיס משווק: לכל חשבונית אמיתית עם "סכום נטו" יש תאריך שמיש (invoiceDate) — לא "אין נתוני פדיון"', async () => {
+  const invoices = await api('GET', `${enc('חשבוניות')}?raw=1&maxRecords=1000`);
+  const withAmount = invoices.filter((i) => Number(i['סכום נטו']) > 0 && !isSprayTestRecord(i));
+  if (!withAmount.length) return 'דולג — אין חשבונית אמיתית עם "סכום נטו" בבסיס';
+  const undated = withAmount.filter((i) => invoiceDate(i) === null);
+  if (undated.length === withAmount.length) {
+    throw new Error(`אף אחת מ-${withAmount.length} החשבוניות עם סכום לא הניבה תאריך — גרף הפדיון בכרטיס המשווק מת (ר' INVOICE_DATE_FIELDS ב-utils/weekYear.js)`);
+  }
+  // בנוסף: לפחות משווק אחד חייב לקבל נקודות-גרף בפועל
+  const marketersList = await api('GET', `${enc('משווקים')}?maxRecords=100`);
+  const invById = new Map(invoices.map((i) => [i.id, i]));
+  let best = 0;
+  for (const mk of marketersList) {
+    const ids = (Array.isArray(mk['חשבוניות']) ? mk['חשבוניות'] : []).map((l) => (l && typeof l === 'object' ? l.id : l));
+    const points = ids.filter((id) => {
+      const inv = invById.get(id);
+      return inv && Number(inv['סכום נטו']) > 0 && invoiceDate(inv) !== null;
+    }).length;
+    if (points > best) best = points;
+  }
+  if (!best) throw new Error('לשום משווק לא נוצרה אף נקודת-גרף — כרטיס המשווק יציג "אין נתוני פדיון" לכולם');
+  return `${withAmount.length - undated.length}/${withAmount.length} חשבוניות עם תאריך שמיש; למשווק המוביל ${best} נקודות-גרף`;
+}, READ_WARN_MS);
 
 // ⚠️ ניסיתי לכתוב כאן בדיקת-קצה-לקצה חיה (כמו ל-reverseInventoryDeduction
 // למעלה) שמדמה "כמות קרטונים"/"מספר משטחים" ע"י patch ישיר, ואז קוראת
