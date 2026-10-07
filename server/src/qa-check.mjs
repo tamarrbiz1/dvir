@@ -71,6 +71,17 @@ const create = async (t, fields) => {
 const patch = (t, id, fields) => api('PATCH', `${enc(t)}/${id}`, fields);
 const del = (t, id) => api('DELETE', `${enc(t)}/${id}`);
 
+// סעיף Q (7.10.2026): "קטגוריה אחת = פריט אחד" חוסם עכשיו יצירת פריט-
+// מלאי-בדיקה בקטגוריה שכבר תפוסה ע"י פריט אמיתי — כל בדיקה שיוצרת פריט
+// מלאי זמני (לא בודקת את Q עצמה) חייבת לבחור קטגוריה **פנויה בפועל**,
+// לא סתם choices[0] (שעלול להיות קטגוריה אמיתית ותפוסה, למשל "קרטונים").
+async function freeInventoryCategory() {
+  const opts = await api('GET', `select-options/${enc('מלאי בסיסי')}/${enc('קטגוריה')}`);
+  const items = await api('GET', `${enc('מלאי בסיסי')}?raw=1`);
+  const usedCats = new Set(items.map((i) => String(i['קטגוריה'] || '').trim()).filter(Boolean));
+  return opts.choices.find((c) => !usedCats.has(c)) || opts.choices[0];
+}
+
 // כניסה כמנהל ראשי אמיתי (הרשומה הראשונה מהסוג "מנהל ראשי") — כדי
 // שכל שאר הבדיקות (שרצות תחת ההרשאה הרחבה ביותר, כמו לפני שהיה אימות
 // כלל) יעבדו כרגיל. קוד הכניסה עצמו נקרא חי מ-Airtable ולעולם לא
@@ -238,8 +249,10 @@ await test('קטיף: יצירה + הופעה מיידית ברשימה', async 
 });
 
 await test('מלאי: יצירה (קטגוריה מהרשימה) + עדכון + תאריך', async () => {
-  const opts = await api('GET', `select-options/${enc('מלאי בסיסי')}/${enc('קטגוריה')}`);
-  const rec = await create('מלאי בסיסי', { 'קטגוריה': opts.choices[0], 'מלאי נוכחי': 5, 'מלאי מינימום': 1, 'הערות': MARK });
+  // סעיף Q (7.10.2026): "קטגוריה אחת = פריט אחד" חוסם עכשיו יצירה
+  // בקטגוריה שכבר תפוסה — choices[0] הראשון עלול להיות קטגוריה אמיתית
+  // ותפוסה (למשל "קרטונים"), לכן מחפשים קטגוריה פנויה בפועל.
+  const rec = await create('מלאי בסיסי', { 'קטגוריה': await freeInventoryCategory(), 'מלאי נוכחי': 5, 'מלאי מינימום': 1, 'הערות': MARK });
   await patch('מלאי בסיסי', rec.id, { 'מלאי נוכחי': 8, 'תאריך עדכון': today });
 });
 
@@ -675,7 +688,8 @@ await test('אבטחה: טוקן מנהל עבודה לא יכול לכתוב מ
     if (!String(e.message).startsWith('403')) throw e;
   }
   // חריג אמיתי: מלאי בסיסי כן מותר בכתיבה למנהל עבודה
-  const created = await apiAs(mLogin.token, 'POST', enc('מלאי בסיסי'), { 'קטגוריה': 'קרטונים', 'הערות': MARK });
+  // (סעיף Q, 7.10.2026: קטגוריה חייבת להיות פנויה — Q חוסם כפילות)
+  const created = await apiAs(mLogin.token, 'POST', enc('מלאי בסיסי'), { 'קטגוריה': await freeInventoryCategory(), 'הערות': MARK });
   if (!created?.id) throw new Error('הכתיבה לחריג המותר (מלאי) נכשלה');
   cleanup.push({ table: 'מלאי בסיסי', id: created.id });
   return 'כתיבה מחוץ לחריגים נחסמה, כתיבה בתוך חריג (מלאי) עברה';
@@ -882,8 +896,7 @@ await test('הוצאה אמיתית → ניתוח מלאי מקצה-לקצה (�
 
 await test('הורדת מלאי: החלמה מכשל-באמצע (restart מדומה) ממשיכה בלי הורדה כפולה', async () => {
   if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
-  const opts = await api('GET', `select-options/${enc('מלאי בסיסי')}/${enc('קטגוריה')}`);
-  const item = await create('מלאי בסיסי', { 'קטגוריה': opts.choices[0], 'מלאי נוכחי': 100, 'הערות': MARK });
+  const item = await create('מלאי בסיסי', { 'קטגוריה': await freeInventoryCategory(), 'מלאי נוכחי': 100, 'הערות': MARK });
   const before = Number(item['מלאי נוכחי']);
   const exp = await createWithFile('הוצאות', 'חשבונית', {});
   // קריאה/כתיבה ישירה (import, לא HTTP) מכאן ואילך בכוונה: נמצא בפועל
@@ -949,8 +962,7 @@ await test('התאמת מלאי: שורה ידנית (confidence=1) עוברת �
 
 await test('הורדת מלאי: ביטול הורדה במחיקת הוצאה (reverseInventoryDeduction), אידמפוטנטי', async () => {
   if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
-  const opts = await api('GET', `select-options/${enc('מלאי בסיסי')}/${enc('קטגוריה')}`);
-  const item = await create('מלאי בסיסי', { 'קטגוריה': opts.choices[0], 'מלאי נוכחי': 100, 'הערות': MARK });
+  const item = await create('מלאי בסיסי', { 'קטגוריה': await freeInventoryCategory(), 'מלאי נוכחי': 100, 'הערות': MARK });
   const before = Number(item['מלאי נוכחי']);
   const exp = await createWithFile('הוצאות', 'חשבונית', {});
 
@@ -1035,8 +1047,7 @@ await test('הוצאה ידנית: שורת פריט חלקית (רק "מה נק
 
 await test('הוצאה ידנית + קובץ אמיתי: נוצרת, הקובץ מצורף, ידני?=true, שורת פריט מורידה מלאי, מחיקה מחזירה אותו', async () => {
   if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
-  const opts = await api('GET', `select-options/${enc('מלאי בסיסי')}/${enc('קטגוריה')}`);
-  const item = await create('מלאי בסיסי', { 'קטגוריה': opts.choices[0], 'מלאי נוכחי': 50, 'הערות': MARK });
+  const item = await create('מלאי בסיסי', { 'קטגוריה': await freeInventoryCategory(), 'מלאי נוכחי': 50, 'הערות': MARK });
   const before = Number(item['מלאי נוכחי']);
 
   const fileBuf = await readFile(REAL_FIXTURE_PATH);
@@ -1681,6 +1692,77 @@ if (process.env.RUN_SCHEMA_TESTS !== "0") { // ברירת מחדל דלוק (ה�
     const opts = await api("GET", `select-options/${enc("מלאי בסיסי")}/${enc("קטגוריה")}`);
     if (!(opts.choices || []).includes(MARK)) throw new Error("האפשרות לא מופיעה ב-select-options");
     return `נוצרה אפשרות "${MARK}" — להסרה ידנית ב-Airtable (ה-API לא מוחק אפשרויות)`;
+  });
+}
+
+// ============ 3ד. מניעת קטגוריית-מלאי כפולה (סעיף Q, 7.10.2026) ============
+// "קטגוריה אחת = פריט אחד" — ר' server.js findDuplicateInventoryCategory.
+// שריד-בדיקה (TEST_RECORD_PATTERN) מסונן מתוך "הקיימים" בכוונה — שתי
+// רשומות-QA בקטגוריה חדשה-זהה לא אמורות לחסום זו את זו.
+await test('Q: יצירת פריט QA בקטגוריה קיימת ("קרטונים") → 409, בלי רשומה חדשה', async () => {
+  const opts = await api('GET', `select-options/${enc('מלאי בסיסי')}/${enc('קטגוריה')}`);
+  if (!opts.choices.includes('קרטונים')) return 'דולג — אין קטגוריית "קרטונים" קיימת כרגע';
+  try {
+    await api('POST', enc('מלאי בסיסי'), { 'קטגוריה': 'קרטונים', 'הערות': MARK });
+  } catch (e) {
+    if (!String(e.message).startsWith('409')) throw new Error(`קוד-שגיאה לא צפוי: ${e.message}`);
+    // ⚠️ סינון גם לפי קטגוריה="קרטונים" ולא רק MARK-בהערות — אחרת בדיקת
+    // G ("typecast: קטגוריה חדשה נוצרת בפועל", רצה קודם בקובץ) מזהה-בטעות
+    // את הפריט-התמים-שלה-עצמה (קטגוריה=MARK, עדיין ב-cleanup, קטגוריה
+    // שונה לגמרי) כ"דליפה" כאן, כי שתיהן חולקות את אותו MARK של הריצה.
+    const leaked = (await api('GET', `${enc('מלאי בסיסי')}?raw=1&includeTest=1`))
+      .filter((i) => i['קטגוריה'] === 'קרטונים' && String(i['הערות'] || '').includes(MARK));
+    if (leaked.length) throw new Error(`נוצרה בכל זאת רשומה: ${leaked.map((l) => l.id).join(',')}`);
+    return '409 כנדרש, בלי רשומה חדשה';
+  }
+  throw new Error('יצירה בקטגוריה קיימת עברה בהצלחה — אסור');
+});
+
+await test('Q: PATCH של פריט QA לקטגוריה תפוסה ("קרטונים") → 409, הקטגוריה המקורית לא השתנתה', async () => {
+  const opts = await api('GET', `select-options/${enc('מלאי בסיסי')}/${enc('קטגוריה')}`);
+  if (!opts.choices.includes('קרטונים')) return 'דולג — אין קטגוריית "קרטונים" קיימת כרגע';
+  const items = await api('GET', `${enc('מלאי בסיסי')}?raw=1`);
+  const usedCats = new Set(items.map((i) => String(i['קטגוריה'] || '').trim()).filter(Boolean));
+  const freeCat = opts.choices.find((c) => !usedCats.has(c));
+  if (!freeCat) return 'דולג — אין קטגוריה פנויה ברשימת האפשרויות ליצירת פריט-QA זמני';
+  const rec = await api('POST', enc('מלאי בסיסי'), { 'קטגוריה': freeCat, 'הערות': MARK });
+  cleanup.push({ table: 'מלאי בסיסי', id: rec.id });
+  try {
+    await api('PATCH', `${enc('מלאי בסיסי')}/${rec.id}`, { 'קטגוריה': 'קרטונים' });
+  } catch (e) {
+    if (!String(e.message).startsWith('409')) throw new Error(`קוד-שגיאה לא צפוי: ${e.message}`);
+    const after = await api('GET', `${enc('מלאי בסיסי')}/${rec.id}`);
+    if (after['קטגוריה'] !== freeCat) throw new Error('הקטגוריה השתנתה בכל זאת אחרי 409');
+    return `409 כנדרש (קטגוריית-המקור "${freeCat}" לא השתנתה)`;
+  }
+  throw new Error('PATCH לקטגוריה תפוסה עבר בהצלחה — אסור');
+});
+
+await test('Q: יצירה בקטגוריה פנויה שקיימת ברשימת האפשרויות → 201 (ואז מחיקה)', async () => {
+  const opts = await api('GET', `select-options/${enc('מלאי בסיסי')}/${enc('קטגוריה')}`);
+  const items = await api('GET', `${enc('מלאי בסיסי')}?raw=1`);
+  const usedCats = new Set(items.map((i) => String(i['קטגוריה'] || '').trim()).filter(Boolean));
+  const freeCat = opts.choices.find((c) => !usedCats.has(c));
+  if (!freeCat) return 'דולג — אין קטגוריה פנויה ברשימת האפשרויות כרגע';
+  const rec = await api('POST', enc('מלאי בסיסי'), { 'קטגוריה': freeCat, 'הערות': MARK });
+  if (!rec?.id) throw new Error('היצירה לא החזירה רשומה');
+  await del('מלאי בסיסי', rec.id);
+  return `נוצר ונמחק פריט בקטגוריה-פנויה "${freeCat}"`;
+});
+
+if (process.env.RUN_SCHEMA_TESTS !== '0') { // יוצרת אפשרות-select חדשה-לצמיתות (כמו בדיקת G) — ברירת מחדל דלוק, כיבוי עם RUN_SCHEMA_TESTS=0
+  await test('Q: שתי רשומות-QA בקטגוריית-QA חדשה-זהה (לא קטגוריה אמיתית) → לא נחסמות זו בגלל זו (שריד-בדיקה מסונן מהבדיקה דרך שדה "קטגוריה" עצמו)', async () => {
+    // ⚠️ חייב להיות קטגוריה שעצם-ערכה תואם TEST_RECORD_PATTERN (לא קטגוריה
+    // אמיתית פנויה כמו "נילונים"!) — אחרת זה לא בודק את מה ש-Q מתעד: ש-
+    // findDuplicateInventoryCategory מסנן לפי שדה "קטגוריה" של הקיים, לא
+    // לפי ה-JSON השלם (ר' תיקון 7.10 — באג אמיתי שנתפס: בדיקה על ה-JSON
+    // השלם החריגה פריטי-מלאי אמיתיים שה"הערות" שלהם צברה אזכור-QA ישן,
+    // ואפשרה כפילות-קטגוריה אמיתית ליצור בטעות דרך הבדיקה עצמה).
+    const recA = await api('POST', `${enc('מלאי בסיסי')}?typecast=1`, { 'קטגוריה': MARK });
+    cleanup.push({ table: 'מלאי בסיסי', id: recA.id });
+    const recB = await api('POST', enc('מלאי בסיסי'), { 'קטגוריה': MARK, 'הערות': MARK });
+    cleanup.push({ table: 'מלאי בסיסי', id: recB.id });
+    return `שתי רשומות-QA נוצרו בקטגוריית-QA "${MARK}" בלי חסימה הדדית, כצפוי — להסרה ידנית של האפשרות ב-Airtable`;
   });
 }
 

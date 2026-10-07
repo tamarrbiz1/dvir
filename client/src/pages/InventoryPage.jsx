@@ -31,14 +31,36 @@ const TABLE = 'מלאי בסיסי';
 // "ספקים" נוסף 2026-10-06 (סעיף C) — שדה קישור (link) לטבלת "ספקים",
 // כך שאפשר לקשר ספק לפריט מלאי ישירות מהטופס (לא רק דרך הקישור ההפוך
 // בכרטיס הספק עצמו). ר' RecordForm.jsx type:'link'.
-const ITEM_FORM_FIELDS = [
-  { name: 'קטגוריה', label: 'קטגוריה', type: 'select', required: true, allowNew: true }, // "➕ קטגוריה חדשה…" — נוצרת ב-Airtable דרך typecast (סעיף G)
-  { name: 'ספקים', label: 'ספק', type: 'link', linkTable: 'ספקים', linkNameField: 'שם ספק', multiple: true },
-  { name: 'מלאי נוכחי', label: 'מלאי נוכחי', type: 'number' },
-  { name: 'מלאי מינימום', label: 'מלאי מינימום', type: 'number' },
-  { name: 'תאריך עדכון', label: 'תאריך עדכון', type: 'date' },
-  { name: 'הערות', label: 'הערות', type: 'textarea' },
-];
+//
+// ⚠️ סעיף Q (7.10.2026, הוראת תמר): "קטגוריה אחת = פריט מלאי אחד". רשימת
+// השדות נבנית כפונקציה (לא קבוע סטטי) כדי שאפשר לסמן קטגוריות-תפוסות
+// כ-disabledOptions על בסיס הפריטים שכבר נטענו במסך — הקטגוריה של
+// הרשומה הנערכת עצמה (אם יש) לא נספרת כ"תפוסה". הגנה אמיתית בשרת (409)
+// קיימת תמיד; זו רק נוחות-UI שמונעת את הטעות מראש.
+function buildItemFields(items, record) {
+  const taken = new Set(
+    items.filter((it) => it.id !== record?.id && it['קטגוריה']).map((it) => String(it['קטגוריה']).trim())
+  );
+  return [
+    { name: 'קטגוריה', label: 'קטגוריה', type: 'select', required: true, allowNew: true, disabledOptions: taken },
+    { name: 'ספקים', label: 'ספק', type: 'link', linkTable: 'ספקים', linkNameField: 'שם ספק', multiple: true },
+    { name: 'מלאי נוכחי', label: 'מלאי נוכחי', type: 'number' },
+    { name: 'מלאי מינימום', label: 'מלאי מינימום', type: 'number' },
+    { name: 'תאריך עדכון', label: 'תאריך עדכון', type: 'date' },
+    { name: 'הערות', label: 'הערות', type: 'textarea' },
+  ];
+}
+
+/** ולידציית-לקוח (סעיף Q): אותה הודעה כמו ה-409 בשרת, מוצגת לפני שליחה */
+function validateItemCategory(items, record) {
+  return (values) => {
+    const cat = String(values['קטגוריה'] || '').trim();
+    if (!cat) return null;
+    const dup = items.find((it) => it.id !== record?.id && String(it['קטגוריה'] || '').trim() === cat);
+    if (dup) return `כבר קיים פריט בקטגוריה "${cat}" — פתח אותו ועדכן את הכמות במקום ליצור כפול`;
+    return null;
+  };
+}
 
 // סטטוס פריט: תקין / קרוב למינימום / מלאי נמוך (צבע + טקסט, לא צבע בלבד)
 function itemStatus(item) {
@@ -107,6 +129,18 @@ export default function InventoryPage() {
     'מלאי מינימום': Number(i['מלאי מינימום']) || 0,
   })), [filtered]);
 
+  // סעיף Q (7.10.2026): קיבוץ פריטים לפי קטגוריה מנורמלת — כפילויות
+  // שכבר קיימות בנתונים (למשל "נילונים" הכפולה) מוצגות כאן כבאנר-אזהרה,
+  // לא נמחקות/ממוזגות אוטומטית (זו החלטת-מיזוג של תמר).
+  const duplicateGroups = useMemo(() => {
+    const byCat = {};
+    items.forEach((it) => {
+      const cat = String(it['קטגוריה'] || '').trim();
+      if (cat) (byCat[cat] ||= []).push(it);
+    });
+    return Object.entries(byCat).filter(([, arr]) => arr.length > 1);
+  }, [items]);
+
   return (
     <div>
       <PageHeader icon="📦" title="מלאי">
@@ -114,6 +148,23 @@ export default function InventoryPage() {
         <button type="button" className="btn btn-ghost no-print" onClick={() => window.print()}>🖨️ הדפסה</button>
         {canEdit && <button className="btn btn-primary no-print" onClick={() => setForm({})}>+ פריט מלאי</button>}
       </PageHeader>
+
+      {duplicateGroups.length > 0 && (
+        <div className="badge badge-warn" style={{ width: '100%', display: 'block', padding: 12, marginBottom: 12 }}>
+          ⚠️ נמצאו קטגוריות עם יותר מפריט מלאי אחד — יש למזג/למחוק ידנית (לא נעשה אוטומטית):
+          {duplicateGroups.map(([cat, arr]) => (
+            <div key={cat} style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <b>{cat}:</b>
+              {arr.map((it) => (
+                <span key={it.id} className="obj-chip" role="button" tabIndex={0}
+                  onClick={() => setDrawer(it)} onKeyDown={(e) => { if (e.key === 'Enter') setDrawer(it); }}>
+                  {formatNumber(it['מלאי נוכחי'] ?? 0)} יח'
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
 
       {loading ? <div className="skeleton skeleton-card" /> : (
         <>
@@ -246,7 +297,8 @@ export default function InventoryPage() {
           api={app.api} table={TABLE}
           title={form.id ? `עריכת ${form['קטגוריה'] || 'פריט'}` : 'פריט מלאי חדש'}
           record={form.id ? form : null}
-          fields={ITEM_FORM_FIELDS}
+          fields={buildItemFields(items, form.id ? form : null)}
+          validate={validateItemCategory(items, form.id ? form : null)}
           onClose={() => setForm(null)}
           onSaved={async () => { setForm(null); await load(); }}
         />

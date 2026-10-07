@@ -1,7 +1,7 @@
 // ============================================================
 // טופס רשומה גנרי — יצירה / עריכה מול Airtable (סעיף 7: CRUD למנהל ראשי)
 //
-// fields: [{ name, label, type: 'text'|'number'|'date'|'select'|'multiselect'|'textarea'|'link', required, allowNew? }]
+// fields: [{ name, label, type: 'text'|'number'|'date'|'select'|'multiselect'|'textarea'|'link', required, allowNew?, disabledOptions? }]
 //
 // allowNew (סעיף G, 7.10.2026) — רק ל-select: מוסיף לרשימה "➕ <label> חדש/ה…"
 // שפותח שדה טקסט. ערך שאינו ברשימה נשלח עם typecast=1 — Airtable יוצר
@@ -9,6 +9,16 @@
 // (מלאי בסיסי.קטגוריה) ולמנהל ראשי בלבד.
 // אפשרויות ה-select/multiselect נטענות מהמטא של Airtable — לא מקודדות
 // בקוד, כדי שלא ייכתב ערך שאינו ברשימה (כתיבה כזו נדחית).
+//
+// disabledOptions (סעיף Q, 7.10.2026) — רק ל-select: Set של ערכים
+// שמוצגים ברשימה אבל חסומים לבחירה (disabled + " · קיים"), למשל
+// קטגוריות-מלאי שכבר תפוסות ע"י פריט אחר. השוואה-עם-ולידציה אמיתית
+// עדיין בשרת (409) — זו רק נוחות-UI שמונעת את הטעות מראש.
+//
+// validate (סעיף Q, 7.10.2026) — (values, record) => string|null. נבדק
+// לפני השמירה, אחרי בדיקת שדות-חובה; החזרת מחרוזת חוסמת שמירה ומציגה
+// אותה כהודעת-שגיאה (כמו שגיאת-שרת). משמש לולידציה גנרית בצד-לקוח
+// שתלויה בנתונים שכבר נטענו במסך (לא רק בשדות הטופס עצמו).
 //
 // type 'link' — קישור לרשומה מטבלה אחרת (סעיף C, 2026-10-06): שדה
 // נוסף חובה { linkTable, linkNameField, multiple? }. האפשרויות נטענות
@@ -23,7 +33,7 @@ import { useEffect, useState } from 'react';
 import { confirmDialog, toast } from '../utils/ui.js';
 import { authFetch } from '../utils/authFetch.js';
 
-export default function RecordForm({ api, table, title, fields, record, onClose, onSaved }) {
+export default function RecordForm({ api, table, title, fields, record, onClose, onSaved, validate }) {
   const [values, setValues] = useState(() => {
     const v = {};
     fields.forEach((f) => {
@@ -82,6 +92,10 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
         setError(`חסר שדה חובה: ${f.label}`);
         return;
       }
+    }
+    if (validate) {
+      const problem = validate(values, record);
+      if (problem) { setError(problem); return; }
     }
     setSaving(true); setError('');
     const body = {};
@@ -160,7 +174,10 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
                       set(f.name, e.target.value);
                     }}>
                     <option value="">בחר...</option>
-                    {(options[f.name] || (values[f.name] ? [values[f.name]] : [])).map((c) => <option key={c} value={c}>{c}</option>)}
+                    {(options[f.name] || (values[f.name] ? [values[f.name]] : [])).map((c) => {
+                      const disabled = f.disabledOptions?.has(c) && c !== values[f.name];
+                      return <option key={c} value={c} disabled={disabled}>{c}{disabled ? ' · קיים' : ''}</option>;
+                    })}
                     {f.allowNew && <option value="__new__">➕ {f.label} חדש/ה…</option>}
                   </select>
                 ) : f.type === 'link' ? (

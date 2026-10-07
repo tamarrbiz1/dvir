@@ -92,8 +92,21 @@ const TEST_RECORD_PATTERN = /__PLANT_TEST_\d+__|\bQA-\d{10,}\b|\bPERF-TEST\b/;
 // ?includeTest=1 — יציאת חירום למערך הבדיקות (qa-check.mjs) בלבד: הוא
 // יוצר וקורא בחזרה רשומות מתויגות-MARK כחלק מהאימות העצמי שלו, ולכן
 // חייב לראות אותן; שום מסך אמיתי באפליקציה לא שולח את הפרמטר הזה.
-function stripTestRecords(records, req) {
+// ⚠️ 7.10.2026, אגב-גילוי בזמן בדיקת סעיף Q: "מלאי בסיסי" הוא טבלה
+// שונה-באופיה מכל שאר הטבלאות כאן — שדה "הערות" שלה הוא יומן-ביקורת
+// שגדל לצמיתות (ר' logistics-deduction.js/inventory-deduction.js) ומכיל
+// בלגיטימיות אזכורי-מסמכים שהיו פעם רשומות-QA (למשל "שבוע QA-...") גם
+// כשהפריט **עצמו אמיתי-לגמרי**. בדיקה על ה-JSON השלם (כמו לכל טבלה
+// אחרת) **מסתירה פריטי-מלאי אמיתיים** ברגע שההערות שלהם צוברות אזכור
+// כזה — אומת בפועל: 3/7 פריטים אמיתיים ("קרטונים"/"כובעים"/שני
+// "נילונים") נעלמו מהמסך הרגיל (בלי includeTest=1) אחרי סבב-בדיקות חי
+// של סעיף P/Q באותו יום. לכן כאן, ורק כאן, בודקים את שדה "קטגוריה"
+// בלבד (מה שבאמת מזהה שהרשומה-עצמה — לא ההיסטוריה שלה — נוצרה כבדיקה).
+function stripTestRecords(records, req, table) {
   if (!Array.isArray(records) || req?.query?.includeTest === '1') return records;
+  if (table === 'מלאי בסיסי') {
+    return records.filter((r) => !TEST_RECORD_PATTERN.test(String(r['קטגוריה'] || '')));
+  }
   return records.filter((r) => !TEST_RECORD_PATTERN.test(JSON.stringify(r)));
 }
 
@@ -779,7 +792,7 @@ function invalidateReads(table) {
 // טבלה שאינה קיימת ב-Base → 404 עם הודעה ברורה בעברית
 // (Airtable מחזיר לזה 403 עמום: "You are not authorized...")
 // ============================================================
-const RESERVED_PATHS = new Set(['tables', 'meta', 'select-options', 'upload-document', 'spray-reports']);
+const RESERVED_PATHS = new Set(['tables', 'meta', 'select-options', 'upload-document', 'spray-reports', 'documents']);
 let tableNamesCache = { at: 0, names: null };
 async function knownTableNames() {
   if (tableNamesCache.names && Date.now() - tableNamesCache.at < 5 * 60 * 1000) return tableNamesCache.names;
@@ -876,7 +889,7 @@ app.get('/api/:table', authorizeRead, async (req, res) => {
     // השיוך גם אם הלקוח לא ביקש אותו, כדי שהסינון יהיה אפשרי).
     const ownField = ownFilterField(req.auth.role, table);
     if (ownField && opts.fields && !opts.fields.includes(ownField)) opts.fields.push(ownField);
-    let records = stripTestRecords(await fetchRecords(table, opts), req);
+    let records = stripTestRecords(await fetchRecords(table, opts), req, table);
     if (ownField) {
       records = records.filter((r) => {
         const linked = r[ownField];
@@ -951,6 +964,37 @@ async function validateTypecastRequest(req, table, body) {
   return null;
 }
 
+// ============================================================
+// סעיף Q (7.10.2026, הוראת תמר): "קטגוריה אחת = פריט מלאי אחד" — מניעת
+// יצירת/עדכון פריט ב"מלאי בסיסי" לקטגוריה שכבר יש לה פריט אחר. מופעל
+// רק כש-body כולל "קטגוריה" (יצירה, או עדכון שמשנה אותה) — לא בכל כתיבה.
+// לא נוגע בכפילויות שכבר קיימות בנתוני-האמת (למשל "נילונים" הכפולה,
+// ר' progress.md) — אלה דורשות החלטת-מיזוג/מחיקה של תמר, לא פעולה
+// אוטומטית; הבדיקה הזו רק חוסמת **הצטברות** כפילויות חדשות מעתה.
+// ============================================================
+async function findDuplicateInventoryCategory(table, body, excludeId) {
+  if (table !== 'מלאי בסיסי') return null;
+  const category = body?.['קטגוריה'];
+  if (category == null || String(category).trim() === '') return null;
+  const normalized = String(category).trim();
+  const existing = await fetchRecords('מלאי בסיסי', {});
+  // שריד-בדיקה (TEST_RECORD_PATTERN) לעולם לא נחשב "קיים" לצורך החסימה —
+  // אחרת שתי רשומות QA בקטגוריית-QA חדשה-זהה היו חוסמות זו את זו בטעות,
+  // ורשומת QA ישנה שלא נוקתה הייתה חוסמת יצירה אמיתית של קטגוריה.
+  // ⚠️ הבדיקה היא רק על שדה "קטגוריה" עצמו, לא על ה-JSON השלם — "הערות"
+  // של פריט-מלאי אמיתי גדלה לצמיתות ומכילה בלגיטימיות אזכורי-מסמכי-QA
+  // ישנים (ר' stripTestRecords למעלה); בדיקה על ה-JSON השלם הייתה הופכת
+  // כל פריט אמיתי עם היסטוריה כזו ל"לא-קיים" ומאפשרת כפילות אמיתית —
+  // בדיוק הבאג שנתפס בפועל (7.10) כש-rec0yfZ9t3Nd6CZCz (קרטונים כפול)
+  // נוצר כי recrVGLabAmqJNGNY הוחרג בטעות.
+  const dup = existing.find((it) =>
+    it.id !== excludeId &&
+    !TEST_RECORD_PATTERN.test(String(it['קטגוריה'] || '')) &&
+    String(it['קטגוריה'] || '').trim() === normalized
+  );
+  return dup || null;
+}
+
 app.post('/api/:table', authorizeWrite, async (req, res) => {
   try {
     const { table } = req.params;
@@ -970,6 +1014,8 @@ app.post('/api/:table', authorizeWrite, async (req, res) => {
       const problem = await validateTypecastRequest(req, table, body);
       if (problem) return res.status(403).json({ error: problem });
     }
+    const dup = await findDuplicateInventoryCategory(table, body, null);
+    if (dup) return res.status(409).json({ error: `כבר קיים פריט מלאי בקטגוריה "${body['קטגוריה']}"`, existingId: dup.id });
     const created = await createRecord(table, body, { typecast });
     invalidateReads(table); // כדי שהרשומה החדשה תיקרא מיד ותיפתר לשם
     res.status(201).json(created);
@@ -992,6 +1038,8 @@ app.patch('/api/:table/:id', authorizeWrite, async (req, res) => {
       const problem = await validateTypecastRequest(req, table, body);
       if (problem) return res.status(403).json({ error: problem });
     }
+    const dup = await findDuplicateInventoryCategory(table, body, req.params.id);
+    if (dup) return res.status(409).json({ error: `כבר קיים פריט מלאי בקטגוריה "${body['קטגוריה']}"`, existingId: dup.id });
     const updated = await updateRecord(table, req.params.id, body, { typecast });
     invalidateReads(table);
     res.json(updated);
@@ -1006,7 +1054,15 @@ const CASCADE_TABLES = new Set(['הוצאות', 'חשבוניות', 'תעודו�
 // תצוגה-מקדימה (dryRun) של מחיקה-מדורגת — "מחיקה תחזיר למלאי X, תנתק מ-Y"
 // לפני שהמשתמש מאשר (סעיף P3.8). אותה פונקציה בדיוק שמופעלת לפני
 // המחיקה-האמיתית, רק בלי לכתוב כלום.
-app.get('/api/documents/:table/:id/cascade-preview', authorizeWrite, async (req, res) => {
+// ⚠️ 7.10.2026, נתפס בבדיקה חיה: "documents" לא היה ברשימת RESERVED_PATHS,
+// כך שה-middleware הגנרי ל-"/api/:table" (שתי שורות: בדיקת-טבלה-קיימת +
+// authenticate) יירט כל בקשה לנתיב הזה וטיפל ב-"documents" עצמו כאילו
+// הוא שם-טבלה — 404 מיידי, לפני שהראוטר הספציפי הזה בכלל רץ. הנתיב הזה
+// **מעולם לא עבד בפועל** מאז שנוצר (סעיף P3) — נבלם תמיד ב-404, מוסתר
+// מהלקוח כי RecordForm.jsx עוטף את הקריאה ב-try/catch שקט ("נוחות, לא
+// חובה"). תוקן: "documents" נוסף ל-RESERVED_PATHS (לכן authenticate
+// מופעל כאן מפורשות — הוא לא רץ יותר אוטומטית מה-middleware הגנרי).
+app.get('/api/documents/:table/:id/cascade-preview', authenticate, authorizeWrite, async (req, res) => {
   try {
     const { table, id } = req.params;
     if (!CASCADE_TABLES.has(table)) return res.json({ inventory: [], week: null, checksLinked: 0, errors: [] });
