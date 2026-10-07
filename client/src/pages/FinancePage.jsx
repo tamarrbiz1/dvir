@@ -55,6 +55,23 @@ export default function FinancePage() {
     setSearchParams(next, { replace: true });
   };
 
+  // פתיחה ישירה של הוצאה מתוך URL (?open=recId) — כמו ב-InvoicesPage/
+  // DeliveryNotesPage (סעיף P, יומן-ירידות עם קישור למסמך). נשמר ב-state
+  // נפרד (לא רק ב-URL) כי ה-URL מתנקה מיד, לפני ש-ExpensesTab מספיק
+  // להשתמש בו (אותה סיבה ש-InvoicesPage ממתין ל-items.length לפני פתיחה).
+  const [pendingOpenExpense, setPendingOpenExpense] = useState(null);
+  useEffect(() => {
+    const id = searchParams.get('open');
+    if (!id) return;
+    setPendingOpenExpense(id);
+    if (tab !== 'הוצאות') setTabState('הוצאות');
+    const next = new URLSearchParams(searchParams);
+    next.set('tab', 'expenses');
+    next.delete('open');
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.get('open')]);
+
   // רענון צ'קים אחרי סימון (האיפיון: לקרוא מחדש נתונים תלויים בסיום פעולה)
   const reloadChecks = async () => {
     const c = await app.api.get(CHECKS_TABLE, '?maxRecords=300');
@@ -106,7 +123,8 @@ export default function FinancePage() {
       ) : tab === 'סקירה' ? (
         <Overview weekly={weekly} expenses={expenses} invoices={invoices} checks={checks} />
       ) : tab === 'הוצאות' ? (
-        <ExpensesTab app={app} expenses={expenses} suppliers={suppliers} onChanged={reloadExpenses} />
+        <ExpensesTab app={app} expenses={expenses} suppliers={suppliers} onChanged={reloadExpenses}
+          openId={pendingOpenExpense} onOpened={() => setPendingOpenExpense(null)} />
       ) : tab === "צ'קים" ? (
         <ChecksTab checks={checks} onRefresh={reloadChecks} />
       ) : (

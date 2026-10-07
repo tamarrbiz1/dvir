@@ -267,22 +267,61 @@ function LinkField({ api, linkTable, nameField, label, multiple, value, options,
   );
 }
 
+// טבלאות עם מחיקה-מדורגת (cascade, סעיף P3, 2026-10-07) — מחיקתן מחזירה
+// מלאי ומנתקת מסיכום-שבועי. ר' document-cascade.js בשרת.
+const CASCADE_TABLES = new Set(['הוצאות', 'חשבוניות', 'תעודות משלוח']);
+
+/** בניית טקסט-תצוגה-מקדימה מתוך תשובת cascade-preview, לשילוב בחלון-האישור */
+function cascadePreviewText(report) {
+  if (!report) return '';
+  const lines = [];
+  if (report.inventory?.length) {
+    const byCat = report.inventory.map((r) => `${r.category || '?'} (${r.quantity})`).join(', ');
+    lines.push(`המחיקה תחזיר למלאי: ${byCat}`);
+  }
+  if (report.week) {
+    lines.push(report.week.action === 'delete'
+      ? `רשומת השבוע ${report.week.weekCode} תימחק (ללא מסמכים נוספים)`
+      : `תנותק מרשומת השבוע ${report.week.weekCode}`);
+  }
+  if (report.checksLinked) lines.push(`${report.checksLinked} צ'קים מקושרים יישארו, רק הקישור יוסר`);
+  return lines.join('\n');
+}
+
 /** מחיקה עם אישור (סעיף "ניהול מחיקה") — מחזירה true אם נמחק בפועל.
- *  הכפתור אדום, אין מחיקה בלחיצה ראשונה, ובכישלון הפריט אינו נעלם מהמסך. */
+ *  הכפתור אדום, אין מחיקה בלחיצה ראשונה, ובכישלון הפריט אינו נעלם מהמסך.
+ *  לטבלאות עם מחיקה-מדורגת (CASCADE_TABLES) — מציג מראש מה יקרה למלאי/
+ *  לסיכום-השבועי (dryRun), ואחרי מחיקה מוצלחת מראה תקציר-בפועל. */
 export async function removeRecord(api, table, id, label) {
+  let previewText = '';
+  if (CASCADE_TABLES.has(table)) {
+    try {
+      const r = await authFetch(`/api/documents/${encodeURIComponent(table)}/${id}/cascade-preview`);
+      if (r.ok) previewText = cascadePreviewText(await r.json());
+    } catch { /* תצוגה-מקדימה היא נוחות, לא חובה — ממשיכים גם בלעדיה */ }
+  }
   const ok = await confirmDialog({
     title: `מחיקת ${label}`,
-    message: 'הפריט ימחק ולא יינתן לשחזור.\nהאם אתה בטוח שברצונך לבצע פעולה זו?',
+    message: `הפריט ימחק ולא יינתן לשחזור.${previewText ? `\n\n${previewText}` : ''}\n\nהאם אתה בטוח שברצונך לבצע פעולה זו?`,
     confirmLabel: 'מחק',
     danger: true,
   });
   if (!ok) return false;
+  let result;
   try {
-    await api.remove(table, id);
+    result = await api.remove(table, id);
   } catch (e) {
     toast('לא ניתן היה למחוק את הפריט.', 'error');
     return false;
   }
-  toast('הפריט נמחק בהצלחה');
+  const cascade = result?.cascade;
+  if (cascade?.inventory?.length || cascade?.week) {
+    const parts = [];
+    if (cascade.inventory.length) parts.push(`הוחזרו למלאי: ${cascade.inventory.map((r) => `${r.category || '?'} ${r.quantity}`).join(', ')}`);
+    if (cascade.week) parts.push(cascade.week.action === 'delete' ? `שבוע ${cascade.week.weekCode} נמחק` : `נותק משבוע ${cascade.week.weekCode}`);
+    toast(`המסמך נמחק. ${parts.join(' · ')}`);
+  } else {
+    toast('הפריט נמחק בהצלחה');
+  }
   return true;
 }

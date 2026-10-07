@@ -255,16 +255,41 @@ export default function InvoicesPage() {
   // מחיקה — רק אחרי אישור מפורש; הפריט לא נעלם מהמסך לפני אישור מ-Airtable
   const doDelete = async (inv) => {
     try {
-      await app.api.remove(INVOICES_TABLE, inv.id);
+      const result = await app.api.remove(INVOICES_TABLE, inv.id);
       await load();
       setConfirmDel(null);
       setDrawer(null);
-      setToast('הפריט נמחק בהצלחה');
+      const cascade = result?.cascade;
+      if (cascade?.inventory?.length || cascade?.week) {
+        const parts = [];
+        if (cascade.inventory.length) parts.push(`הוחזרו למלאי: ${cascade.inventory.map((r) => `${r.category || '?'} ${r.quantity}`).join(', ')}`);
+        if (cascade.week) parts.push(cascade.week.action === 'delete' ? `שבוע ${cascade.week.weekCode} נמחק` : `נותק משבוע ${cascade.week.weekCode}`);
+        setToast(`המסמך נמחק. ${parts.join(' · ')}`);
+      } else {
+        setToast('הפריט נמחק בהצלחה');
+      }
     } catch {
       setConfirmDel(null);
       setToast('לא ניתן היה למחוק את הפריט.');
     }
   };
+
+  // תצוגה-מקדימה (dryRun) של מה שהמחיקה תחזיר/תנתק — נטענת ברגע שנפתח
+  // אישור-המחיקה (סעיף P3.8, 2026-10-07)
+  const [deletePreview, setDeletePreview] = useState('');
+  useEffect(() => {
+    if (!confirmDel) { setDeletePreview(''); return; }
+    authFetch(`/api/documents/${encodeURIComponent(INVOICES_TABLE)}/${confirmDel.id}/cascade-preview`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((report) => {
+        if (!report) return;
+        const lines = [];
+        if (report.inventory?.length) lines.push(`המחיקה תחזיר למלאי: ${report.inventory.map((r) => `${r.category || '?'} (${r.quantity})`).join(', ')}`);
+        if (report.week) lines.push(report.week.action === 'delete' ? `רשומת השבוע ${report.week.weekCode} תימחק` : `תנותק מרשומת השבוע ${report.week.weekCode}`);
+        setDeletePreview(lines.join('\n'));
+      })
+      .catch(() => {});
+  }, [confirmDel]);
 
   const Th = ({ k, children }) => {
     const active = sort.key === k;
@@ -473,7 +498,7 @@ export default function InvoicesPage() {
         />
       )}
 
-      {confirmDel && <DeleteConfirm label={invLabel(confirmDel)} onCancel={() => setConfirmDel(null)} onConfirm={() => doDelete(confirmDel)} />}
+      {confirmDel && <DeleteConfirm label={invLabel(confirmDel)} previewText={deletePreview} onCancel={() => setConfirmDel(null)} onConfirm={() => doDelete(confirmDel)} />}
 
       {toast && (
         <div role="status" aria-live="polite" style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', background: 'var(--text-main)', color: '#fff', padding: '10px 18px', borderRadius: 10, boxShadow: '0 6px 20px rgba(0,0,0,0.2)', zIndex: 80, fontSize: 14 }}>
@@ -485,7 +510,7 @@ export default function InvoicesPage() {
 }
 
 // חלון אישור מחיקה — הנוסח והכפתורים לפי סעיף "ניהול מחיקה" באיפיון
-function DeleteConfirm({ label, onCancel, onConfirm }) {
+function DeleteConfirm({ label, previewText, onCancel, onConfirm }) {
   const [busy, setBusy] = useState(false);
   useEscapeClose(onCancel, !busy);
   return (
@@ -493,7 +518,9 @@ function DeleteConfirm({ label, onCancel, onConfirm }) {
       <div className="modal" onClick={(e) => e.stopPropagation()} role="alertdialog" aria-labelledby="del-title" aria-describedby="del-desc">
         <h3 id="del-title">מחיקת {label}</h3>
         <p id="del-desc" style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 18 }}>
-          הפריט ימחק ולא יינתן לשחזור.<br />האם אתה בטוח שברצונך לבצע פעולה זו?
+          הפריט ימחק ולא יינתן לשחזור.
+          {previewText && <><br /><br />{previewText.split('\n').map((l, i) => <span key={i}>{l}<br /></span>)}</>}
+          <br />האם אתה בטוח שברצונך לבצע פעולה זו?
         </p>
         <div className="form-actions">
           <button type="button" className="btn btn-ghost" disabled={busy} onClick={onCancel}>ביטול</button>

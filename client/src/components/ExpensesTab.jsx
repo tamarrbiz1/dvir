@@ -47,7 +47,7 @@ const EDIT_FIELDS = [
   { name: 'הערות', label: 'הערות', type: 'textarea' },
 ];
 
-export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
+export default function ExpensesTab({ app, expenses, suppliers, onChanged, openId, onOpened }) {
   const navigate = useNavigate();
   const canEdit = (app.user?.role || 'owner') === 'owner';
   const [search, setSearch] = useState('');
@@ -67,6 +67,16 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
   useEffect(() => {
     setDrawer((cur) => (cur ? (expenses.find((x) => x.id === cur.id) || cur) : cur));
   }, [expenses]);
+
+  // פתיחה ישירה מקישור חיצוני (סעיף P — יומן-ירידות במלאי, "?open=" דרך
+  // FinancePage) — ממתינים שהוצאות ייטענו, בדיוק כמו InvoicesPage/DeliveryNotesPage
+  useEffect(() => {
+    if (!openId || !expenses.length) return;
+    const e = expenses.find((x) => x.id === openId);
+    if (e) setDrawer(e);
+    onOpened?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openId, expenses]);
 
   const categories = useMemo(() => [...new Set(expenses.map(expCategory).filter(Boolean))], [expenses]);
   const supplierNames = useMemo(() => [...new Set(expenses.map(supplierName).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'he')), [expenses]);

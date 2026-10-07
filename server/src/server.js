@@ -12,8 +12,9 @@ import {
 } from './auth.js';
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
-import { analyzeExpenseInventory, approvePendingDeduction, readState, reverseInventoryDeduction, createManualExpense, validateManualExpenseInput } from './inventory-deduction.js';
-import { analyzeLogisticsInventory, reverseLogisticsDeduction } from './logistics-deduction.js';
+import { analyzeExpenseInventory, approvePendingDeduction, readState, createManualExpense, validateManualExpenseInput } from './inventory-deduction.js';
+import { analyzeLogisticsInventory } from './logistics-deduction.js';
+import { cascadeDocumentDelete, summarizeCascade } from './document-cascade.js';
 import { fixFilenameEncoding } from './filename-utils.js';
 import { sweep as sweepWeeklySync, INVOICES_TABLE, NOTES_TABLE } from './weekly-sync.js';
 import { runAutoLink, SUPPLIERS_TABLE, MARKETERS_TABLE, EXPENSES_TABLE, CHECKS_TABLE, DELIVERY_TABLE } from './supplier-linking.js';
@@ -1000,29 +1001,48 @@ app.patch('/api/:table/:id', authorizeWrite, async (req, res) => {
   }
 });
 
+const CASCADE_TABLES = new Set(['הוצאות', 'חשבוניות', 'תעודות משלוח']);
+
+// תצוגה-מקדימה (dryRun) של מחיקה-מדורגת — "מחיקה תחזיר למלאי X, תנתק מ-Y"
+// לפני שהמשתמש מאשר (סעיף P3.8). אותה פונקציה בדיוק שמופעלת לפני
+// המחיקה-האמיתית, רק בלי לכתוב כלום.
+app.get('/api/documents/:table/:id/cascade-preview', authorizeWrite, async (req, res) => {
+  try {
+    const { table, id } = req.params;
+    if (!CASCADE_TABLES.has(table)) return res.json({ inventory: [], week: null, checksLinked: 0, errors: [] });
+    const report = await cascadeDocumentDelete(table, id, { dryRun: true });
+    res.json(report);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // מחיקה
 app.delete('/api/:table/:id', authorizeWrite, async (req, res) => {
   try {
-    const { table } = req.params;
+    const { table, id } = req.params;
     if (!(await assertOwnRecord(req, res, table))) return;
-    // מחיקת הוצאה (ידנית או אוטומטית) מחזירה למלאי כל מה שהיא הורידה —
-    // לפני המחיקה בפועל (ר' תוספת 2026-10-06, סעיף E). כשל בביטול לא
-    // חוסם את המחיקה עצמה — ההוצאה עדיין נמחקת, רק בלי שהמלאי יתעדכן
-    // (יישאר מתועד בלוג השרת לבדיקה ידנית).
-    if (table === 'הוצאות') {
-      await reverseInventoryDeduction(req.params.id).catch((e) => console.error(`[inventory-ai] ביטול הורדה נכשל להוצאה ${req.params.id}: ${e.message}`));
+    // מחיקה-מדורגת (cascade, סעיף P3 — 2026-10-07): החזרת-מלאי + ניתוק/
+    // מחיקת רשומת-שבוע. ר' document-cascade.js. **הפעולה הקריטית היא
+    // החזרת-המלאי** — אם זו נכשלה, לא ממשיכים למחיקה בפועל (לא רוצים
+    // למחוק הוצאה/מסמך ולאבד את היכולת-לדעת-מה-להחזיר); ניתוק-השבוע
+    // הוא best-effort (לא חוסם מחיקה אם נכשל).
+    let cascade = null;
+    if (CASCADE_TABLES.has(table)) {
+      cascade = await cascadeDocumentDelete(table, id, { dryRun: false });
+      const inventoryFailed = cascade.errors.some((e) => e.startsWith('מלאי:'));
+      if (inventoryFailed) {
+        console.error(summarizeCascade(cascade));
+        return res.status(500).json({ error: `ביטול הורדת-המלאי נכשל — המסמך לא נמחק כדי לא לאבד מעקב. ${cascade.errors.join('; ')}` });
+      }
+      console.log(summarizeCascade(cascade));
       invalidateReads('מלאי בסיסי');
+      if (cascade.week) invalidateReads('סיכום שבועי');
+      if (table === 'תעודות משלוח' || table === 'חשבוניות') logisticsStatus.delete(`${table}:${id}`);
     }
-    // תעודת משלוח / חשבונית — תוספת 2026-10-06 לילה 2 (ממצא M2.2#7):
-    // גם כאן ההורדה הנגזרת (קרטונים/נילונים/כובעים/משטחים) חוזרת למלאי
-    // לפני המחיקה, בדיוק כמו ל"הוצאות". ר' reverseLogisticsDeduction.
-    if (table === 'תעודות משלוח' || table === 'חשבוניות') {
-      await reverseLogisticsDeduction(table, req.params.id).catch((e) => console.error(`[logistics-reverse] ביטול הורדה נכשל ל-${table} ${req.params.id}: ${e.message}`));
-      invalidateReads('מלאי בסיסי');
-    }
-    await deleteRecord(table, req.params.id);
+    await deleteRecord(table, id);
     invalidateReads(table);
-    res.json({ ok: true });
+    res.json({ ok: true, cascade });
   } catch (e) {
     console.error(`[api] DELETE /api/${req.params.table}/${req.params.id} (role=${req.auth?.role || '?'}): ${e.message}`);
     sendApiError(res, e);
