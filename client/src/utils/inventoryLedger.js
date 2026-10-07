@@ -47,17 +47,46 @@ function stripLeadingDate(line) {
   return m ? { date: m[1], rest: line.slice(m[0].length) } : { date: null, rest: line };
 }
 
+/**
+ * מפצל שורת-הורדה-לוגיסטית לחלקיה עם **איזון סוגריים**, במקום regex
+ * שנעצר ב-")" הראשון.
+ * ⚠️ 7.10.2026 (לילה 3), אומת: שם-מסמך שמכיל סוגריים מקוננים — למשל
+ * "(תעודה #4,5 (כפולה), שבוע ...)" — שבר את הפענוח (`[^)]*` נעצר
+ * בסוגר הפנימי), והשורה כולה נפלה ל-kind:'unknown' ונעלמה מהיומן.
+ * @returns {{qty:string, category:string, inParens:string, tail:string}|null}
+ */
+function splitLogisticsLine(body) {
+  const head = /^↓\s*([\d.]+)\s*ממלאי:\s*([^(]*?)\s*\(/.exec(body);
+  if (!head) return null;
+  const open = head[0].length - 1; // מיקום ה-"(" עצמו
+  let depth = 0;
+  for (let i = open; i < body.length; i++) {
+    if (body[i] === '(') depth += 1;
+    else if (body[i] === ')') {
+      depth -= 1;
+      if (depth === 0) {
+        return { qty: head[1], category: head[2], inParens: body.slice(open + 1, i), tail: body.slice(i + 1).trim() };
+      }
+    }
+  }
+  return null; // סוגריים לא מאוזנים — נופל ל-kind:'unknown' עם raw מוצג ב-UI
+}
+
 function parseDeductionLine(rawLine) {
   const { date, rest } = stripLeadingDate(rawLine);
   const tagMatch = TAG_RE.exec(rest);
   const body = tagMatch ? rest.slice(0, tagMatch.index).trim() : rest;
 
   // תבנית לוגיסטיקה: "↓ 328 ממלאי: קרטונים (תעודה #44, שבוע ...) ... "
-  const logisticsMatch = /^↓\s*([\d.]+)\s*ממלאי:\s*([^(]+?)\s*\(([^)]*)\)\s*(.*)$/.exec(body);
+  const logisticsMatch = splitLogisticsLine(body);
   if (logisticsMatch) {
-    const [, qty, category, inParens, tail] = logisticsMatch;
-    const [sourceLabel, ...weekParts] = inParens.split(',').map((s) => s.trim());
-    const weekInfo = weekParts.join(', '); // "שבוע 20260926-20261001 · 328 קרטונים × 1"
+    const { qty, category, inParens, tail } = logisticsMatch;
+    // ⚠️ 7.10.2026 (לילה 3): פיצול לפי ',' הראשון חתך שם-מסמך שמכיל
+    // פסיק ("תעודה #4,5" → "תעודה #4"). המפריד האמיתי בפורמט הוא
+    // ", שבוע " — מפצלים לפיו, וכך פסיק בשם-המסמך נשמר במלואו.
+    const weekSep = inParens.indexOf(', שבוע ');
+    const sourceLabel = (weekSep >= 0 ? inParens.slice(0, weekSep) : inParens).trim();
+    const weekInfo = weekSep >= 0 ? inParens.slice(weekSep + 2).trim() : ''; // "שבוע 20260926-20261001 · 328 קרטונים × 1"
     const derivedFrom = /·\s*(.+)$/.exec(weekInfo)?.[1]?.trim() || 'ישיר מהמסמך';
     const warning = tail.replace(/^—\s*/, '').replace(/⚠\s*בלי הצלבה/, 'בלי הצלבה (אין מסמך מקביל לשבוע)').trim() || null;
     return {
@@ -158,9 +187,21 @@ export function parseInventoryLedger(notes) {
   const movements = [];
   const freeNotes = [];
   for (const line of lines) {
-    if (line.startsWith('↓')) movements.push(parseDeductionLine(line));
-    else if (line.startsWith('↩')) movements.push(parseReversalLine(line));
-    else if (line.startsWith('⚠')) movements.push(parseWarningOnlyLine(line));
+    // ⚠️ 7.10.2026 (לילה 3), באג אמיתי שנתפס (ר' לוג-המשימה): מאז
+    // שנוספה חתימת-תאריך-ISO מובילה לשורות-תנועה חדשות (todayStamp(),
+    // ר' logistics-deduction.js/inventory-deduction.js), השורה כבר לא
+    // *מתחילה* ב-"↓"/"↩"/"⚠" — היא מתחילה בספרת-השנה. הבדיקה הזו הייתה
+    // ממשיכה להסתכל רק על התו הראשון של ה-raw line, לפני כל הסרת-תאריך,
+    // כך ששורה חדשה כזו נפלה **בשלמותה** ל-freeNotes (לא נספרה כתנועה
+    // בכלל, לא רק "תאריך לא ידוע") — אומת: parseInventoryLedger על שורת
+    // "2026-10-07 ↓ 27 ממלאי: ..." החזירה movements:[] ריק לגמרי. בודקים
+    // לכן את התו הראשון של *אחרי* הסרת-תאריך (stripLeadingDate), לא של
+    // ה-raw line; מעבירים את ה-line המקורי (עם התאריך) הלאה לפונקציות-
+    // הפרסור הספציפיות — הן כבר מסירות את התאריך בעצמן.
+    const { rest } = stripLeadingDate(line);
+    if (rest.startsWith('↓')) movements.push(parseDeductionLine(line));
+    else if (rest.startsWith('↩')) movements.push(parseReversalLine(line));
+    else if (rest.startsWith('⚠')) movements.push(parseWarningOnlyLine(line));
     else freeNotes.push(line);
   }
   return { movements: movements.reverse(), freeNotes: freeNotes.join('\n') }; // חדש-ביותר קודם

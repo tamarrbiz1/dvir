@@ -38,8 +38,12 @@ const TABLE = 'מלאי בסיסי';
 // הרשומה הנערכת עצמה (אם יש) לא נספרת כ"תפוסה". הגנה אמיתית בשרת (409)
 // קיימת תמיד; זו רק נוחות-UI שמונעת את הטעות מראש.
 function buildItemFields(items, record) {
+  // הקטגוריה של הרשומה הנערכת עצמה לא "תפוסה" (RecordForm כבר לא
+  // משבית את הערך הנוכחי, אבל ההשמטה כאן מונעת תלות בכך)
   const taken = new Set(
-    items.filter((it) => it.id !== record?.id && it['קטגוריה']).map((it) => String(it['קטגוריה']).trim())
+    items
+      .filter((it) => it.id !== record?.id && it['קטגוריה'] && normCat(it['קטגוריה']) !== normCat(record?.['קטגוריה']))
+      .map((it) => String(it['קטגוריה']).trim())
   );
   return [
     { name: 'קטגוריה', label: 'קטגוריה', type: 'select', required: true, allowNew: true, disabledOptions: taken },
@@ -52,11 +56,21 @@ function buildItemFields(items, record) {
 }
 
 /** ולידציית-לקוח (סעיף Q): אותה הודעה כמו ה-409 בשרת, מוצגת לפני שליחה */
+function normCat(v) {
+  return String(v ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('he');
+}
+
 function validateItemCategory(items, record) {
   return (values) => {
     const cat = String(values['קטגוריה'] || '').trim();
     if (!cat) return null;
-    const dup = items.find((it) => it.id !== record?.id && String(it['קטגוריה'] || '').trim() === cat);
+    // ⚠️ 7.10.2026 (לילה 3), באג שנתפס חי: RecordForm שולח את **כל** שדות
+    // הטופס, גם כשרק "מלאי נוכחי" שונה. לכן עריכת אחת משתי רשומות
+    // "נילונים" הכפולות (כפילות-אמת שממתינה להחלטת תמר) נחסמה כאן —
+    // ובשרת ב-409 — כלומר שתי הרשומות היו בלתי-ניתנות-לעריכה בכלל.
+    // כתיבה שלא *משנה* את הקטגוריה לא יכולה ליצור כפילות חדשה.
+    if (record && normCat(record['קטגוריה']) === normCat(cat)) return null;
+    const dup = items.find((it) => it.id !== record?.id && normCat(it['קטגוריה']) === normCat(cat));
     if (dup) return `כבר קיים פריט בקטגוריה "${cat}" — פתח אותו ועדכן את הכמות במקום ליצור כפול`;
     return null;
   };
@@ -132,6 +146,16 @@ export default function InventoryPage() {
   // סעיף Q (7.10.2026): קיבוץ פריטים לפי קטגוריה מנורמלת — כפילויות
   // שכבר קיימות בנתונים (למשל "נילונים" הכפולה) מוצגות כאן כבאנר-אזהרה,
   // לא נמחקות/ממוזגות אוטומטית (זו החלטת-מיזוג של תמר).
+  // סעיף P2: "ירד היום/השבוע" לכל כרטיס. ממוזכר לפי items — קודם
+  // parseInventoryLedger רץ בתוך ה-render של כל כרטיס, כלומר מחדש בכל
+  // הקלדה בתיבת-החיפוש; עם הערות-פריט בנות 200+ שורות (תרחיש אמיתי —
+  // ההערות של פריט-מלאי גדלות לצמיתות) זו עבודה מיותרת בכל keystroke.
+  const recentByItem = useMemo(() => {
+    const out = {};
+    items.forEach((it) => { out[it.id] = summarizeRecentDrops(parseInventoryLedger(it['הערות']).movements); });
+    return out;
+  }, [items]);
+
   const duplicateGroups = useMemo(() => {
     const byCat = {};
     items.forEach((it) => {
@@ -197,8 +221,7 @@ export default function InventoryPage() {
               // אחוז מילוי חסום ל-0..100: מלאי שלילי או ערך לא-סופי לא ישברו את הפס
               const ratio = (cur / denom) * 100;
               const pct = Number.isFinite(ratio) ? Math.min(100, Math.max(0, Math.round(ratio))) : 0;
-              const ledger = parseInventoryLedger(item['הערות']);
-              const recent = summarizeRecentDrops(ledger.movements);
+              const recent = recentByItem[item.id] || { today: 0, week: 0 };
               return (
                 <div key={item.id} className="card clickable" {...activatable(() => setDrawer(item), `פתיחת פריט ${item['קטגוריה'] || ''}`)}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
@@ -507,6 +530,19 @@ function LedgerDrawer({ item, onClose }) {
                   </thead>
                   <tbody>
                     {movements.map((m, i) => (
+                      // ⚠️ 7.10.2026 (לילה 3), אומת: שורה בפורמט ישן/חריג
+                      // (שמתחילה ב-↓/↩/⚠ אבל לא נפרסת) חזרה כ-kind:'unknown'
+                      // עם quantity=undefined ו-sourceLabel=undefined, ונוצרה
+                      // שורת-טבלה חסרת-משמעות: "−", "לא זמין", "—" בכל עמודה —
+                      // כלומר הטקסט האמיתי של השורה **נעלם מהמשתמשת לגמרי**.
+                      // שורה כזו מוצגת עכשיו כפי שהיא, מסומנת "לא מזוהה".
+                      m.kind === 'unknown' ? (
+                        <tr key={i}>
+                          <td>{m.date ? formatDate(m.date) : <span className="muted">—</span>}</td>
+                          <td colSpan={3} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.raw}</td>
+                          <td><span className="badge badge-warn" style={{ fontSize: 12 }}>שורה בפורמט לא מזוהה</span></td>
+                        </tr>
+                      ) : (
                       <tr key={i}>
                         {/* תאריך: שורות-הוצאה אינן נושאות תאריך-שורה (ר' LEADING_DATE_RE
                             ב-inventoryLedger.js) אבל כן את תאריך-המסמך — עדיף אותו על "—" */}
@@ -532,6 +568,7 @@ function LedgerDrawer({ item, onClose }) {
                               : <span className="muted">—</span>}
                         </td>
                       </tr>
+                      )
                     ))}
                   </tbody>
                 </table>
