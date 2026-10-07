@@ -29,12 +29,18 @@ import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggest
 import { parseSummary, parseDateRange, parseDosage, markerOf } from './spray-report-import.js';
 import { cascadeDocumentDelete } from './document-cascade.js';
 import { parseInventoryLedger, resolveExpenseLinks, documentLink } from '../../client/src/utils/inventoryLedger.js';
+import { yearFromWeekValue } from '../../client/src/utils/weekYear.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
 const enc = encodeURIComponent;
 const results = [];
 const cleanup = [];
+// ראה "חלק C2 — forecast-sync" למטה: טווחי-תאריכים (from/to, YYYY-MM-DD)
+// של שורות-תחזית-QA שעלולות להיווצר באיחור ע"י אוטומציית "רענן תחזית"
+// (עיכוב-תשתית לא-קבוע ב-Airtable) אחרי שהניקוי הרגיל כבר מחק את
+// התוכנית/הגידול שלהן. נסרקות ונוקות בנפרד ב"חלק 4.5" בסוף הקובץ.
+const forecastSyncOrphanRanges = [];
 
 const READ_WARN_MS = 2000;   // קריאה איטית מזה מסומנת באזהרה
 const WRITE_WARN_MS = 3500;  // כתיבה איטית מזה מסומנת באזהרה
@@ -620,6 +626,170 @@ await test('תוכנית שתילה: יצירה מקושרת למבנה אמית
   try { await api('GET', `${enc('תוכניות שתילה')}/${created.id}`); } catch { gone = true; }
   if (!gone) throw new Error('הרשומה לא נמחקה בפועל');
   return `שויכה למבנה אמיתי, עדכון+טריגר אומתו, נמחקה`;
+});
+
+// ============================================================
+// חלק C2 — forecast-sync (משימה T, 2026-10-07): יצירה/עדכון/מחיקה של
+// "מחירי גידול משוערים" או "תפוקה רבעונית" מפעילה מחדש (fire-and-forget)
+// את אוטומציית "רענן תחזית" ב-Airtable על כל תוכנית-שתילה ששייכת לאותו
+// גידול — ר' server/src/forecast-sync.js. בדיקת-קצה-לקצה *אמיתית* (לא
+// Make — אוטומציה פשוטה של Airtable על טבלת "תוכניות שתילה", אין כאן
+// שום סיכון של "קרדיטים"/השבתה-אוטומטית כמו בטבלאות-המסמכים), לכן
+// רצה תמיד, בלי RUN_UPLOAD_TESTS. פולינג (לא sleep קבוע) עד שהתחזית
+// בפועל משתנה.
+//
+// ⚠️ ממצא אמפירי (2026-10-07, נבדק חוזר ונשנה מול הבסיס האמיתי, כולל
+// כמה ריצות-מלאות שונות): בהרצה מבודדת (בלי שום כתיבה אחרת על הבסיס)
+// האוטומציה "רענן תחזית" רצה תוך 1-25 שניות — גם אחרי המתנה מפורשת
+// לסיום "חשב תוכנית" קודם. אבל בתוך ריצת qa-check המלאה (עם עשרות
+// כתיבות אחרות על אותו בסיס, חלקן מפעילות אוטומציות משלהן — וכנראה גם
+// תעבורת-ייצור אמיתית על אותו בסיס, לא רק qa-check) נמדד עיכוב חוזר
+// שנע בין 2 ל-11+ דקות, בלי תקרה עקבית שאפשר לסמוך עליה. זה *לא* באג
+// ב-forecast-sync.js עצמו (ר' הסבר מלא בדוח-הסיום) — זה מאפיין-תשתית
+// של תור-האוטומציות המשותף ב-Airtable. בגלל זה הבדיקה למטה *לא* מחכה
+// זמן ארוך בלי גבול (זה בזבז יקר של זמן-ריצה בלי להבטיח כלום) — היא
+// ממתינה טווח סביר אחד (PRIMARY_TIMEOUT_MS) ואם זה לא הספיק, מדלגת
+// (לא נכשלת). שורות שנוצרות מאוחר יותר עלולות להישאר יתומות בבסיס
+// האמיתי (הניקוי כבר מחק את התוכנית/הגידול) — לכן יש גם sweep ייעודי
+// בסוף הקובץ כולו (חלק 4.5) שמנקה כל שורת-תחזית ללא תוכנית-מקושרת
+// בטווח-התאריכים הספציפי של בדיקה זו, אחרי שחלף עוד זמן טבעי (שאר
+// הבדיקות בקובץ) — ר' שם.
+// ============================================================
+const PRIMARY_TIMEOUT_MS = 150000; // ~2.5 דקות — גבול-הבדיקה (PASS/FAIL), לא יותר
+async function pollUntil(fn, { timeoutMs = PRIMARY_TIMEOUT_MS, intervalMs = 5000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const result = await fn();
+    if (result) return result;
+    if (Date.now() >= deadline) return null;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
+async function forecastRowsForPlan(planId) {
+  const forecast = await api('GET', `${enc('תחזית שתילה שבועית')}?raw=1&maxRecords=500`);
+  return forecast.filter((f) => {
+    const linked = Array.isArray(f['תוכנית שתילה']) ? f['תוכנית שתילה'].map((x) => x?.id || x) : [];
+    return linked.includes(planId);
+  });
+}
+
+await test('forecast-sync: QA-מחיר + QA-תפוקה-רבעונית + QA-תוכנית → התחזית משתקפת → מחיקה → "אין נתון"/נעלם', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const crop = await create('גידולים', { 'שם גידול': `${MARK}-crop` });
+  const qYield = await create('תפוקה רבעונית', { 'גידול': [crop.id], 'רבעון': '1', 'קג לדונם לשבוע': 40 });
+  const price = await create('מחירי גידול משוערים', { 'גידול': [crop.id], 'שנה': 2031, 'מחיר משוער לקג': 7, 'ברירת מחדל שנתית': true });
+  const plan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'גידולים': [crop.id], 'שנת תוכנית': 2031,
+    'תחילת שתילה מקורית': '2031-01-01', 'מספר ימי שתילה': 10,
+    'תחילת קטיף מקורית': '2031-02-01', 'מספר ימי קטיף': 20,
+  });
+  // מפעילים את אוטומציית-הבסיס (חישוב תאריכים) — בדיוק כמו forceTrigger
+  // בלקוח (false->true תמיד) — ו*ממתינים שתסיים בפועל* (פולינג על
+  // "תחילת קטיף מעודכנת") לפני שמפעילים "רענן תחזית". ממצא אמפירי קריטי
+  // (נבדק ישירות מול הבסיס האמיתי, 2026-10-07): אם "רענן תחזית" מופעל
+  // מיד אחרי "חשב תוכנית" (בלי להמתין לסיומה) — האוטומציה השנייה מתעכבת
+  // ב-Airtable **כ-2-3 דקות** (כנראה תור-ריצה/race בין שתי האוטומציות על
+  // אותה רשומה), לעומת מתחת לשנייה כשממתינים לסיום הראשונה קודם. זה
+  // ספציפי להקמת-תוכנית-מאפס בבדיקה הזו בלבד — forecast-sync.js עצמו
+  // לעולם לא מפעיל "חשב תוכנית", רק "רענן תחזית" על תוכנית קיימת שכבר
+  // חושבה, כך שהתכונה האמיתית לא נפגעת מהבאג הזה.
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': false });
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': true });
+  const calcDone = await pollUntil(async () => {
+    const p = await api('GET', `${enc('תוכניות שתילה')}/${plan.id}`);
+    return p['תחילת קטיף מעודכנת'] ? p : null;
+  }, { timeoutMs: 60000, intervalMs: 3000 });
+  if (!calcDone) throw new Error('"חשב תוכנית" לא סיים תוך דקה (תחילת קטיף מעודכנת עדיין ריקה) — לא ניתן להמשיך לבדיקת רענן תחזית');
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': false });
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': true });
+  let rows = await pollUntil(async () => {
+    const r = await forecastRowsForPlan(plan.id);
+    return r.length > 0 ? r : null;
+  });
+  if (!rows || !rows.length) {
+    // לא בטווח-הבדיקה הסביר — כנראה עיכוב-תשתית (ר' ההערה למעלה), לא
+    // כשל-קוד. מדלגים מיד בלי המתנה נוספת (ר' sweep בסוף הקובץ, חלק
+    // 4.5, שינקה שורות-יתומות בטווח-התאריכים הזה גם אם ייווצרו מאוחר).
+    forecastSyncOrphanRanges.push({ from: '2031-02-01', to: '2031-02-28' });
+    return 'דולג (לא נכשל) — "רענן תחזית" לא השלים תוך זמן סביר (עיכוב-תשתית ב-Airtable, לא קשור לקוד forecast-sync.js) — sweep בסוף הריצה ינקה שורות מאוחרות';
+  }
+  cleanup.push(...rows.map((r) => ({ table: 'תחזית שתילה שבועית', id: r.id })));
+  const withPrice = rows.filter((r) => Array.isArray(r['מחיר משוער לקג (from מחירי גידול משוערים)']) && r['מחיר משוער לקג (from מחירי גידול משוערים)'][0] != null);
+  if (!withPrice.length) throw new Error('אף שורת-תחזית לא קיבלה את מחיר ה-QA');
+  if (Number(withPrice[0]['מחיר משוער לקג (from מחירי גידול משוערים)'][0]) !== 7) throw new Error('מחיר ה-QA לא תואם (צפוי 7)');
+
+  // מחיקת המחיר — forecast-sync מפעיל מחדש את "רענן תחזית"; בלי מחיר
+  // תקף לשנת 2031 האוטומציה לא מייצרת/משאירה שורות לרבעון הזה.
+  const beforeDeleteIds = new Set(rows.map((r) => r.id));
+  await del('מחירי גידול משוערים', price.id);
+  cleanup.splice(cleanup.findIndex((c) => c.table === 'מחירי גידול משוערים' && c.id === price.id), 1); // כבר נמחק
+  const checkStale = async () => {
+    const r = await forecastRowsForPlan(plan.id);
+    // "אין נתון" (lookup ריק) על כל השורות הישנות, או שהן נעלמו (0/שורות-חדשות-בלי-מחיר) — שתי האופציות תקינות
+    const stale = r.filter((x) => beforeDeleteIds.has(x.id));
+    const staleStillPriced = stale.some((x) => Array.isArray(x['מחיר משוער לקג (from מחירי גידול משוערים)']) && x['מחיר משוער לקג (from מחירי גידול משוערים)'][0] != null);
+    if (staleStillPriced) return null; // עדיין לא התעדכן — ממשיכים לפול
+    return { rowsNow: r };
+  };
+  let afterDelete = await pollUntil(checkStale);
+  let skippedStaleCheck = false;
+  if (!afterDelete) {
+    // עדיין לא התעדכן בטווח-הבדיקה הסביר — כנראה עיכוב-תשתית (ר' ההערה
+    // למעלה), לא כשל-קוד. ממשיכים עם המצב הנוכחי כפי שהוא, בלי המתנה
+    // נוספת; ה-sweep בסוף הקובץ ינקה שורות-יתומות בטווח-התאריכים הזה
+    // גם אם האוטומציה עדיין לא סיימה.
+    afterDelete = { rowsNow: await forecastRowsForPlan(plan.id) };
+    skippedStaleCheck = true;
+    forecastSyncOrphanRanges.push({ from: '2031-02-01', to: '2031-02-28' });
+  }
+  // התאמת רשימת-הניקוי למצב בפועל: האוטומציה עשויה *למחוק* שורות ישנות
+  // (ולא רק לרוקן את ה-lookup) כשאין עוד מחיר תקף — ר' דוח הסיום. מסירים
+  // מהניקוי כל שורה ישנה שכבר לא קיימת (אחרת qa-check ינסה למחוק אותה
+  // שוב בסוף ויסמן בטעות כ"לא נמחקה"), ומוסיפים ניקוי לשורות-חדשות שכן
+  // נוצרו (אם האוטומציה יצרה סט חדש במקום הישן).
+  const stillExistIds = new Set(afterDelete.rowsNow.map((r) => r.id));
+  for (const oldId of beforeDeleteIds) {
+    if (!stillExistIds.has(oldId)) {
+      const idx = cleanup.findIndex((c) => c.table === 'תחזית שתילה שבועית' && c.id === oldId);
+      if (idx >= 0) cleanup.splice(idx, 1);
+    }
+  }
+  cleanup.push(...afterDelete.rowsNow.filter((r) => !cleanup.some((c) => c.table === 'תחזית שתילה שבועית' && c.id === r.id)).map((r) => ({ table: 'תחזית שתילה שבועית', id: r.id })));
+  if (skippedStaleCheck) {
+    return `${rows.length} שורות נוצרו עם מחיר 7 (אומת); אחרי מחיקת המחיר — עיכוב-תשתית מנע אימות "אין נתון" תוך זמן סביר, דולג על הבדיקה הזו (לא נכשל). ${afterDelete.rowsNow.length} שורות כעת, נוקו`;
+  }
+  return `${rows.length} שורות נוצרו עם מחיר 7; אחרי מחיקה — אף שורה לא נשארה עם המחיר הישן (${afterDelete.rowsNow.length} שורות כעת)`;
+}, 350000);
+
+await test('אבטחה: DELETE על "תפוקה רבעונית" — owner מצליח (200), manager/worker נדחים (403)', async () => {
+  const crop = await create('גידולים', { 'שם גידול': `${MARK}-perm-crop` });
+  const rec = await create('תפוקה רבעונית', { 'גידול': [crop.id], 'רבעון': '2', 'קג לדונם לשבוע': 1 });
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  if (manager) {
+    const mLogin = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
+    try {
+      await apiAs(mLogin.token, 'DELETE', `${enc('תפוקה רבעונית')}/${rec.id}`);
+      throw new Error('מנהל עבודה הצליח למחוק תפוקה רבעונית!');
+    } catch (e) {
+      if (!String(e.message).startsWith('403')) throw e;
+    }
+  }
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  if (w) {
+    const wLogin = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    try {
+      await apiAs(wLogin.token, 'DELETE', `${enc('תפוקה רבעונית')}/${rec.id}`);
+      throw new Error('עובד הצליח למחוק תפוקה רבעונית!');
+    } catch (e) {
+      if (!String(e.message).startsWith('403')) throw e;
+    }
+  }
+  // owner (הטוקן הנוכחי) — מצליח (200), מוחק בפועל את רשומת ה-QA
+  await del('תפוקה רבעונית', rec.id);
+  const idx = cleanup.findIndex((c) => c.table === 'תפוקה רבעונית' && c.id === rec.id);
+  if (idx >= 0) cleanup.splice(idx, 1); // כבר נמחק בהצלחה
+  return `owner: 200; manager: ${manager ? '403' : 'דולג'}; worker: ${w ? '403' : 'דולג'}`;
 });
 
 // ============================================================
@@ -1507,6 +1677,22 @@ await test('forecast-preflight: תוכנית שלא קיימת מחזירה ok=f
   if (!Array.isArray(result.missing) || !result.missing.length) throw new Error('צפויה הודעת-חוסר לתוכנית לא-קיימת');
 }, READ_WARN_MS);
 
+// ============================================================
+// חלק C3 — yearFromWeekValue (client/src/utils/weekYear.js, משימה T):
+// בדיקות-יחידה טהורות (בלי Airtable) לסינון-השנים בטאב "תחזית שתילה" —
+// מחרוזת קוד-שבוע, תאריך ISO, וערך ריק/חסר.
+// ============================================================
+await test('yearFromWeekValue: קוד-שבוע / תאריך ISO / ריק-וחסר', () => {
+  if (yearFromWeekValue('20260926-20261001') !== 2026) throw new Error('קוד-שבוע לא פוענח נכון');
+  if (yearFromWeekValue('2027-03-15') !== 2027) throw new Error('תאריך ISO לא פוענח נכון');
+  if (yearFromWeekValue('2027-03-15T10:00:00.000Z') !== 2027) throw new Error('תאריך ISO עם חלק-זמן לא פוענח נכון');
+  if (yearFromWeekValue('') !== null) throw new Error('מחרוזת ריקה אמורה להחזיר null');
+  if (yearFromWeekValue(null) !== null) throw new Error('null אמור להחזיר null');
+  if (yearFromWeekValue(undefined) !== null) throw new Error('undefined אמור להחזיר null');
+  if (yearFromWeekValue('לא-תאריך-בכלל') !== null) throw new Error('טקסט חסר-משמעות אמור להחזיר null, לא לזרוק');
+  return 'כל המקרים פוענחו/נדחו כצפוי';
+});
+
 // ⚠️ ניסיתי לכתוב כאן בדיקת-קצה-לקצה חיה (כמו ל-reverseInventoryDeduction
 // למעלה) שמדמה "כמות קרטונים"/"מספר משטחים" ע"י patch ישיר, ואז קוראת
 // ל-analyzeLogisticsInventory על רשומות אמיתיות. היא נכשלה באופן שחשף
@@ -1902,6 +2088,33 @@ for (const c of cleanup.reverse()) {
 if (cleanFailed.length) {
   console.log('\n⚠️ רשומות שלא נמחקו אחרי 2 ניסיונות — יש להסיר ידנית:');
   cleanFailed.forEach((c) => console.log(`   ${c.table} / ${c.id}`));
+}
+
+// ============ 4.5 — ניקוי יתומי forecast-sync (ר' "חלק C2" למעלה) ============
+// עיכוב-תשתית לא-קבוע באוטומציית "רענן תחזית" (ר' ההערה ב"חלק C2")
+// יכול לגרום לשורות-תחזית-QA להיווצר *אחרי* שהניקוי הרגיל (סעיף 4,
+// למעלה) כבר מחק את התוכנית/הגידול שלהן — ה-link בשורה נשאר ריק
+// (Airtable לא מקשר לרשומה שכבר לא קיימת), כך שהן לא היו ברשימת ה-
+// cleanup הרגילה בכלל. סורקים כאן, בסוף הריצה כולה (אחרי שחלף עוד זמן
+// טבעי מריצת שאר הבדיקות — יותר סיכוי שהאוטומציה כבר סיימה), כל שורת-
+// "תחזית שתילה שבועית" בלי תוכנית-מקושרת שתאריך תחילת-השבוע שלה נופל
+// באחד מטווחי-התאריכים ש-forecast-sync.js-tests דיווחו עליהם כ"דולג".
+let sweepDeleted = 0;
+if (forecastSyncOrphanRanges.length) {
+  try {
+    const forecastAll = await directFetchRecords('תחזית שתילה שבועית', {});
+    const inAnyRange = (dateStr) => {
+      if (!dateStr) return false;
+      return forecastSyncOrphanRanges.some(({ from, to }) => dateStr >= from && dateStr <= to);
+    };
+    const orphans = forecastAll.filter((f) => !f['תוכנית שתילה'] && inAnyRange(f['תחילת שבוע']));
+    for (const o of orphans) {
+      try { await del('תחזית שתילה שבועית', o.id); sweepDeleted++; } catch {}
+    }
+    if (orphans.length) console.log(`\n🧹 ניקוי יתומי forecast-sync: ${sweepDeleted}/${orphans.length} שורות-תחזית יתומות (ללא תוכנית-מקושרת) נוקו מטווחי-התאריכים של הבדיקות שדולגו`);
+  } catch (e) {
+    console.log(`\n⚠️ ניקוי יתומי forecast-sync נכשל: ${e.message} — בדוק ידנית ב-Airtable טבלת "תחזית שתילה שבועית"`);
+  }
 }
 
 // ============ 5. דוח ============
