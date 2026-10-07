@@ -1413,6 +1413,19 @@ await test('הערות הוצאה: sanitizeFreeNotes/mergeFreeNotesWithTags מס
   return 'סמן-סמן מוזרק מסונן מהטקסט החופשי, התג האמיתי של ההוצאה נשמר בדיוק';
 });
 
+await test('הערות הוצאה: PATCH/notes ללא שינוי בטקסט החופשי → round-trip זהה בדיוק לבייט (E4, "המשך הציד")', () => {
+  // לא רק "התג נשמר" (הבדיקה למעלה) — גם שהצד-הלקוח שלא נגע בטקסט
+  // בכלל (רק פתח/סגר את הכרטיס) לא משנה אף תו בשדה "הערות" המלא,
+  // כולל ה-JSON הפנימי של הסמן (רווחים/סדר-מפתחות/וכו').
+  const state = { status: 'partial', analyzedAt: '2026-10-07T00:00:00.000Z', results: [{ description: 'x', quantity: 2, itemId: 'recX', deducted: true }] };
+  const marker = `[מלאי-AI]${JSON.stringify(state)}`;
+  const original = `הערה חופשית של תמר\n${marker}`;
+  const freeTextAsDisplayed = sanitizeFreeNotes(original); // מדמה בדיוק מה שהלקוח רואה ושולח בחזרה בלי לערוך
+  const merged = mergeFreeNotesWithTags(original, freeTextAsDisplayed);
+  if (merged !== original) throw new Error(`round-trip בלי עריכה לא חזר זהה-בייט: ${JSON.stringify(merged)} !== ${JSON.stringify(original)}`);
+  return 'PATCH/notes בלי שינוי טקסט מחזיר "הערות" זהה-בייט למקור, כולל JSON הסמן';
+});
+
 await test('הוצאה ידנית: claimManualExpenseSubmission — בקשה שנייה/שלישית זהה בתוך החלון מקבלת את אותה רשומה (E5)', async () => {
   const key = manualExpenseSubmitKey({ supplierId: 'recA', date: today, total: 10, category: 'c', notes: '', lines: [] });
   const claim1 = claimManualExpenseSubmission(key);
