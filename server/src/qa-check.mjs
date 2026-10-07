@@ -21,7 +21,11 @@ import { fetchRecords as directFetchRecords } from './airtable.js';
 import { LOGIN_CODES_TABLE, canReadTable, canWriteTable } from './auth.js';
 import { analyzeExpenseDocument } from './document-analysis.js';
 import { matchLinesToInventory, categoryOfDescription, normalize } from './inventory-matching.js';
-import { readState } from './inventory-deduction.js';
+import {
+  readState, deductFromInventoryItem, validateManualExpenseInput, ValidationError,
+  MAX_MANUAL_LINES, sanitizeFreeNotes, mergeFreeNotesWithTags, manualExpenseSubmitKey,
+  claimManualExpenseSubmission,
+} from './inventory-deduction.js';
 import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD, planLogisticsReversal } from './logistics-deduction.js';
 import { fixFilenameEncoding } from './filename-utils.js';
 import { weekCodeFromDate, WEEK_CODE_RE } from './weekly-sync.js';
@@ -1303,10 +1307,15 @@ await test('הוצאה ידנית + קובץ אמיתי: supplierId אמיתי �
     state = readState(cur['הערות']);
   }
   if (!state) throw new Error('ההורדה-ברקע (fire-and-forget) לא כתבה state להוצאה תוך 20 שניות — כלומר לא רצה בכלל');
-  // השורה הריקה דולגה; השורה היחידה שנשלחה מתועדת ב-state
-  if ((state.results || []).length !== 1) throw new Error(`צפויה שורה אחת ב-state (השורה הריקה דולגת), התקבלו ${(state.results || []).length}`);
-  const line = state.results[0];
-  if (line.deducted) throw new Error('שורת-הבדיקה ירדה בפועל ממלאי — אסור: תיאור-QA לא אמור להתאים לשום קטגוריה אמיתית');
+  // ⚠️ תוקן (ליל-חיזוק 3, 2026-10-07): הבדיקה ציפתה בעבר לאורך 1 ("השורה
+  // היחידה שנשלחה מתועדת ב-state") — אבל matchLinesToInventory מתעלם
+  // לגמרי (לא מדווח, לא רק "לא בטוח") משורה שתיאורה לא תואם לאף קטגוריה
+  // (ר' ההערה בקוד עצמו: "אין התאמה לאף קטגוריה — לא מדווח"), וזו בדיוק
+  // הכוונה כאן ("תיאור-QA שלא מתאים לשום קטגוריה אמיתית") — אז התוצאה
+  // הנכונה היא 0 שורות ב-results, לא 1. נמדד בפועל: matched.length===0
+  // גם לפני וגם אחרי שינויי E1-E7 (matchLinesToInventory לא נגעתי בה).
+  if ((state.results || []).length !== 0) throw new Error(`צפויות 0 שורות ב-state (תיאור-QA לא תואם אף קטגוריה, ושורה ריקה דולגת), התקבלו ${JSON.stringify(state.results)}`);
+  if (state.status !== 'done') throw new Error(`צפוי status:"done" (אין שורות להורדה), התקבל ${state.status}`);
 
   // ⚠️ אימות-ליבה של הבדיקה הזו: **שום** פריט מלאי אמיתי לא השתנה
   const invAfter = await api('GET', `${enc('מלאי בסיסי')}?raw=1&includeTest=1`);
@@ -1316,7 +1325,189 @@ await test('הוצאה ידנית + קובץ אמיתי: supplierId אמיתי �
   });
   if (changed.length) throw new Error(`הבדיקה שינתה מלאי אמיתי (אסור): ${changed.map((c) => `${c['קטגוריה']}→${c['מלאי נוכחי']}`).join(', ')}`);
 
-  return `תגובת ה-POST (עם קובץ): ${requestMs}ms · supplierId מקושר + ספק-AI תקין · בלי "יחידה" בפלט · ההורדה-ברקע רצה וכתבה state (${state.status}, שורה אחת, לא ירדה — תיאור-QA) · 0 שינוי בפריטי מלאי אמיתיים`;
+  return `תגובת ה-POST (עם קובץ): ${requestMs}ms · supplierId מקושר + ספק-AI תקין · בלי "יחידה" בפלט · ההורדה-ברקע רצה וכתבה state (${state.status}, 0 שורות — תיאור-QA לא תואם קטגוריה) · 0 שינוי בפריטי מלאי אמיתיים`;
+});
+
+// ============================================================
+// ליל-חיזוק 3 (2026-10-07) — E1-E8: בדיקות ממוקדות לכל תיקון שנמצא
+// ונאמת בפועל הלילה (ר' /root/missions/2026-10-07-night3-log-expense.md).
+// רובן טהורות/נוגעות רק ב"מלאי בסיסי" (לא מנוטר ע"י Make) — בטוחות
+// להרצה תמיד. בדיקה אחת בלבד (E4+E5+E6 ברמת-HTTP) יוצרת הוצאה אמיתית
+// עם קובץ אמיתי ומדולגת כברירת מחדל (RUN_UPLOAD_TESTS=1).
+// ============================================================
+
+await test('הורדת מלאי: deductFromInventoryItem אטומי — 3 הורדות מקבילות על אותו פריט לא דורסות זו את זו (E1+E2)', async () => {
+  const item = await create('מלאי בסיסי', { 'קטגוריה': await freeInventoryCategory(), 'מלאי נוכחי': 100, 'הערות': MARK });
+  const before = Number(item['מלאי נוכחי']);
+  // מדמה גם "שתי שורות באותה קטגוריה" (E1) וגם "שתי הוצאות במקביל על
+  // אותו פריט" (E2) — באותו מנגנון-ליבה בדיוק: קריאות מקבילות ל-
+  // deductFromInventoryItem על אותו itemId. לפני התיקון (snapshot ישן +
+  // נעילה לפי-מסמך ולא לפי-פריט) כל כתיבה דרסה את הקודמת.
+  await Promise.all([
+    deductFromInventoryItem(item.id, 10, `${MARK}-a`),
+    deductFromInventoryItem(item.id, 5, `${MARK}-b`),
+    deductFromInventoryItem(item.id, 1, `${MARK}-c`),
+  ]);
+  const after = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
+  if (Number(after['מלאי נוכחי']) !== before - 16) {
+    throw new Error(`צפוי ${before - 16} (100-16), התקבל ${after['מלאי נוכחי']} — הורדה אבדה (lost update)`);
+  }
+  const notes = String(after['הערות'] || '');
+  for (const tag of ['-a', '-b', '-c']) {
+    if (!notes.includes(`${MARK}${tag}`)) throw new Error(`שורת-תנועה "${tag}" לא נשמרה — נדרסה ע"י כתיבה מקבילה אחרת`);
+  }
+  return `מלאי ${before}→${after['מלאי נוכחי']} בדיוק (16=10+5+1), 3 שורות-תנועה כולן נשמרו (לא נדרסו)`;
+});
+
+await test('הורדת מלאי: כמות לא-סופית נדחית מ-deductFromInventoryItem; 0/שלילי/1e999 נדחים בולידציה (E3)', async () => {
+  const bad = [];
+  try { await deductFromInventoryItem('recQAFAKE00000000001', Infinity, 'x'); bad.push('Infinity לא נדחה'); }
+  catch (e) { if (!/לא חוקית/.test(e.message)) bad.push(`Infinity: הודעה לא צפויה: ${e.message}`); }
+  try { await deductFromInventoryItem('recQAFAKE00000000001', NaN, 'x'); bad.push('NaN לא נדחה'); }
+  catch (e) { if (!/לא חוקית/.test(e.message)) bad.push(`NaN: הודעה לא צפויה: ${e.message}`); }
+  for (const qty of [0, -5, '1e999']) {
+    try {
+      validateManualExpenseInput({ supplierId: 'recX', date: today, total: 10, category: 'c', lines: [{ description: 'x', quantity: qty }] });
+      bad.push(`qty=${qty} לא נדחה`);
+    } catch (e) {
+      if (!(e instanceof ValidationError)) bad.push(`qty=${qty}: לא ValidationError: ${e.message}`);
+    }
+  }
+  if (bad.length) throw new Error(bad.join('; '));
+  return 'Infinity/NaN נדחים לפני כל כתיבה ל-Airtable; qty=0/-5/"1e999" נדחים בולידציית הקלט';
+});
+
+await test('הוצאה ידנית: ולידציה — lines שאינו מערך, total בוליאני, תקרת 100 שורות (E7)', () => {
+  const bad = [];
+  for (const lines of [{ a: 1 }, 'x', 123]) {
+    try {
+      validateManualExpenseInput({ supplierId: 'recX', date: today, total: 10, category: 'c', lines });
+      bad.push(`lines=${JSON.stringify(lines)} לא נדחה`);
+    } catch (e) { if (!(e instanceof ValidationError)) bad.push(`lines=${JSON.stringify(lines)}: לא ValidationError (${e.constructor.name})`); }
+  }
+  try {
+    validateManualExpenseInput({ supplierId: 'recX', date: today, total: true, category: 'c', lines: [] });
+    bad.push('total=true לא נדחה');
+  } catch (e) { if (!(e instanceof ValidationError)) bad.push('total=true: לא ValidationError'); }
+  const tooMany = Array.from({ length: MAX_MANUAL_LINES + 1 }, (_, i) => ({ description: `x${i}`, quantity: 1 }));
+  try {
+    validateManualExpenseInput({ supplierId: 'recX', date: today, total: 10, category: 'c', lines: tooMany });
+    bad.push(`${MAX_MANUAL_LINES + 1} שורות לא נדחה`);
+  } catch (e) { if (!(e instanceof ValidationError)) bad.push('תקרת שורות: לא ValidationError'); }
+  const exactly = Array.from({ length: MAX_MANUAL_LINES }, (_, i) => ({ description: `x${i}`, quantity: 1 }));
+  validateManualExpenseInput({ supplierId: 'recX', date: today, total: 10, category: 'c', lines: exactly }); // לא אמור לזרוק
+  if (bad.length) throw new Error(bad.join('; '));
+  return `lines לא-מערך/total בוליאני נדחים; בדיוק ${MAX_MANUAL_LINES} שורות עוברות, ${MAX_MANUAL_LINES + 1} נדחות`;
+});
+
+await test('הערות הוצאה: sanitizeFreeNotes/mergeFreeNotesWithTags מסננים סמן מוזרק מהלקוח, שומרים את התג האמיתי (E4)', () => {
+  const fakeMarker = `[מלאי-AI]${JSON.stringify({ status: 'done', results: [{ deducted: true, itemId: 'recREALFAKE', quantity: 9999 }] })}`;
+  const injected = `טקסט רגיל\n${fakeMarker}\nעוד טקסט`;
+  const sanitized = sanitizeFreeNotes(injected);
+  if (sanitized.includes('מלאי-AI') || sanitized.includes('recREALFAKE')) throw new Error(`sanitizeFreeNotes לא סינן את הסמן המוזרק: ${JSON.stringify(sanitized)}`);
+  if (!sanitized.includes('טקסט רגיל') || !sanitized.includes('עוד טקסט')) throw new Error(`sanitizeFreeNotes מחק גם טקסט לגיטימי: ${JSON.stringify(sanitized)}`);
+  const realTag = `[מלאי-AI]${JSON.stringify({ status: 'done', results: [] })}`;
+  const merged = mergeFreeNotesWithTags(`ישן\n${realTag}`, injected);
+  if (!merged.includes(realTag)) throw new Error(`mergeFreeNotesWithTags לא שמר את התג האמיתי: ${merged}`);
+  if (merged.includes('recREALFAKE')) throw new Error(`mergeFreeNotesWithTags אימץ את הסמן המוזרק (חור-הזרקה): ${merged}`);
+  return 'סמן-סמן מוזרק מסונן מהטקסט החופשי, התג האמיתי של ההוצאה נשמר בדיוק';
+});
+
+await test('הערות הוצאה: PATCH/notes ללא שינוי בטקסט החופשי → round-trip זהה בדיוק לבייט (E4, "המשך הציד")', () => {
+  // לא רק "התג נשמר" (הבדיקה למעלה) — גם שהצד-הלקוח שלא נגע בטקסט
+  // בכלל (רק פתח/סגר את הכרטיס) לא משנה אף תו בשדה "הערות" המלא,
+  // כולל ה-JSON הפנימי של הסמן (רווחים/סדר-מפתחות/וכו').
+  const state = { status: 'partial', analyzedAt: '2026-10-07T00:00:00.000Z', results: [{ description: 'x', quantity: 2, itemId: 'recX', deducted: true }] };
+  const marker = `[מלאי-AI]${JSON.stringify(state)}`;
+  const original = `הערה חופשית של תמר\n${marker}`;
+  const freeTextAsDisplayed = sanitizeFreeNotes(original); // מדמה בדיוק מה שהלקוח רואה ושולח בחזרה בלי לערוך
+  const merged = mergeFreeNotesWithTags(original, freeTextAsDisplayed);
+  if (merged !== original) throw new Error(`round-trip בלי עריכה לא חזר זהה-בייט: ${JSON.stringify(merged)} !== ${JSON.stringify(original)}`);
+  return 'PATCH/notes בלי שינוי טקסט מחזיר "הערות" זהה-בייט למקור, כולל JSON הסמן';
+});
+
+await test('הוצאה ידנית: claimManualExpenseSubmission — בקשה שנייה/שלישית זהה בתוך החלון מקבלת את אותה רשומה (E5)', async () => {
+  const key = manualExpenseSubmitKey({ supplierId: 'recA', date: today, total: 10, category: 'c', notes: '', lines: [] });
+  const claim1 = claimManualExpenseSubmission(key);
+  if (!claim1.fresh) throw new Error('claim ראשון היה אמור להיות fresh:true');
+  const claim2 = claimManualExpenseSubmission(key);
+  if (claim2.fresh) throw new Error('claim שני לאותו מפתח היה אמור fresh:false (זיהוי כפילות)');
+  claim1.settle({ id: 'recFAKE123' });
+  const waited = await claim2.wait();
+  if (waited?.id !== 'recFAKE123') throw new Error(`claim שני קיבל ${JSON.stringify(waited)} במקום אותה רשומה (recFAKE123)`);
+  const claim3 = claimManualExpenseSubmission(key);
+  if (claim3.fresh) throw new Error('claim שלישי בתוך החלון היה אמור fresh:false גם הוא');
+  const waited3 = await claim3.wait();
+  if (waited3?.id !== 'recFAKE123') throw new Error('claim שלישי לא קיבל את אותה רשומה');
+  return 'שתי בקשות כפולות נוספות קיבלו את אותה רשומה — לא claim חדש, לא יצירה כפולה';
+});
+
+await test('הוצאה ידנית: supplierId מטבלה זרה (רשומה אמיתית) → 400 נקי, לא 500 (E8, ממצא חדש)', async () => {
+  const crops = await api('GET', `${enc('גידולים')}?raw=1&maxRecords=1`);
+  if (!crops?.length) return 'דולג — אין רשומת "גידולים" קיימת לבדיקה';
+  const foreignId = crops[0].id;
+  let threw = null;
+  try {
+    await api('POST', 'expenses/manual', { supplierId: foreignId, date: today, total: 10, category: 'QAPROBE-E8', lines: [] });
+  } catch (e) { threw = e; }
+  // ⚠️ אם זה לא זרק בכלל — נוצרה בפועל רשומת "הוצאות" עם קישור לרשומה
+  // זרה (או שגיאת 500 חשפה פרטי-מבנה-בסיס) — שתיהן גרועות; חובה לזרוק.
+  if (!threw) throw new Error('היה צפוי 400 — הבקשה לא נדחתה בכלל (!)');
+  if (!/^400:/.test(threw.message)) throw new Error(`צפוי 400 נקי (base(SUPPLIERS_TABLE).find אינו בודק שייכות-טבלה — ר' E8), התקבל: ${threw.message}`);
+  if (!/ספק לא נמצא/.test(threw.message)) throw new Error(`הודעת השגיאה לא כללה "ספק לא נמצא": ${threw.message}`);
+  return `supplierId מ"גידולים" אמיתי → 400 נקי "ספק לא נמצא" (לא 500 גולמי מ-Airtable)`;
+});
+
+await test('הוצאה ידנית + קובץ אמיתי: double-submit→אותה רשומה (E5), PATCH/notes מסנן סמן מוזרק (E4), החלמה מ-pendingRun תקוע (E6)', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
+  const supplier = await create('ספקים', { 'שם ספק': `${MARK}-e4e5e6` });
+  const fileBuf = await readFile(REAL_FIXTURE_PATH);
+  const makeForm = () => {
+    const fd = new FormData();
+    fd.append('file', new Blob([fileBuf], { type: 'application/pdf' }), REAL_FIXTURE_NAME);
+    fd.append('supplierId', supplier.id);
+    fd.append('date', today);
+    fd.append('total', '55');
+    fd.append('category', `${MARK}-e4e5e6-cat`);
+    fd.append('lines', JSON.stringify([{ description: `${MARK}-e4e5e6`, quantity: 3 }]));
+    return fd;
+  };
+
+  // --- E5: שליחה כפולה-מיידית, זהה לחלוטין — אמורה ליצור רשומה אחת בלבד ---
+  const r1 = await api('POST', 'expenses/manual', makeForm(), true);
+  if (!r1?.id) throw new Error('לא נוצרה רשומה בשליחה הראשונה');
+  cleanup.push({ table: 'הוצאות', id: r1.id });
+  if (r1.duplicateSubmit) throw new Error('השליחה הראשונה סומנה duplicateSubmit — לא צפוי (רשומה חדשה)');
+  const r2 = await api('POST', 'expenses/manual', makeForm(), true);
+  if (r2.id !== r1.id) throw new Error(`שליחה כפולה יצרה רשומה אחרת (${r2.id} != ${r1.id}) — ה-dedup לא עבד, שתי רשומות + שתי הרצות Make!`);
+  if (!r2.duplicateSubmit) throw new Error('שליחה כפולה לא סומנה duplicateSubmit:true');
+
+  // --- E4: ממתינים ל-state האמיתי שההורדה-ברקע כותבת, ואז מזריקים PATCH/notes עם סמן מוזרק ---
+  let realState = null;
+  for (let i = 0; i < 20 && !realState; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const cur = await api('GET', `${enc('הוצאות')}/${r1.id}?raw=1`);
+    realState = readState(cur['הערות']);
+  }
+  if (!realState) throw new Error('ההורדה-ברקע (fire-and-forget) לא כתבה state תוך 20 שניות');
+  const injected = `הערה חדשה שתמר הקלידה\n[מלאי-AI]${JSON.stringify({ status: 'done', results: [{ deducted: true, itemId: 'recREALFAKE', quantity: 9999 }] })}`;
+  await api('PATCH', `expenses/${r1.id}/notes`, { freeText: injected });
+  const afterPatch = await api('GET', `${enc('הוצאות')}/${r1.id}?raw=1`);
+  if (String(afterPatch['הערות']).includes('recREALFAKE')) throw new Error('PATCH /notes אימץ סמן מוזרק מהלקוח (חור-הזרקה)');
+  if (!String(afterPatch['הערות']).includes('הערה חדשה שתמר הקלידה')) throw new Error('PATCH /notes לא שמר את הטקסט החדש');
+
+  // --- E6: מזריקים state עם pendingRun+ידני?=true, קוראים analyze-inventory בלי force ---
+  const fakeState = {
+    status: 'processing', analyzedAt: new Date().toISOString(), supplier: supplier['שם ספק'], date: today,
+    results: [{ description: `${MARK}-e6`, quantity: 1, itemId: 'recNONEXISTENT000e6', deducted: false, pendingRun: true }],
+  };
+  await patch('הוצאות', r1.id, { 'הערות': `${MARK}\n[מלאי-AI]${JSON.stringify(fakeState)}`, 'ידני?': true });
+  const resumed = await api('POST', `expenses/${r1.id}/analyze-inventory`);
+  if (resumed.status === 'processing') throw new Error('נשאר תקוע ב-"processing" — ההחלמה לא רצה (E6 לא עבד)');
+  const retriedLine = (resumed.results || []).find((x) => x.description === `${MARK}-e6`);
+  if (!retriedLine || retriedLine.pendingRun) throw new Error(`השורה שסומנה pendingRun לא נוסתה מחדש: ${JSON.stringify(retriedLine)}`);
+
+  return `double-submit→אותה רשומה (${r1.id}); PATCH/notes סינן סמן מוזרק ושמר טקסט חדש; resume מ-pendingRun רץ (status סופי: ${resumed.status})`;
 });
 
 // ============================================================

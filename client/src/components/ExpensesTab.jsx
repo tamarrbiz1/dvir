@@ -22,7 +22,7 @@ import PeriodSelect from './PeriodSelect.jsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { authFetch } from '../utils/authFetch.js';
-import { readInventoryAiState, inventoryAiSummary, stripInventoryAiMarker, withPreservedInventoryTags } from '../utils/inventoryAi.js';
+import { readInventoryAiState, inventoryAiSummary, stripInventoryAiMarker } from '../utils/inventoryAi.js';
 
 const TABLE = 'הוצאות';
 
@@ -349,7 +349,7 @@ function ExpenseDrawer({ expense, canEdit, api, onClose, onLink, onEdit, onOpenS
             {rows.map(([l, v]) => (
               <div key={l} className="obj-row"><span className="obj-row-label">{l}</span><span className="obj-row-value">{v}</span></div>
             ))}
-            <NotesRow api={api} expense={expense} canEdit={canEdit} onChanged={onChanged} />
+            <NotesRow expense={expense} canEdit={canEdit} onChanged={onChanged} />
             {canEdit && (
               <div style={{ marginTop: 14 }}>
                 <button className="btn btn-ghost" onClick={onEdit}>✎ עריכה</button>
@@ -377,11 +377,19 @@ function ExpenseDrawer({ expense, canEdit, api, onClose, onLink, onEdit, onOpenS
 // ============================================================
 // שורת "הערות" בכרטיס הוצאה (סעיף R, 2026-10-07) — מציגה את ההערות
 // עם הסמן הפנימי [מלאי-AI]{...} מוסתר (ר' stripInventoryAiMarker),
-// ומאפשרת עריכה ישירה (בלי לעבור דרך RecordForm הגנרי, כדי לא לאבד
-// את הסמן בשמירה — ר' withPreservedInventoryTags: רק הטקסט החופשי
-// מוחלף, התגיות הפנימיות נשמרות בדיוק כפי שהיו).
+// ומאפשרת עריכה ישירה (בלי לעבור דרך RecordForm הגנרי).
+//
+// עודכן בליל-החיזוק (2026-10-07, סעיף E4): השמירה עוברת עכשיו ב-
+// PATCH /api/expenses/:id/notes ושולחת **רק את הטקסט החופשי**, לא את
+// השדה המלא. קודם הלקוח שיחזר את שורת-הסמן מתוך ה-snapshot שנטען
+// לדפדפן (withPreservedInventoryTags על `raw`) — וההורדה-ברקע היא
+// fire-and-forget וכותבת את הסמן שנייה-שתיים אחרי שהחלון נסגר, כך
+// שעריכת הערה מיד אחר-כך החזירה את מצב-ההורדה אחורה; במחיקת ההוצאה
+// reverseInventoryDeduction קרא את ה-state הישן ולא החזיר למלאי את מה
+// שכן ירד. עכשיו השרת קורא את הרשומה מחדש בתוך נעילה ומדביק את
+// התגיות העכשוויות, כך שאין מרוץ ואין צורך לשלוח אותן מהלקוח בכלל.
 // ============================================================
-function NotesRow({ api, expense, canEdit, onChanged }) {
+function NotesRow({ expense, canEdit, onChanged }) {
   const raw = expense['הערות'];
   const display = stripInventoryAiMarker(raw);
   const [editing, setEditing] = useState(false);
@@ -409,8 +417,11 @@ function NotesRow({ api, expense, canEdit, onChanged }) {
     if (saving) return;
     setSaving(true);
     try {
-      const next = withPreservedInventoryTags(raw, draft);
-      await api.update(TABLE, expense.id, { 'הערות': next || null });
+      const r = await authFetch(`/api/expenses/${expense.id}/notes`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ freeText: draft }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'שגיאה');
       setEditing(false);
       await onChanged?.();
     } catch (e) {
@@ -607,8 +618,12 @@ function ManualExpenseModal({ categories, suppliers, onClose, onSaved }) {
       if (!desc && !hasQty) return; // שורה ריקה-לגמרי — מתעלמים
       const missing = [];
       if (!desc) missing.push('מה נקנה');
-      if (!hasQty || Number.isNaN(Number(l.quantity))) missing.push('כמות');
-      if (missing.length) le[i] = `שורה ${i + 1}: חסר/ה ${missing.join(', ')}`;
+      if (!hasQty || !Number.isFinite(Number(l.quantity))) missing.push('כמות');
+      if (missing.length) { le[i] = `שורה ${i + 1}: חסר/ה ${missing.join(', ')}`; return; }
+      // סעיף E3 (ליל-חיזוק 2026-10-07): כמות <= 0 עברה בשקט עד
+      // ה"דורש אישור", ואישור בקליק אחד **הגדיל** את המלאי במקום
+      // להקטין (current - (-5)). נחסם גם בשרת, ר' validateManualExpenseInput.
+      if (Number(l.quantity) <= 0) le[i] = `שורה ${i + 1}: הכמות חייבת להיות גדולה מאפס`;
     });
     const ok = !Object.values(fe).some(Boolean) && !Object.keys(le).length;
     return { fe, le, ok };
@@ -735,7 +750,7 @@ function ManualExpenseModal({ categories, suppliers, onClose, onSaved }) {
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <input className="input" style={{ flex: 2 }} aria-label="מה נקנה" list="manual-expense-items"
                 value={l.description} onChange={(e) => setLine(i, { description: e.target.value })} />
-              <input type="number" className="input" style={{ flex: 1 }} aria-label="כמות"
+              <input type="number" className="input" style={{ flex: 1 }} aria-label="כמות" min="0" step="any"
                 value={l.quantity} onChange={(e) => setLine(i, { quantity: e.target.value })} />
               <button type="button" className="btn btn-sm btn-ghost" aria-label="הסרת שורה" onClick={() => removeLine(i)} disabled={lines.length === 1}>✕</button>
             </div>

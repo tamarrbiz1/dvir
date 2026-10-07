@@ -12,7 +12,7 @@ import {
 } from './auth.js';
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
-import { analyzeExpenseInventory, approvePendingDeduction, readState, createManualExpense, runManualExpenseInventoryDeduction, validateManualExpenseInput } from './inventory-deduction.js';
+import { analyzeExpenseInventory, approvePendingDeduction, readState, createManualExpense, runManualExpenseInventoryDeduction, validateManualExpenseInput, manualExpenseSubmitKey, claimManualExpenseSubmission, updateExpenseFreeNotes } from './inventory-deduction.js';
 import { analyzeLogisticsInventory } from './logistics-deduction.js';
 import { cascadeDocumentDelete, summarizeCascade } from './document-cascade.js';
 import { fixFilenameEncoding } from './filename-utils.js';
@@ -442,6 +442,32 @@ app.post('/api/expenses/:id/analyze-inventory/approve', authenticate, requireOwn
 });
 
 // ============================================================
+// עריכת הטקסט החופשי של "הערות" בהוצאה (ליל-חיזוק 2026-10-07, סעיף E4).
+// נקודת-קצה נפרדת מה-PATCH הגנרי בכוונה: שדה "הערות" של הוצאה מחזיק
+// גם את מצב הורדת-המלאי כ-JSON בשורת-סמן ([מלאי-AI], ר' inventory-
+// deduction.js). כשהלקוח שלח את השדה **המלא** הוא בהכרח שלח סמן
+// מה-snapshot שנטען לדפדפן — וההורדה היא fire-and-forget, כך שעריכת
+// הערה מיד אחרי השמירה החזירה את מצב-ההורדה אחורה, ואז מחיקת ההוצאה
+// לא החזירה למלאי את מה שכן ירד. כאן הלקוח שולח **רק** את הטקסט
+// החופשי, והשרת קורא מחדש, מנקה שורות-סמן שהוקלדו, ומדביק את התגיות
+// העכשוויות (ר' updateExpenseFreeNotes). owner בלבד, כמו כל שאר
+// נקודות-הקצה של "הוצאות" (הטבלה חסומה למנהל עבודה).
+// ============================================================
+app.patch('/api/expenses/:id/notes', authenticate, requireOwner, async (req, res) => {
+  try {
+    const { freeText } = req.body || {};
+    if (freeText != null && typeof freeText !== 'string') {
+      return res.status(400).json({ error: 'freeText חייב להיות טקסט' });
+    }
+    const notes = await updateExpenseFreeNotes(req.params.id, freeText || '');
+    invalidateReads('הוצאות');
+    res.json({ id: req.params.id, 'הערות': notes });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
 // סנכרון "סיכום שבועי" (תוספת 2026-10-06, סעיף D) — ר' weekly-sync.js.
 // GET תמיד dry-run (שום כתיבה, ללא קשר לפרמטר) — דוח בלבד, לכל מי
 // שמחובר. POST מבצע בפועל (owner בלבד): יוצר רשומות-שבוע חסרות
@@ -515,15 +541,45 @@ app.post('/api/expenses/manual', authenticate, requireOwner, upload.single('file
     }
 
     // ספק חייב להיות קיים ברשימת "ספקים" — לא טקסט חופשי (סעיף R)
-    let supplierRecord;
-    try {
-      supplierRecord = await getBase()(SUPPLIERS_TABLE).find(supplierId);
-    } catch (e) {
+    //
+    // ⚠️ ליל-חיזוק 2026-10-07 (המשך E1-E7, ממצא חדש) — `base(SUPPLIERS_TABLE)
+    // .find(id)` **אינו** בודק שהרשומה שייכת לטבלה הזו: Airtable מחזיר כל
+    // רשומה קיימת באותו base, מכל טבלה, כל עוד מזהה-הרשומה תקין. נמדד
+    // בפועל: supplierId ששייך בפועל לרשומת "גידולים" אמיתית עבר את ה-find()
+    // בהצלחה (עם fields של הגידול, לא של ספק) — ואז הכתיבה בפועל ל-Airtable
+    // (קישור שדה "ספקים" בטבלת "הוצאות" לרשומה מטבלה אחרת) נכשלה ב-422
+    // "the field links to table X" **מחוץ** לבלוק try/catch הזה, וחזרה
+    // ללקוח כ-500 גולמי במקום 400 נקי. התיקון: קוראים את **כל** רשימת
+    // הספקים (טבלה קטנה, כבר בשימוש בכל הקריאה הזו ממילא) ובודקים חברות
+    // בפועל לפי מזהה, לא סומכים על find() שמוחזר-בהצלחה.
+    const suppliers = await fetchRecords(SUPPLIERS_TABLE, {});
+    const supplierRow = suppliers.find((s) => s.id === supplierId);
+    if (!supplierRow) {
       return res.status(400).json({ error: 'ספק לא נמצא. יש לבחור ספק קיים מרשימת הספקים.' });
     }
-    const supplierName = supplierRecord.fields['שם ספק'] || '';
+    const supplierName = supplierRow['שם ספק'] || '';
 
-    const created = await createManualExpense({ supplierId, supplierName, date, total, category, notes, lines });
+    // הגנה מפני שמירה כפולה (ליל-חיזוק 2026-10-07, סעיף E5) — אחרי
+    // הוולידציה ובדיקת הספק בכוונה, כדי שקלט שגוי לא "יתפוס" מפתח
+    // ויחסום ניסיון מתוקן. בקשה זהה לחלוטין בתוך 15 שניות מקבלת את
+    // אותה רשומה במקום ליצור שנייה (שהייתה גם מריצה Make פעם שנייה
+    // וגם מורידה את אותן שורות מהמלאי פעם שנייה).
+    const dedupKey = manualExpenseSubmitKey({ supplierId, date, total, category, notes, lines });
+    const claim = claimManualExpenseSubmission(dedupKey);
+    if (!claim.fresh) {
+      const prior = await claim.wait();
+      if (prior) return res.status(200).json({ ...prior, duplicateSubmit: true });
+      return res.status(409).json({ error: 'בקשה זהה נשלחה כרגע ונכשלה. יש לנסות לשמור שוב.' });
+    }
+
+    let created;
+    try {
+      created = await createManualExpense({ supplierId, supplierName, date, total, category, notes, lines });
+    } catch (createErr) {
+      claim.settle(null);
+      throw createErr;
+    }
+    claim.settle(created);
     const expenseNum = created['מספר הוצאה'];
     // ניתוח/הורדת מלאי — fire-and-forget, בדיוק כמו autoAnalyzeExpenseInventory
     // ב-/api/upload-document: לא חוסם את התגובה למשתמש (ר' הערת הכותרת, סעיף R)
