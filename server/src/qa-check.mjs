@@ -2057,8 +2057,16 @@ if (process.env.RUN_SCHEMA_TESTS !== '0') { // יוצרת אפשרות-select ח
   // בודקים: יצירה ראשונה עם typecast=1 לקטגוריה חדשה-לגמרי → 201 (והאפשרות
   // נוצרת), ואז יצירה שנייה לאותה קטגוריה בדיוק (גם עם typecast=1 — האפשרות
   // כבר קיימת אז typecast לא אמור לשנות כלום) → 409, בלי רשומה שנייה.
+  // ⚠️ הערך של "קטגוריה" עצמו *לא* יכול להיות תואם-MARK/TEST_RECORD_PATTERN
+  // (למשל "QA-<מספר-ארוך>") — findDuplicateInventoryCategory מתעלמת בכוונה
+  // מרשומות-קיימות שהשדה "קטגוריה" שלהן תואם את התבנית (כדי ששתי רשומות-QA
+  // לא יחסמו זו-את-זו בטעות, ר' הבדיקה למעלה), כלומר קטגוריה כזו הייתה
+  // *תמיד* "לא-קיימת" מבחינת הבדיקה הזו ולא הייתה בודקת את מה שבאמת נדרש
+  // כאן (אומת בפועל: עם קטגוריה תואמת-MARK שתי היצירות הצליחו, 201+201 —
+  // לא זו הבדיקה המבוקשת). "הערות" כן נשאר MARK-תואם כדי שההסתרה הכללית
+  // של רשומות-בדיקה (שבודקת את כל ה-JSON, לא רק "קטגוריה") עדיין תחול.
   await test('Q + typecast=1: יצירת קטגוריה חדשה עם typecast (בוחרת אפשרות חדשה) → 201, ואז כפילות לאותה קטגוריה (גם עם typecast=1) → 409', async () => {
-    const catMark = `${MARK}-TC`;
+    const catMark = `לילה3-טיפקאסט-${Date.now()}`;
     const recA = await api('POST', `${enc('מלאי בסיסי')}?typecast=1`, { 'קטגוריה': catMark, 'הערות': MARK });
     cleanup.push({ table: 'מלאי בסיסי', id: recA.id });
     if (!recA?.id) throw new Error('היצירה הראשונה (typecast=1) לא החזירה רשומה');
@@ -2080,31 +2088,44 @@ if (process.env.RUN_SCHEMA_TESTS !== '0') { // יוצרת אפשרות-select ח
 // ב-server.js): findDuplicateInventoryCategory היא read-then-write
 // (fetchRecords מלא) — בלי המנעול, כמה בקשות-POST מקבילות לאותה קטגוריה
 // *פנויה* יכלו כולן "לא למצוא כפילות" ולהצליח, ויוצרות כמה רשומות באותה
-// קטגוריה. יורים 6 בקשות-יצירה מקבילות לאותה קטגוריה — קטגוריה אמיתית
-// שכבר קיימת ברשימת האפשרויות אבל פנויה כרגע (freeInventoryCategory,
-// כמו בדיקת "יצירה בקטגוריה פנויה" למעלה) כדי שלא יידרש typecast=1 ולא
-// תיווצר אפשרות-select חדשה-לצמיתות — ומוודאים: בדיוק הצלחה אחת (201),
-// כל השאר 409, ובפועל נוצרה רשומה אחת בלבד בטבלה. רץ תמיד (לא מגודר
-// RUN_SCHEMA_TESTS — לא יוצר שום שריד).
-await test('Q: מרוץ — 6 יצירות מקבילות לאותה קטגוריה-פנויה → הצלחה אחת בלבד (201), השאר 409, רשומה אחת בפועל', async () => {
-  const raceCat = await freeInventoryCategory();
-  if (!raceCat) return 'דולג — אין קטגוריה פנויה ברשימת האפשרויות כרגע';
-  const attempts = await Promise.allSettled(
-    Array.from({ length: 6 }, () => api('POST', enc('מלאי בסיסי'), { 'קטגוריה': raceCat, 'הערות': MARK }))
-  );
-  const succeeded = attempts.filter((a) => a.status === 'fulfilled');
-  succeeded.forEach((a) => a.value?.id && cleanup.push({ table: 'מלאי בסיסי', id: a.value.id }));
-  const failed = attempts.filter((a) => a.status === 'rejected');
-  if (succeeded.length !== 1) {
-    throw new Error(`צפויה הצלחה אחת בדיוק, נמצאו ${succeeded.length} (מתוך 6) — המרוץ חזר`);
-  }
-  if (failed.some((a) => !String(a.reason?.message || '').startsWith('409'))) {
-    throw new Error(`בקשה שנכשלה לא עם 409: ${failed.map((a) => a.reason?.message).join(' | ')}`);
-  }
-  const actual = (await api('GET', `${enc('מלאי בסיסי')}?raw=1&includeTest=1`)).filter((i) => i['קטגוריה'] === raceCat);
-  if (actual.length !== 1) throw new Error(`נוצרו בפועל ${actual.length} רשומות בקטגוריה "${raceCat}" (צפוי 1 — המנעול לא עצר את המרוץ)`);
-  return `1/6 הצליחו (201), 5/6 נדחו (409), רשומה אחת בפועל בקטגוריה-פנויה "${raceCat}"`;
-});
+// קטגוריה. יורים 6 בקשות-יצירה מקבילות לאותה קטגוריה.
+//
+// ⚠️ ניסיון ראשון עם freeInventoryCategory() (קטגוריה-אמיתית "פנויה")
+// נכשל *בלי* קשר למנעול: ב-Airtable החי יש כרגע שאריות-QA משיחות
+// קודמות (תיעוד ב"שאריות לניקוי" בלוג) ששמן עצמו תואם TEST_RECORD_PATTERN
+// (`QA-<ספרות>`) — freeInventoryCategory() בחר דווקא אחת כזו (אין רשומה
+// פעילה איתה, אז היא "פנויה"), ו-findDuplicateInventoryCategory מתעלמת
+// בכוונה מרשומות-קיימות עם "קטגוריה" תואמת-התבנית (כדי ששתי רשומות-QA
+// לא יחסמו זו-את-זו — ר' "Q: שתי רשומות-QA" למעלה) — כלומר 6/6 הצליחו,
+// לא כי המנעול נכשל, אלא כי כל 6 הבקשות נחשבו "אין כפילות לבדוק נגדה"
+// מראש. משתמשים לכן בקטגוריה חדשה-לגמרי שאינה תואמת-התבנית: נרשמת פעם
+// אחת כאפשרות-select (typecast=1, כמו בדיקת ה-typecast למעלה — שריד
+// מתועד), ואז נמחקת מיד (פנויה, אבל "אמיתית" מבחינת הבדיקה) — 6 הבקשות
+// המקבילות עצמן *בלי* typecast. גודר ב-RUN_SCHEMA_TESTS (כמו כל בדיקה
+// שיוצרת אפשרות-select חדשה-לצמיתות).
+if (process.env.RUN_SCHEMA_TESTS !== '0') {
+  await test('Q: מרוץ — 6 יצירות מקבילות לאותה קטגוריה-פנויה (לא תואמת-MARK, כדי שבאמת תיבדק) → הצלחה אחת בלבד (201), השאר 409, רשומה אחת בפועל', async () => {
+    const raceCat = `לילה3-מרוץ-${Date.now()}`;
+    const seed = await api('POST', `${enc('מלאי בסיסי')}?typecast=1`, { 'קטגוריה': raceCat, 'הערות': MARK });
+    await del('מלאי בסיסי', seed.id); // האפשרות נשארת ברשימה (שריד מתועד), הקטגוריה חוזרת להיות "פנויה"
+
+    const attempts = await Promise.allSettled(
+      Array.from({ length: 6 }, () => api('POST', enc('מלאי בסיסי'), { 'קטגוריה': raceCat, 'הערות': MARK }))
+    );
+    const succeeded = attempts.filter((a) => a.status === 'fulfilled');
+    succeeded.forEach((a) => a.value?.id && cleanup.push({ table: 'מלאי בסיסי', id: a.value.id }));
+    const failed = attempts.filter((a) => a.status === 'rejected');
+    if (succeeded.length !== 1) {
+      throw new Error(`צפויה הצלחה אחת בדיוק, נמצאו ${succeeded.length} (מתוך 6) — המרוץ חזר`);
+    }
+    if (failed.some((a) => !String(a.reason?.message || '').startsWith('409'))) {
+      throw new Error(`בקשה שנכשלה לא עם 409: ${failed.map((a) => a.reason?.message).join(' | ')}`);
+    }
+    const actual = (await api('GET', `${enc('מלאי בסיסי')}?raw=1&includeTest=1`)).filter((i) => i['קטגוריה'] === raceCat);
+    if (actual.length !== 1) throw new Error(`נוצרו בפועל ${actual.length} רשומות בקטגוריה "${raceCat}" (צפוי 1 — המנעול לא עצר את המרוץ)`);
+    return `1/6 הצליחו (201), 5/6 נדחו (409), רשומה אחת בפועל — להסרה ידנית של האפשרות "${raceCat}" ב-Airtable`;
+  });
+}
 
 // ============================================================
 // תוספת 2026-10-07 — יומן-ירידות למלאי + מחיקה מדורגת (סעיף P)
