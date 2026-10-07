@@ -20,6 +20,9 @@ import { sweep as sweepWeeklySync, INVOICES_TABLE, NOTES_TABLE } from './weekly-
 import { runAutoLink, SUPPLIERS_TABLE, MARKETERS_TABLE, EXPENSES_TABLE, CHECKS_TABLE, DELIVERY_TABLE } from './supplier-linking.js';
 import { importSprayReport, deleteSprayReport, sprayReportsHistory, scheduleSprayReportImport, startSprayImportSweep, REPORTS_TABLE as SPRAY_REPORTS_TABLE } from './spray-report-import.js';
 import { checkForecastPreflight } from './forecast-preflight.js';
+import { isForecastSourceTable, syncForecastForChangedRecord } from './forecast-sync.js';
+
+const FORECAST_TABLE = 'תחזית שתילה שבועית';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -1036,6 +1039,10 @@ app.post('/api/:table', authorizeWrite, async (req, res) => {
       if (req.body.length > 100) return res.status(400).json({ error: 'עד 100 רשומות בבקשה אחת' });
       const created = await createRecords(table, req.body);
       invalidateReads(table);
+      if (isForecastSourceTable(table)) {
+        created.forEach((rec) => syncForecastForChangedRecord(table, rec, { reason: 'יצירה קבוצתית' }));
+        invalidateReads(FORECAST_TABLE);
+      }
       return res.status(201).json(created);
     }
     // עובד: שדה השיוך נכפה תמיד להיות הרשומה של עצמו, בלי קשר למה שנשלח —
@@ -1050,6 +1057,10 @@ app.post('/api/:table', authorizeWrite, async (req, res) => {
     if (dup) return res.status(409).json({ error: `כבר קיים פריט מלאי בקטגוריה "${body['קטגוריה']}"`, existingId: dup.id });
     const created = await createRecord(table, body, { typecast });
     invalidateReads(table); // כדי שהרשומה החדשה תיקרא מיד ותיפתר לשם
+    if (isForecastSourceTable(table)) {
+      syncForecastForChangedRecord(table, created, { reason: 'יצירה' });
+      invalidateReads(FORECAST_TABLE);
+    }
     res.status(201).json(created);
   } catch (e) {
     console.error(`[api] POST /api/${req.params.table} (role=${req.auth?.role || '?'}): ${e.message}`);
@@ -1074,6 +1085,10 @@ app.patch('/api/:table/:id', authorizeWrite, async (req, res) => {
     if (dup) return res.status(409).json({ error: `כבר קיים פריט מלאי בקטגוריה "${body['קטגוריה']}"`, existingId: dup.id });
     const updated = await updateRecord(table, req.params.id, body, { typecast });
     invalidateReads(table);
+    if (isForecastSourceTable(table)) {
+      syncForecastForChangedRecord(table, updated, { reason: 'עדכון' });
+      invalidateReads(FORECAST_TABLE);
+    }
     res.json(updated);
   } catch (e) {
     console.error(`[api] PATCH /api/${req.params.table}/${req.params.id} (role=${req.auth?.role || '?'}): ${e.message}`);
@@ -1115,6 +1130,20 @@ app.delete('/api/:table/:id', authorizeWrite, async (req, res) => {
     // החזרת-המלאי** — אם זו נכשלה, לא ממשיכים למחיקה בפועל (לא רוצים
     // למחוק הוצאה/מסמך ולאבד את היכולת-לדעת-מה-להחזיר); ניתוק-השבוע
     // הוא best-effort (לא חוסם מחיקה אם נכשל).
+    // סנכרון-תחזית (ר' forecast-sync.js): חייבים לקרוא את הרשומה *לפני*
+    // המחיקה כדי לדעת לאיזה גידול היא שייכת — אחרי deleteRecord אין מה
+    // לקרוא יותר. best-effort: אם הקריאה נכשלת, ממשיכים למחיקה בלי סנכרון
+    // (לא חוסמים מחיקה בגלל זה).
+    let forecastSyncSource = null;
+    if (isForecastSourceTable(table)) {
+      try {
+        const base = (await import('./airtable.js')).getBase();
+        const rec = await base(table).find(id);
+        forecastSyncSource = { id: rec.id, ...rec.fields };
+      } catch (e) {
+        console.error(`[forecast-sync] לא ניתן היה לקרוא ${table}/${id} לפני מחיקה: ${e.message}`);
+      }
+    }
     let cascade = null;
     if (CASCADE_TABLES.has(table)) {
       cascade = await cascadeDocumentDelete(table, id, { dryRun: false });
@@ -1130,6 +1159,10 @@ app.delete('/api/:table/:id', authorizeWrite, async (req, res) => {
     }
     await deleteRecord(table, id);
     invalidateReads(table);
+    if (forecastSyncSource) {
+      syncForecastForChangedRecord(table, forecastSyncSource, { reason: 'מחיקה' });
+      invalidateReads(FORECAST_TABLE);
+    }
     res.json({ ok: true, cascade });
   } catch (e) {
     console.error(`[api] DELETE /api/${req.params.table}/${req.params.id} (role=${req.auth?.role || '?'}): ${e.message}`);

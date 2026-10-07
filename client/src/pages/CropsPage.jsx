@@ -13,6 +13,7 @@ import PageHeader from '../components/PageHeader.jsx';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { formatNumber, formatMoney, formatDate, safeValue } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
+import { yearFromWeekValue } from '../utils/weekYear.js';
 import { toast } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
@@ -70,6 +71,17 @@ export default function CropsPage() {
   useEffect(() => { load().finally(() => setLoading(false)); }, [load]);
   useAutoRefresh(load); // עדכון ממקום אחר (מסך/משתמש אחר) מופיע בלי רענון ידני
 
+  // אחרי שינוי/מחיקה של מחיר-גידול או תפוקה-רבעונית: השרת (forecast-sync.js)
+  // כבר הפעיל מחדש את אוטומציית "רענן תחזית" ב-Airtable (fire-and-forget),
+  // אבל היא לא מסיימת מיידית (ר' בדיקה אמפירית: ~10-25 שניות). רענון מיידי
+  // + רענון שקט נוסף קצת אחר-כך — כדי שהתצוגה הנוכחית תשקף את התוצאה בלי
+  // שהמשתמש יצטרך לחכות ל-useAutoRefresh (עד דקה) או ללחוץ רענון ידני.
+  // אותו דפוס בדיוק כמו runAction/doRefreshForecast ב-PlantingPlanPage.jsx.
+  const reloadAfterForecastEdit = useCallback(async () => {
+    await load();
+    setTimeout(() => { load().catch(() => {}); }, 8000);
+  }, [load]);
+
   // תחזית שתילה שבועית — שורות מנורמלות
   const forecastRows = useMemo(() => forecast.map((f) => ({
     id: f.id,
@@ -98,9 +110,9 @@ export default function CropsPage() {
       ) : tab === 'גידולים' ? (
         <CropsTab crops={crops} api={app.api} canEdit={isOwner} onOpen={setCropDrawer} onChanged={load} />
       ) : tab === 'מחירי גידול' ? (
-        <PricesTab prices={prices} crops={crops} api={app.api} canEdit={isOwner} onChanged={load} />
+        <PricesTab prices={prices} crops={crops} api={app.api} canEdit={isOwner} onChanged={reloadAfterForecastEdit} />
       ) : tab === 'תפוקה רבעונית' ? (
-        <QuarterlyTab quarterly={quarterly} crops={crops} api={app.api} canEdit={isOwner} onChanged={load} />
+        <QuarterlyTab quarterly={quarterly} crops={crops} api={app.api} canEdit={isOwner} onChanged={reloadAfterForecastEdit} />
       ) : (
         <ForecastTab rows={forecastRows} api={app.api} canEdit={isOwner} onChanged={load} />
       )}
@@ -112,6 +124,9 @@ export default function CropsPage() {
           prices={prices}
           quarterly={quarterly}
           forecastRows={forecastRows}
+          api={app.api}
+          canEdit={isOwner}
+          onChanged={reloadAfterForecastEdit}
           onClose={() => setCropDrawer(null)}
         />
       )}
@@ -184,10 +199,21 @@ function CropsTab({ crops, api, canEdit, onOpen, onChanged }) {
   );
 }
 
+// שדות הטופס הגנרי (RecordForm) ליצירה/עריכה של "תפוקה רבעונית" מתוך
+// Drawer הגידול (סעיף T, 2026-10-07) — שדה "גידול" הוא link אל טבלת
+// "גידולים" (לא CropLinkedForm הייעודי של הטאב הראשי — כאן נדרש RecordForm
+// הגנרי, ר' הוראת המשימה).
+const DRAWER_QUARTERLY_FIELDS = [
+  { name: 'גידול', label: 'גידול', type: 'link', linkTable: 'גידולים', linkNameField: 'שם גידול', required: true },
+  { name: 'רבעון', label: 'רבעון', type: 'select', required: true },
+  { name: 'קג לדונם לשבוע', label: 'ק"ג לדונם לשבוע', type: 'number' },
+];
+
 // כרטיס גידול — טאבים לפי סעיף 37
-function CropDrawer({ crop, plans, prices, quarterly, forecastRows, onClose }) {
+function CropDrawer({ crop, plans, prices, quarterly, forecastRows, api, canEdit, onChanged, onClose }) {
   useEscapeClose(onClose);
   const [tab, setTab] = useState('תוכניות שתילה');
+  const [quarterlyForm, setQuarterlyForm] = useState(null);
   const name = crop['שם גידול'] || 'גידול';
   const matches = (v) => String(displayName(v, '') || v || '').includes(name);
 
@@ -247,18 +273,37 @@ function CropDrawer({ crop, plans, prices, quarterly, forecastRows, onClose }) {
             )
           )}
           {tab === 'תפוקה' && (
-            cropQuarterly.length === 0 ? <div className="empty-state">אין נתוני תפוקה לגידול זה</div> : (
-              <div className="table-wrap">
-                <table className="data-table compact">
-                  <thead><tr><th>רבעון</th><th>ק"ג לדונם לשבוע</th></tr></thead>
-                  <tbody>
-                    {cropQuarterly.map((q) => (
-                      <tr key={q.id}><td>{safeValue(q['רבעון'])}</td><td style={{ fontWeight: 700 }}>{formatNumber(q['קג לדונם לשבוע'])}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
+            <div>
+              {canEdit && (
+                <div style={{ marginBottom: 10 }}>
+                  <button className="btn btn-primary btn-sm" onClick={() => setQuarterlyForm({ 'גידול': [crop.id] })}>+ תפוקה חדשה</button>
+                </div>
+              )}
+              {cropQuarterly.length === 0 ? <div className="empty-state">אין נתוני תפוקה לגידול זה</div> : (
+                <div className="table-wrap">
+                  <table className="data-table compact">
+                    <thead><tr><th>רבעון</th><th>ק"ג לדונם לשבוע</th>{canEdit && <th className="no-print">פעולות</th>}</tr></thead>
+                    <tbody>
+                      {cropQuarterly.map((q) => (
+                        <tr key={q.id}>
+                          <td>{safeValue(q['רבעון'])}</td>
+                          <td style={{ fontWeight: 700 }}>{formatNumber(q['קג לדונם לשבוע'])}</td>
+                          {canEdit && (
+                            <td className="no-print">
+                              <div style={{ display: 'flex', gap: 4 }}>
+                                <button className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={() => setQuarterlyForm(q)}>✎</button>
+                                <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
+                                  onClick={async () => { if (await removeRecord(api, QUARTER_TABLE, q.id, 'התפוקה הרבעונית')) await onChanged(); }}>🗑</button>
+                              </div>
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           )}
           {tab === 'תחזית' && (
             cropForecast.length === 0 ? <div className="empty-state">אין תחזית שבועית לגידול זה</div> : (
@@ -283,6 +328,16 @@ function CropDrawer({ crop, plans, prices, quarterly, forecastRows, onClose }) {
           )}
         </div>
       </div>
+      {quarterlyForm !== null && (
+        <RecordForm
+          api={api} table={QUARTER_TABLE}
+          title={quarterlyForm.id ? 'עריכת תפוקה רבעונית' : 'תפוקה רבעונית חדשה'}
+          record={quarterlyForm}
+          fields={DRAWER_QUARTERLY_FIELDS}
+          onClose={() => setQuarterlyForm(null)}
+          onSaved={async () => { setQuarterlyForm(null); await onChanged(); toast('התפוקה נשמרה בהצלחה'); }}
+        />
+      )}
     </div>
   );
 }
@@ -365,7 +420,12 @@ function PricesTab({ prices, crops, api, canEdit, onChanged }) {
           api={api} table={PRICES_TABLE} crops={crops} record={form.id ? form : null}
           title={form.id ? 'עריכת מחיר משוער' : 'מחיר משוער חדש'}
           fields={[
-            { name: 'שנה', label: 'שנה', type: 'number' },
+            // שנה היא שדה-חובה (תוקן 2026-10-07, סעיף T): בלעדיה המחיר לא
+            // נבחר אף פעם ע"י שום מנגנון — גם preflight (forecast-preflight.js,
+            // hasPrice בודק Number(pr['שנה']) === year) וגם האוטומציה
+            // "רענן תחזית" עצמה ב-Airtable מסננות לפי שנה תואמת; מחיר בלי
+            // שנה היה נוצר "בשקט" ונשאר יתום-לנצח, בלי שום הודעת שגיאה.
+            { name: 'שנה', label: 'שנה', type: 'number', required: true },
             { name: 'מחיר משוער לקג', label: 'מחיר משוער לק"ג (₪)', type: 'number' },
             { name: 'מתאריך', label: 'מתאריך', type: 'date' },
             { name: 'עד תאריך', label: 'עד תאריך', type: 'date' },
@@ -429,6 +489,11 @@ function QuarterlyTab({ quarterly, crops, api, canEdit, onChanged }) {
                           <button className="btn btn-sm btn-ghost no-print" style={{ marginInlineStart: 4, minHeight: 24, padding: '0 6px' }}
                             aria-label={`עריכת תפוקת ${q}`} title="עריכה" onClick={() => setForm(r.recs[q])}>✎</button>
                         )}
+                        {canEdit && r.recs[q] && (
+                          <button className="btn btn-sm btn-ghost no-print" style={{ marginInlineStart: 2, minHeight: 24, padding: '0 6px', color: 'var(--error)' }}
+                            aria-label={`מחיקת תפוקת ${q}`} title="מחיקה"
+                            onClick={async () => { if (await removeRecord(api, QUARTER_TABLE, r.recs[q].id, `תפוקת ${q} (${r.crop})`)) await onChanged(); }}>🗑</button>
+                        )}
                       </td>
                     ))}
                   </tr>
@@ -485,6 +550,8 @@ function CropLinkedForm({ api, table, crops, record, title, fields, onClose, onS
     e.preventDefault();
     if (saving) return;
     if (!cropId) { setError('חסר שדה חובה: גידול'); return; }
+    const missing = fields.find((f) => f.required && (values[f.name] === '' || values[f.name] == null));
+    if (missing) { setError(`חסר שדה חובה: ${missing.label}`); return; }
     setSaving(true); setError('');
     const body = { 'גידול': [cropId] };
     fields.forEach((f) => {
@@ -516,7 +583,7 @@ function CropLinkedForm({ api, table, crops, record, title, fields, onClose, onS
             </select></div>
           {fields.map((f) => (
             <div className="form-group" key={f.name}>
-              <label>{f.label}</label>
+              <label>{f.label}{f.required && <span className="required" />}</label>
               {f.type === 'select' ? (
                 <select className="select" style={{ width: '100%' }} value={values[f.name]} onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}>
                   <option value="">בחר...</option>
@@ -564,10 +631,21 @@ function ForecastTab({ rows: allRows, api, canEdit, onChanged }) {
 
   const cropList = useMemo(() => [...new Set(rows.map((r) => r.crop).filter((c) => c && c !== '—'))], [rows]);
   const structList = useMemo(() => [...new Set(rows.map((r) => r.structure).filter(Boolean))], [rows]);
+  // סינון-שנים (סעיף T, 2026-10-07): השנה נגזרת מ"תחילת שבוע" (תאריך
+  // ISO) — ר' yearFromWeekValue ב-utils/weekYear.js. ברירת מחדל: השנה
+  // הנוכחית אם יש לה שורות, אחרת "כל השנים" (אין שום הנחה שהנתונים
+  // חייבים לכלול את השנה הנוכחית — ר' הסבר בדוח הסיום על תאריכים).
+  const yearList = useMemo(() => [...new Set(rows.map((r) => yearFromWeekValue(r.start)).filter(Boolean))].sort((a, b) => b - a), [rows]);
+  const [fYear, setFYear] = useState(() => {
+    const currentYear = new Date().getFullYear();
+    const initialYears = [...new Set(allRows.map((r) => yearFromWeekValue(r.start)).filter(Boolean))];
+    return initialYears.includes(currentYear) ? String(currentYear) : '';
+  });
 
   const filtered = rows.filter((r) => {
     if (fCrop && r.crop !== fCrop) return false;
     if (fStructure && r.structure !== fStructure) return false;
+    if (fYear && String(yearFromWeekValue(r.start)) !== fYear) return false;
     if (search) {
       const hay = [r.crop, r.structure, r.quarter, r.plan].filter(Boolean).join(' ').toLowerCase();
       if (!hay.includes(search.toLowerCase())) return false;
@@ -595,7 +673,12 @@ function ForecastTab({ rows: allRows, api, canEdit, onChanged }) {
           <option value="">כל המבנים</option>
           {structList.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
+        <select className="select" value={fYear} onChange={(e) => setFYear(e.target.value)}>
+          <option value="">כל השנים</option>
+          {yearList.map((y) => <option key={y} value={String(y)}>{y}</option>)}
+        </select>
       </div>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>תקופה: {fYear || 'כל השנים'}</div>
       <div className="card">
         {filtered.length === 0 ? <div className="empty-state">אין נתונים לתקופה זו</div> : (
           <div className="table-wrap">
@@ -634,7 +717,7 @@ function ForecastTab({ rows: allRows, api, canEdit, onChanged }) {
       {chart.length > 0 && (
         <div className="card" style={{ marginTop: 16 }}>
           <div className="section-title" style={{ marginTop: 0 }}>
-            ק"ג צפוי מול בפועל · {fCrop || 'כל הגידולים'} · {fStructure || 'כל המבנים'}
+            ק"ג צפוי מול בפועל · {fCrop || 'כל הגידולים'} · {fStructure || 'כל המבנים'} · {fYear || 'כל השנים'}
             {filtered.length > 30 && <span style={{ fontWeight: 400, color: 'var(--text-muted)', fontSize: 12 }}> · מוצגות 30 השורות הראשונות מתוך {formatNumber(filtered.length)}</span>}
           </div>
           <div style={{ direction: 'ltr' }}>
