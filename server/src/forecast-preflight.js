@@ -19,10 +19,12 @@ const CROP_PRICES_TABLE = 'מחירי גידול משוערים';
 
 const QUARTER_MONTHS = { 1: [0, 1, 2], 2: [3, 4, 5], 3: [6, 7, 8], 4: [9, 10, 11] };
 
-function firstId(value) {
-  const v = Array.isArray(value) ? value[0] : value;
-  if (v && typeof v === 'object') return v.id;
-  return v || null;
+/** כל מזהי-הקישור בשדה (לא רק הראשון) — "גידול" מוגדר כקישור-יחיד, אבל
+ *  Airtable מרשה להוסיף שם יותר מאחד, ואז בדיקת-הראשון-בלבד שהייתה כאן
+ *  עד לילה 3 "איבדה" התאמה ודיווחה חוסר-כזב. */
+function allIds(value) {
+  const arr = Array.isArray(value) ? value : (value ? [value] : []);
+  return arr.map((v) => (v && typeof v === 'object' ? v.id : v)).filter(Boolean);
 }
 
 /** תאריך Airtable ("2027-01-30") -> Date בחצות מקומית, בלי הסטת אזור זמן */
@@ -88,11 +90,12 @@ export async function checkForecastPreflight(planId) {
     };
   }
 
-  const cropIds = (Array.isArray(plan['גידולים']) ? plan['גידולים'] : [])
-    .map((v) => (v && typeof v === 'object' ? v.id : v))
-    .filter(Boolean);
+  const cropIds = allIds(plan['גידולים']);
   const year = Number(plan['שנת תוכנית']) || null;
   const quarters = relevantQuarters(plan);
+  // טווח הקטיף בפועל (YYYY-MM-DD) — נחוץ לבדיקת מחיר-לפי-טווח-תאריכים
+  const harvestFrom = String(plan['תחילת קטיף מעודכנת'] || plan['תחילת קטיף מקורית'] || '').slice(0, 10) || null;
+  const harvestTo = String(plan['סוף קטיף מעודכן'] || plan['סוף קטיף מקורי'] || '').slice(0, 10) || harvestFrom;
   const missing = [];
 
   if (!cropIds.length) missing.push('לתוכנית זו אין גידול מקושר (שדה "גידולים" ריק)');
@@ -116,17 +119,37 @@ export async function checkForecastPreflight(planId) {
     const cropName = cropById.get(cropId)?.['שם גידול'] || cropId;
 
     for (const q of quarters) {
-      const hasYield = yields.some((y) => firstId(y['גידול']) === cropId
+      const hasYield = yields.some((y) => allIds(y['גידול']).includes(cropId)
         && Number(y['רבעון']) === q
         && !isBlank(y['קג לדונם לשבוע']));
       if (!hasYield) missing.push(`חסרה תפוקה רבעונית לרבעון ${q} (${cropName})`);
     }
 
-    if (year) {
-      const hasPrice = prices.some((pr) => firstId(pr['גידול']) === cropId
-        && Number(pr['שנה']) === year
-        && !isBlank(pr['מחיר משוער לקג']));
-      if (!hasPrice) missing.push(`חסר מחיר משוער ל${cropName} לשנת ${year}`);
+    // מחיר: האוטומציה ב-Airtable בוחרת לפי העדיפות
+    //   "מחיר לקג מעודכן" ידני  >  מחיר שטווח-התאריכים שלו מכיל את השבוע
+    //   >  מחיר ברירת-המחדל-השנתית לאותה שנה.
+    // תיקון לילה 3 (2026-10-07): כאן נבדק עד עכשיו **רק** Number(שנה)===year,
+    // ולכן מחיר שמוגדר בטווח-תאריכים בלבד (שדות "מתאריך"/"עד תאריך",
+    // בלי "שנה" — צירוף חוקי לגמרי בטבלה) דווח בשקר כ"חסר מחיר משוער",
+    // גם כשהאוטומציה כן הייתה מוצאת ומקשרת אותו. דיווח-חוסר כזב גרוע
+    // במיוחד כאן, כי כל תפקידו של המודול הזה הוא להסביר למה התחזית
+    // ריקה — והוא היה שולח את תמר לתקן נתון שלא היה שבור.
+    const cropPrices = prices.filter((pr) => allIds(pr['גידול']).includes(cropId) && !isBlank(pr['מחיר משוער לקג']));
+    const byYear = year ? cropPrices.filter((pr) => Number(pr['שנה']) === year) : [];
+    // חפיפה בין טווח-המחיר לטווח-הקטיף; צד פתוח (בלי "מתאריך"/"עד תאריך")
+    // נחשב פתוח לאינסוף — בדיוק כמו "מחיר שתקף מאז/עד בלי הגבלה".
+    const byRange = (harvestFrom && harvestTo)
+      ? cropPrices.filter((pr) => {
+        const from = String(pr['מתאריך'] || '').slice(0, 10) || null;
+        const to = String(pr['עד תאריך'] || '').slice(0, 10) || null;
+        if (!from && !to) return false; // לא מחיר-טווח בכלל
+        return (!from || from <= harvestTo) && (!to || to >= harvestFrom);
+      })
+      : [];
+    if (!byYear.length && !byRange.length) {
+      missing.push(year
+        ? `חסר מחיר משוער ל${cropName} לשנת ${year} (גם אין מחיר שטווח התאריכים שלו מכסה את תקופת הקטיף)`
+        : `חסר מחיר משוער ל${cropName} — אין "שנת תוכנית" ואין מחיר שטווח התאריכים שלו מכסה את תקופת הקטיף`);
     }
   }
 
