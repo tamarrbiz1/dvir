@@ -173,6 +173,38 @@ function doneTag(d) {
   return `[מלאי-D:${d.sourceTable}:${d.sourceId}:${d.category}]`;
 }
 
+/**
+ * ⚠️ 7.10.2026 (לילה 3) — תקלה שאומתה: שורת-תנועה היא **שורה אחת**, וכל
+ * מה שמזהה אותה (הכמות, התגית) חייב להישאר בה. `sourceLabel` נבנה משדה
+ * טקסט ש-Make ממלא מתוך המסמך ("מספר תעודה"/"מספר חשבונית") — תו שורה
+ * חדשה אחד שם פיצל את השורה לשתיים, והתגית נותרה בשורה שלא מתחילה ב-"↓".
+ * planLogisticsReversal דורשת תגית *באותה שורה* של ה-"↓", ולכן החזירה
+ * תוכנית ריקה: **המלאי לא היה חוזר בכלל במחיקת המסמך** (אומת:
+ * planLogisticsReversal על שורה כזו החזירה []). מנקים שורות-חדשות,
+ * טאבים ותווי-בקרה לרווח בודד.
+ */
+export function sanitizeNoteSegment(v) {
+  // eslint-disable-next-line no-control-regex
+  return String(v ?? '').replace(/[\u0000-\u001F\u007F]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * תאריך-ISO בתחילת שורת-תנועה. הפרסר בלקוח (inventoryLedger.js) תומך
+ * בזה מראש ומתעד זאת כ"תוספת-עתידית" — אבל בלי תאריך בשורה, הסיכום
+ * "ירד היום / השבוע" ב-InventoryPage היה **תמיד 0** (אומת: summarizeRecentDrops
+ * על 250 שורות-הורדה החזיר {today:0,week:0}), כלומר פיצ'ר מת.
+ * מעתה כל שורת-"↓"/"↩" חדשה נפתחת בתאריך. שורות היסטוריות נשארות בלי —
+ * והן נספרות כ"לא ידוע", שזו התשובה הנכונה.
+ */
+export function todayStamp() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** מסירה תאריך-ISO מוביל (אם יש) כדי שסורקי-השורות לא יתלו בו */
+export function stripNoteDate(line) {
+  return String(line).replace(/^(\d{4}-\d{2}-\d{2})[T ]?[\d:.,Z]*\s+/, '');
+}
+
 async function deductOne(item, d) {
   // "ממתין לנתון" — לעולם לא כותבים שום דבר ל-Airtable (לא שינוי מלאי,
   // לא תגית, לא אזהרה). זה בדיוק מה שמאפשר לניסיון החוזר (אוטומטי או
@@ -188,7 +220,9 @@ async function deductOne(item, d) {
     // המצב עדיין חסום — אבל *לא חוסמת* ניסיון חוזר לבצע הורדה אמיתית
     // ברגע שהנתונים מסתדרים. דה-דופ פשוט לפי טקסט מדויק כדי לא להציף
     // את ההערות בשורות זהות בכל ניסיון-חוזר אוטומטי (כל 10–60 שניות).
-    const warnLine = `⚠ דורש אישור: ${d.quantity} ${d.category} (${d.sourceLabel}, שבוע ${d.weekCode}) — ${d.reason}`;
+    // בלי חתימת-תאריך בכוונה — הדה-דופ למטה משווה טקסט-מדויק, ותאריך
+    // היה הופך כל ניסיון-חוזר ביום אחר לשורה "חדשה" ומציף את ההערות.
+    const warnLine = `⚠ דורש אישור: ${d.quantity} ${sanitizeNoteSegment(d.category)} (${sanitizeNoteSegment(d.sourceLabel)}, שבוע ${sanitizeNoteSegment(d.weekCode)}) — ${sanitizeNoteSegment(d.reason)}`;
     if (!notes.split('\n').some((line) => line.trim() === warnLine)) {
       await updateRecord(INVENTORY_TABLE, item.id, { 'הערות': notes ? `${notes}\n${warnLine}` : warnLine });
     }
@@ -198,8 +232,12 @@ async function deductOne(item, d) {
   const current = Number(item['מלאי נוכחי']) || 0;
   // mismatchNote (סעיף N1, משטחים) נותן תיאור-מלא-ומפורש של אי-ההתאמה
   // כולל הפניה למסמכים — גובר על הסיומת הגנרית "⚠ בלי הצלבה".
-  const suffix = d.mismatchNote ? ` — ${d.mismatchNote}` : (d.softWarning ? ' ⚠ בלי הצלבה' : '');
-  const line = `↓ ${d.quantity} ממלאי: ${d.category} (${d.sourceLabel}, שבוע ${d.weekCode}${d.derivedFrom.startsWith('ישיר') ? '' : ` · ${d.derivedFrom}`})${suffix} ${tag}`;
+  const suffix = d.mismatchNote ? ` — ${sanitizeNoteSegment(d.mismatchNote)}` : (d.softWarning ? ' ⚠ בלי הצלבה' : '');
+  // כל קטע-טקסט שמקורו בשדה-מסמך מנוקה (ר' sanitizeNoteSegment), והשורה
+  // נפתחת בתאריך-ISO (ר' todayStamp) כדי ש"ירד היום/השבוע" יעבוד בפועל.
+  const label = sanitizeNoteSegment(d.sourceLabel);
+  const derived = sanitizeNoteSegment(d.derivedFrom);
+  const line = `${todayStamp()} ↓ ${d.quantity} ממלאי: ${sanitizeNoteSegment(d.category)} (${label}, שבוע ${sanitizeNoteSegment(d.weekCode)}${derived.startsWith('ישיר') ? '' : ` · ${derived}`})${suffix} ${tag}`;
   await updateRecord(INVENTORY_TABLE, item.id, { 'מלאי נוכחי': current - d.quantity, 'הערות': notes ? `${notes}\n${line}` : line });
   return { ...d, deducted: true, itemId: item.id };
 }
@@ -282,7 +320,13 @@ export function planLogisticsReversal(inventoryItems, sourceTable, sourceId) {
     if (!notes.includes(tagPrefix)) continue;
 
     const toReverse = [];
-    for (const line of notes.split('\n')) {
+    // ⚠️ 7.10.2026 (לילה 3): כל זיהוי-שורה כאן עובר קודם stripNoteDate.
+    // בלי זה, ברגע שנוסף תאריך-ISO בתחילת השורה (מה שהפרסר בלקוח תומך
+    // בו מראש, ומה ש-deductOne עושה מעתה) — `startsWith('↓')` נכשל,
+    // התוכנית חוזרת ריקה, ו**המלאי לא מוחזר במחיקת המסמך**. אומת:
+    // planLogisticsReversal על שורה עם תאריך מוביל החזירה [].
+    const bodies = notes.split('\n').map(stripNoteDate);
+    for (const line of bodies) {
       if (!line.startsWith('↓') || !line.includes(tagPrefix)) continue;
       const tagMatch = line.match(/(\[מלאי-D:[^\]]+\])/);
       if (!tagMatch) continue;
@@ -290,7 +334,7 @@ export function planLogisticsReversal(inventoryItems, sourceTable, sourceId) {
       // כבר בוטל בעבר — אידמפוטנטי. בודקים שורה-שלמה שמתחילה ב-"↩" ומכילה
       // את התגית (לא "↩ " צמוד לתגית — שורת-הביטול כותבת טקסט בין
       // השניים: "↩ ביטול הורדה של X · ... נמחק · <תאריך> <תגית>").
-      const alreadyReversed = notes.split('\n').some((l) => l.startsWith('↩') && l.includes(fullTag));
+      const alreadyReversed = bodies.some((l) => l.startsWith('↩') && l.includes(fullTag));
       if (alreadyReversed) continue;
       const qtyMatch = line.match(/^↓\s*([\d.]+)\s*ממלאי:/);
       if (!qtyMatch) continue;
@@ -301,8 +345,8 @@ export function planLogisticsReversal(inventoryItems, sourceTable, sourceId) {
     if (!toReverse.length) continue;
 
     const totalBack = toReverse.reduce((a, r) => a + r.quantity, 0);
-    const today = new Date().toISOString().slice(0, 10);
-    const reversalLines = toReverse.map((r) => `↩ ביטול הורדה של ${r.quantity} · ${sourceTable} ${sourceId} נמחק · ${today} ${r.fullTag}`);
+    const today = todayStamp();
+    const reversalLines = toReverse.map((r) => `${today} ↩ ביטול הורדה של ${r.quantity} · ${sourceTable} ${sourceId} נמחק · ${today} ${r.fullTag}`);
     plan.push({
       itemId: item.id,
       currentNotes: notes,
@@ -321,13 +365,20 @@ export function planLogisticsReversal(inventoryItems, sourceTable, sourceId) {
  * האחרים (עד 3 קטגוריות לתעודה אחת) — מתועד בלוג, לא חוסם את המחיקה.
  * מחזירה true אם משהו בפועל הוחזר, אחרת false (כולל "אין מה לבטל").
  */
-export async function reverseLogisticsDeduction(sourceTable, sourceId) {
-  let inventoryItems;
-  try {
-    inventoryItems = await fetchRecords(INVENTORY_TABLE, {});
-  } catch (e) {
-    console.error(`[logistics-reverse] קריאת "מלאי בסיסי" נכשלה לפני ביטול הורדה ל-${sourceTable}/${sourceId}: ${e.message}`);
-    return false;
+export async function reverseLogisticsDeduction(sourceTable, sourceId, { items } = {}) {
+  const failures = [];
+  let inventoryItems = items;
+  if (!inventoryItems) {
+    try {
+      inventoryItems = await fetchRecords(INVENTORY_TABLE, {});
+    } catch (e) {
+      // ⚠️ 7.10.2026 (לילה 3): קודם זה היה `return false` ללוג בלבד —
+      // ה-cascade לא ראה שגיאה, מחק את המסמך, והמלאי נשאר לא-מוחזר
+      // **בלי שום דרך לדעת מה היה צריך לחזור** (התגית נמחקת עם המסמך).
+      // עכשיו זה מדווח כלפי מעלה, וה-route חוסם את המחיקה (500).
+      console.error(`[logistics-reverse] קריאת "מלאי בסיסי" נכשלה לפני ביטול הורדה ל-${sourceTable}/${sourceId}: ${e.message}`);
+      return { changedAny: false, failures: [`קריאת "מלאי בסיסי" נכשלה: ${e.message}`] };
+    }
   }
 
   const plan = planLogisticsReversal(inventoryItems, sourceTable, sourceId);
@@ -337,12 +388,13 @@ export async function reverseLogisticsDeduction(sourceTable, sourceId) {
       await updateRecord(INVENTORY_TABLE, p.itemId, {
         'מלאי נוכחי': p.currentStock + p.totalBack,
         'הערות': `${p.currentNotes}\n${p.reversalLines.join('\n')}`,
-        'תאריך עדכון': new Date().toISOString().slice(0, 10),
+        'תאריך עדכון': todayStamp(),
       });
       changedAny = true;
     } catch (e) {
       console.error(`[logistics-reverse] עדכון פריט מלאי ${p.itemId} נכשל בביטול הורדה ל-${sourceTable}/${sourceId}: ${e.message}`);
+      failures.push(`החזרת ${p.totalBack} לפריט ${p.itemId} נכשלה: ${e.message}`);
     }
   }
-  return changedAny;
+  return { changedAny, failures };
 }

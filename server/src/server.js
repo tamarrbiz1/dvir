@@ -527,9 +527,13 @@ app.post('/api/expenses/manual', authenticate, requireOwner, upload.single('file
     const expenseNum = created['מספר הוצאה'];
     // ניתוח/הורדת מלאי — fire-and-forget, בדיוק כמו autoAnalyzeExpenseInventory
     // ב-/api/upload-document: לא חוסם את התגובה למשתמש (ר' הערת הכותרת, סעיף R)
-    const runDeduction = () => runManualExpenseInventoryDeduction(created.id, {
+    // ⚠️ 7.10.2026 (לילה 3): נוסף withInventoryLock — ההורדה-ברקע של הוצאה
+    // ידנית הייתה הנתיב **היחיד** שרץ בלי המנעול, כך שלחיצה על "נתח מחדש"
+    // (או מחיקת ההוצאה) בזמן שהיא עוד רצה פתחה בדיוק את ה-read-then-write
+    // הכפול שהמנעול נוצר כדי למנוע (ממצא M3, 6.10).
+    const runDeduction = () => withInventoryLock(`expense:${created.id}`, () => runManualExpenseInventoryDeduction(created.id, {
       supplier: supplierName, date, total, freeNotes: notes || '', lines, expenseNum,
-    })
+    }))
       .then((state) => {
         invalidateReads('הוצאות');
         invalidateReads('מלאי בסיסי');
@@ -1036,12 +1040,31 @@ async function validateTypecastRequest(req, table, body) {
 // ר' progress.md) — אלה דורשות החלטת-מיזוג/מחיקה של תמר, לא פעולה
 // אוטומטית; הבדיקה הזו רק חוסמת **הצטברות** כפילויות חדשות מעתה.
 // ============================================================
+//
+// ⚠️ 7.10.2026 (לילה 3) — נורמליזציה: הבדיקה הייתה `trim()` בלבד, כך
+// ש"משטחי  עץ" (רווח כפול) או הבדל-רישיות בשם לטיני/תאילנדי נחשבו
+// קטגוריה *אחרת* לגמרי ועקפו את הכלל. מנרמלים רווחים-פנימיים ורישיות
+// לצורך ההשוואה בלבד — הערך שנשמר ב-Airtable נשאר בדיוק כפי שנשלח.
+export function normalizeCategory(v) {
+  return String(v ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('he');
+}
+
 async function findDuplicateInventoryCategory(table, body, excludeId) {
   if (table !== 'מלאי בסיסי') return null;
   const category = body?.['קטגוריה'];
   if (category == null || String(category).trim() === '') return null;
-  const normalized = String(category).trim();
+  const normalized = normalizeCategory(category);
   const existing = await fetchRecords('מלאי בסיסי', {});
+  // ⚠️ 7.10.2026 (לילה 3), באג שנתפס חי: RecordForm.jsx שולח ב-PATCH את
+  // **כל** שדות הטופס, כולל "קטגוריה" — גם כשהמשתמשת שינתה רק "מלאי
+  // נוכחי". בלי הבדיקה הזו, כל שמירה מטופס-העריכה של אחת משתי רשומות
+  // "נילונים" הכפולות (כפילות-אמת שממתינה להחלטת תמר) נדחתה ב-409, כלומר
+  // שתי הרשומות האלה היו **בלתי-ניתנות-לעריכה בכלל**. כתיבה שלא *משנה*
+  // את הקטגוריה לא יכולה ליצור כפילות חדשה — ולכן לא נבדקת.
+  if (excludeId) {
+    const self = existing.find((it) => it.id === excludeId);
+    if (self && normalizeCategory(self['קטגוריה']) === normalized) return null;
+  }
   // שריד-בדיקה (TEST_RECORD_PATTERN) לעולם לא נחשב "קיים" לצורך החסימה —
   // אחרת שתי רשומות QA בקטגוריית-QA חדשה-זהה היו חוסמות זו את זו בטעות,
   // ורשומת QA ישנה שלא נוקתה הייתה חוסמת יצירה אמיתית של קטגוריה.
@@ -1054,9 +1077,20 @@ async function findDuplicateInventoryCategory(table, body, excludeId) {
   const dup = existing.find((it) =>
     it.id !== excludeId &&
     !TEST_RECORD_PATTERN.test(String(it['קטגוריה'] || '')) &&
-    String(it['קטגוריה'] || '').trim() === normalized
+    normalizeCategory(it['קטגוריה']) === normalized
   );
   return dup || null;
+}
+
+// ⚠️ 7.10.2026 (לילה 3), מרוץ שאומת בפועל: findDuplicateInventoryCategory
+// היא read-then-write (fetchRecords מלא, מאות מילי-שניות) — שלוש בקשות
+// POST מקבילות לאותה קטגוריה *פנויה* קיבלו כולן 201 ויצרו שלוש רשומות
+// באותה קטגוריה, בדיוק מה שסעיף Q אמור למנוע (שוחזר בניסיון השני).
+// מפתח-נעילה אחד גלובלי (ולא לפי-קטגוריה) בכוונה: שתי קטגוריות שונות
+// שמתלכדות אחרי נורמליזציה חייבות להסתדר גם הן בתור.
+const INVENTORY_CATEGORY_LOCK = 'inventory-category';
+function needsCategoryLock(table, body) {
+  return table === 'מלאי בסיסי' && body?.['קטגוריה'] != null && String(body['קטגוריה']).trim() !== '';
 }
 
 app.post('/api/:table', authorizeWrite, async (req, res) => {
@@ -1082,9 +1116,18 @@ app.post('/api/:table', authorizeWrite, async (req, res) => {
       const problem = await validateTypecastRequest(req, table, body);
       if (problem) return res.status(403).json({ error: problem });
     }
-    const dup = await findDuplicateInventoryCategory(table, body, null);
-    if (dup) return res.status(409).json({ error: `כבר קיים פריט מלאי בקטגוריה "${body['קטגוריה']}"`, existingId: dup.id });
-    const created = await createRecord(table, body, { typecast });
+    // בדיקת-כפילות + יצירה בתוך אותו מנעול — אחרת שתי בקשות מקבילות
+    // שתיהן "לא מצאו כפילות" ושתיהן יוצרות (ר' הערה ב-needsCategoryLock)
+    const checkThenCreate = async () => {
+      const dup = await findDuplicateInventoryCategory(table, body, null);
+      if (dup) return { dup };
+      return { created: await createRecord(table, body, { typecast }) };
+    };
+    const outcome = needsCategoryLock(table, body)
+      ? await withInventoryLock(INVENTORY_CATEGORY_LOCK, checkThenCreate)
+      : await checkThenCreate();
+    if (outcome.dup) return res.status(409).json({ error: `כבר קיים פריט מלאי בקטגוריה "${body['קטגוריה']}"`, existingId: outcome.dup.id });
+    const created = outcome.created;
     invalidateReads(table); // כדי שהרשומה החדשה תיקרא מיד ותיפתר לשם
     if (isForecastSourceTable(table)) {
       syncForecastForChangedRecord(table, created, { reason: 'יצירה' });
@@ -1110,9 +1153,16 @@ app.patch('/api/:table/:id', authorizeWrite, async (req, res) => {
       const problem = await validateTypecastRequest(req, table, body);
       if (problem) return res.status(403).json({ error: problem });
     }
-    const dup = await findDuplicateInventoryCategory(table, body, req.params.id);
-    if (dup) return res.status(409).json({ error: `כבר קיים פריט מלאי בקטגוריה "${body['קטגוריה']}"`, existingId: dup.id });
-    const updated = await updateRecord(table, req.params.id, body, { typecast });
+    const checkThenUpdate = async () => {
+      const dup = await findDuplicateInventoryCategory(table, body, req.params.id);
+      if (dup) return { dup };
+      return { updated: await updateRecord(table, req.params.id, body, { typecast }) };
+    };
+    const outcome = needsCategoryLock(table, body)
+      ? await withInventoryLock(INVENTORY_CATEGORY_LOCK, checkThenUpdate)
+      : await checkThenUpdate();
+    if (outcome.dup) return res.status(409).json({ error: `כבר קיים פריט מלאי בקטגוריה "${body['קטגוריה']}"`, existingId: outcome.dup.id });
+    const updated = outcome.updated;
     invalidateReads(table);
     if (isForecastSourceTable(table)) {
       syncForecastForChangedRecord(table, updated, { reason: 'עדכון' });
@@ -1142,7 +1192,11 @@ app.get('/api/documents/:table/:id/cascade-preview', authenticate, authorizeWrit
   try {
     const { table, id } = req.params;
     if (!CASCADE_TABLES.has(table)) return res.json({ inventory: [], week: null, checksLinked: 0, errors: [] });
+    // ⚠️ 7.10.2026 (לילה 3): מזהה שלא קיים החזיר 200 עם דוח ריק — זהה
+    // לחלוטין ל"מסמך קיים בלי שום השפעה על מלאי". המשתמשת הייתה מקבלת
+    // "המחיקה לא תחזיר כלום" על מסמך שבכלל לא קיים. עכשיו 404 מפורש.
     const report = await cascadeDocumentDelete(table, id, { dryRun: true });
+    if (report.notFound) return res.status(404).json({ error: 'המסמך לא נמצא', notFound: true });
     res.json(report);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1175,9 +1229,40 @@ app.delete('/api/:table/:id', authorizeWrite, async (req, res) => {
     }
     let cascade = null;
     if (CASCADE_TABLES.has(table)) {
-      cascade = await cascadeDocumentDelete(table, id, { dryRun: false });
-      const inventoryFailed = cascade.errors.some((e) => e.startsWith('מלאי:'));
-      if (inventoryFailed) {
+      // ⚠️ 7.10.2026 (לילה 3) — שלוש תקלות שאומתו חי, כולן נסגרות כאן:
+      //
+      // 1) **מנעול**: המחיקה-המדורגת לא רצה תחת withInventoryLock, בניגוד
+      //    לכל נתיבי ההורדה (autoAnalyzeExpenseInventory/analyze-inventory).
+      //    לכן מחיקת הוצאה *בזמן* שההורדה-ברקע (fire-and-forget) עוד רצה
+      //    קראה state חלקי, החזירה רק חלק מהכמות, ומחקה את ההוצאה —
+      //    והשורות שירדו אחרי הקריאה נותרו חסרות במלאי לנצח (ה-state
+      //    נשמר על ההוצאה שכבר לא קיימת → sourceGone). אותו מפתח בדיוק
+      //    כמו נתיבי-ההורדה, כך שמחיקה *מחכה* לסיום ההורדה.
+      // 2) **אימות-קיום לפני כתיבה**: `DELETE /api/תעודות משלוח/<מזהה שלא
+      //    קיים>` החזיר 404 — *אחרי* שכבר החזיר 30 יחידות למלאי וכתב שורת
+      //    "↩ ביטול" בהערות הפריט. כלומר תשובת-שגיאה שבכל זאת שינתה מלאי.
+      //    האימות נמצא **בתוך** המנעול בכוונה, כך שמחיקה-כפולה מקבילה
+      //    רואה שהרשומה כבר איננה ולא מריצה ביטול-הורדה שני.
+      // 3) **המחיקה עצמה בתוך המנעול**: קודם ה-deleteRecord היה אחרי
+      //    הבלוק, מחוץ לסדרתיות — שתי מחיקות מקבילות יכלו שתיהן לעבור
+      //    את הביטול לפני שמישהי מחקה.
+      const lockKey = table === EXPENSES_TABLE ? `expense:${id}` : `logistics:${table}:${id}`;
+      const outcome = await withInventoryLock(lockKey, async () => {
+        try {
+          await getBase()(table).find(id);
+        } catch {
+          return { missing: true };
+        }
+        const report = await cascadeDocumentDelete(table, id, { dryRun: false });
+        if (report.errors.some((e) => e.startsWith('מלאי:'))) return { report, blocked: true };
+        await deleteRecord(table, id);
+        return { report };
+      });
+      if (outcome.missing) {
+        return res.status(404).json({ error: 'המסמך לא נמצא — ייתכן שכבר נמחק. לא בוצעה שום פעולת-מלאי.' });
+      }
+      cascade = outcome.report;
+      if (outcome.blocked) {
         console.error(summarizeCascade(cascade));
         return res.status(500).json({ error: `ביטול הורדת-המלאי נכשל — המסמך לא נמחק כדי לא לאבד מעקב. ${cascade.errors.join('; ')}` });
       }
@@ -1185,8 +1270,9 @@ app.delete('/api/:table/:id', authorizeWrite, async (req, res) => {
       invalidateReads('מלאי בסיסי');
       if (cascade.week) invalidateReads('סיכום שבועי');
       if (table === 'תעודות משלוח' || table === 'חשבוניות') logisticsStatus.delete(`${table}:${id}`);
+    } else {
+      await deleteRecord(table, id);
     }
-    await deleteRecord(table, id);
     invalidateReads(table);
     if (forecastSyncSource) {
       syncForecastForChangedRecord(table, forecastSyncSource, { reason: 'מחיקה' });

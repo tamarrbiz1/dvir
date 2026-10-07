@@ -14,6 +14,7 @@
 import { fetchRecords, updateRecord, getBase } from './airtable.js';
 import { analyzeExpenseDocument } from './document-analysis.js';
 import { matchLinesToInventory } from './inventory-matching.js';
+import { sanitizeNoteSegment, todayStamp } from './logistics-deduction.js';
 
 const EXPENSES_TABLE = 'הוצאות';
 const INVENTORY_TABLE = 'מלאי בסיסי';
@@ -54,10 +55,29 @@ async function downloadAttachment(url) {
   return Buffer.from(arrayBuf);
 }
 
-/** מוסיף שורת תנועה אחרונה ל"הערות" של פריט מלאי (לא מוחק היסטוריה קודמת) */
+/**
+ * ⚠️ 7.10.2026 (לילה 3) — קטע-טקסט שמקורו בשדה-מסמך (שם ספק, מספר הוצאה)
+ * בתוך שורת-תנועה. שני דברים חייבים להיעלם ממנו:
+ *   • תווי שורה-חדשה/בקרה — מפצלים שורת-תנועה אחת לשתיים (ר'
+ *     sanitizeNoteSegment ב-logistics-deduction.js: שם זה אפילו גרם
+ *     לכך שהמלאי לא יחזור בכלל במחיקת מסמך).
+ *   • התו "·" עצמו — הוא המפריד של פורמט-ההוצאות
+ *     ("↓ 20 · הוצאה #48 · <ספק> · <תאריך>"), וספק עם "·" בשם שיבש
+ *     את פענוח השורה ביומן-הירידות (אומת: שורה כזו נותנת ספק שגוי).
+ */
+function movementSegment(v) {
+  return sanitizeNoteSegment(v).replace(/·/g, '-');
+}
+
+/**
+ * מוסיף שורת תנועה אחרונה ל"הערות" של פריט מלאי (לא מוחק היסטוריה קודמת).
+ * כל שורה חדשה נפתחת בתאריך-ISO — הפרסר בלקוח תומך בזה מראש, ובלעדיו
+ * "ירד היום / השבוע" ב-InventoryPage היה תמיד 0 (פיצ'ר מת, אומת).
+ */
 async function appendItemMovementNote(item, text) {
   const current = String(item['הערות'] || '');
-  const next = current ? `${current}\n${text}` : text;
+  const line = `${todayStamp()} ${sanitizeNoteSegment(text)}`;
+  const next = current ? `${current}\n${line}` : line;
   await updateRecord(INVENTORY_TABLE, item.id, { 'הערות': next });
 }
 
@@ -90,7 +110,7 @@ async function resumeUnresolvedLines(expenseId, currentNotes, existingState) {
         'מלאי נוכחי': current - r.quantity,
         'תאריך עדכון': new Date().toISOString().slice(0, 10),
       });
-      await appendItemMovementNote({ id: r.itemId, ...itemRec.fields }, `↓ ${r.quantity} · הוצאה #${expenseNum ?? '?'} · ${supplierLabel || 'ספק לא ידוע'} · ${dateLabel || new Date().toISOString().slice(0, 10)}`);
+      await appendItemMovementNote({ id: r.itemId, ...itemRec.fields }, `↓ ${r.quantity} · הוצאה #${movementSegment(expenseNum ?? '?')} · ${movementSegment(supplierLabel) || 'ספק לא ידוע'} · ${movementSegment(dateLabel) || todayStamp()}`);
       results[i] = { ...r, deducted: true, deductedAt: new Date().toISOString(), error: undefined };
     } catch (e) {
       results[i] = { ...r, error: e.message };
@@ -236,7 +256,7 @@ async function deductMatchedLines(expenseId, startNotes, matched, meta) {
         'מלאי נוכחי': current - m.quantity,
         'תאריך עדכון': new Date().toISOString().slice(0, 10),
       });
-      await appendItemMovementNote(m.item, `↓ ${m.quantity} · הוצאה #${meta.expenseNum ?? '?'} · ${meta.supplierLabel || 'ספק לא ידוע'} · ${meta.dateLabel || new Date().toISOString().slice(0, 10)}`);
+      await appendItemMovementNote(m.item, `↓ ${m.quantity} · הוצאה #${movementSegment(meta.expenseNum ?? '?')} · ${movementSegment(meta.supplierLabel) || 'ספק לא ידוע'} · ${movementSegment(meta.dateLabel) || todayStamp()}`);
       results.push({
         description: m.line.description, quantity: m.quantity, unit: m.line.unit,
         category: m.category, itemId: m.item.id, confidence: m.confidence,
@@ -386,7 +406,7 @@ export async function approvePendingDeduction(expenseId, lineIndex) {
     'מלאי נוכחי': current - line.quantity,
     'תאריך עדכון': new Date().toISOString().slice(0, 10),
   });
-  await appendItemMovementNote(itemWithId, `↓ ${line.quantity} · הוצאה #${expenseNum ?? '?'} · ${state.supplier || 'ספק לא ידוע'} · ${state.date || new Date().toISOString().slice(0, 10)} · אושר ידנית`);
+  await appendItemMovementNote(itemWithId, `↓ ${line.quantity} · הוצאה #${movementSegment(expenseNum ?? '?')} · ${movementSegment(state.supplier) || 'ספק לא ידוע'} · ${movementSegment(state.date) || todayStamp()} · אושר ידנית`);
 
   state.results[lineIndex] = { ...line, deducted: true, needsApproval: false, deductedAt: new Date().toISOString(), approvedManually: true };
   state.status = state.results.every((r) => r.deducted || r.error) ? 'done' : 'partial';
@@ -417,7 +437,12 @@ export async function reverseInventoryDeduction(expenseId) {
     // לבדוק קוד שגיאה (חבילת airtable לא חושפת סטטוס HTTP ישיר כאן), אז
     // לפחות מתעדים כדי שאפשר לזהות דפוס אם זה קורה הרבה (ר' M3).
     console.error(`[inventory-ai] קריאת הוצאה ${expenseId} לפני ביטול-הורדה נכשלה (יכול להיות שנמחקה בעבר, או כשל-רשת): ${e.message}`);
-    return null;
+    // ⚠️ 7.10.2026 (לילה 3): קודם `return null` — ה-cascade פירש את זה
+    // כ"אין מה לבטל", מחק את ההוצאה, והמלאי נשאר חסר. מעתה זורקים:
+    // ה-route (DELETE) כבר מאמת-קיום **בתוך המנעול** לפני שהוא קורא
+    // לכאן, ולכן כשל-קריאה כאן הוא כשל-רשת/429 אמיתי שמצדיק חסימת
+    // המחיקה וניסיון חוזר — לא "נמחקה כבר בשקט".
+    throw new Error(`קריאת ההוצאה לפני ביטול-הורדה נכשלה: ${e.message}`);
   }
   const currentNotes = rec.fields['הערות'] || '';
   const state = readState(currentNotes);
@@ -438,7 +463,7 @@ export async function reverseInventoryDeduction(expenseId) {
         'מלאי נוכחי': current + r.quantity,
         'תאריך עדכון': new Date().toISOString().slice(0, 10),
       });
-      await appendItemMovementNote({ id: r.itemId, ...itemRec.fields }, `↩ ביטול הורדה של ${r.quantity} · הוצאה #${expenseNum ?? '?'} נמחקה · ${new Date().toISOString().slice(0, 10)}`);
+      await appendItemMovementNote({ id: r.itemId, ...itemRec.fields }, `↩ ביטול הורדה של ${r.quantity} · הוצאה #${movementSegment(expenseNum ?? '?')} נמחקה · ${todayStamp()}`);
       state.results[i] = { ...r, reversed: true, reversedAt: new Date().toISOString() };
     } catch (e) {
       // הפריט עצמו נמחק בינתיים, או כשל רשת — מתעדים את ההפרש בלי לחסום
