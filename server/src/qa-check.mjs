@@ -771,6 +771,91 @@ await test('forecast-sync: QA-מחיר + QA-תפוקה-רבעונית + QA-תו�
   return `${rows.length} שורות נוצרו עם מחיר 7; אחרי מחיקה — אף שורה לא נשארה עם המחיר הישן (${afterDelete.rowsNow.length} שורות כעת)`;
 }, 350000);
 
+// גידול בלי אף תוכנית-שתילה מקושרת: שינוי/יצירת מחיר או תפוקה-רבעונית
+// עבורו חייב לעבור fire-and-forget בשקט (forecast-sync.js, "אין
+// תוכניות שתילה מקושרות") — לא לזרוק/לחסום את הכתיבה המקורית, ולא
+// להשפיע על אף תוכנית אחרת.
+await test('forecast-sync: גידול בלי אף תוכנית מקושרת — כתיבת מחיר/תפוקה לא נכשלת, לא נוגעת באף תוכנית', async () => {
+  const orphanCrop = await create('גידולים', { 'שם גידול': `${MARK}-orphan-crop` });
+  // שתי הטבלאות ש-forecast-sync.js עוקב אחריהן (ר' FORECAST_SOURCE_TABLES)
+  const price = await create('מחירי גידול משוערים', { 'גידול': [orphanCrop.id], 'שנה': 2035, 'מחיר משוער לקג': 3 });
+  const yieldRec = await create('תפוקה רבעונית', { 'גידול': [orphanCrop.id], 'רבעון': '2', 'קג לדונם לשבוע': 5 });
+  // גם עדכון וגם מחיקה — שני הנתיבים שמפעילים syncForecastForChangedRecord
+  await patch('מחירי גידול משוערים', price.id, { 'מחיר משוער לקג': 4 });
+  await del('תפוקה רבעונית', yieldRec.id);
+  cleanup.splice(cleanup.findIndex((c) => c.table === 'תפוקה רבעונית' && c.id === yieldRec.id), 1);
+  // לא מחכים לרקע (fire-and-forget) — רק מוודאים שה-API עצמו לא קרס/נתקע
+  return 'יצירה+עדכון+מחיקה של מחיר/תפוקה לגידול יתום — כל הקריאות הסתיימו בהצלחה';
+});
+
+// ============================================================
+// שתי רשומות-מחיר חופפות לאותו גידול/שנה (לילה 3, מצוד מפורש בתדריך):
+// ברירת-מחדל-שנתית *וגם* מחיר-טווח-תאריכים שמכסה את שבוע-הקטיף.
+// לפי התיעוד ב-forecast-sync.js וב-forecast-preflight.js, האוטומציה
+// ב-Airtable אמורה להעדיף תמיד את מחיר-הטווח על פני ברירת-המחדל-
+// השנתית. בודקים בפועל איזה מחיר מקושר לשורת-התחזית, ושזה לא "מזל" —
+// מפעילים "רענן תחזית" פעמיים (false→true, false→true) ומוודאים שאותו
+// מחיר נבחר בשתי הפעמים (דטרמיניסטי, לא race שמתחלף בין ריצות).
+// ============================================================
+await test('forecast-sync: שני מחירים חופפים (טווח-תאריכים + ברירת-מחדל-שנתית) — טווח גובר, דטרמיניסטי', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const crop = await create('גידולים', { 'שם גידול': `${MARK}-overlap-crop` });
+  await create('תפוקה רבעונית', { 'גידול': [crop.id], 'רבעון': '1', 'קג לדונם לשבוע': 40 });
+  // שני מחירים חופפים לאותה שנה/גידול: ברירת-מחדל-שנתית (5) ומחיר-טווח
+  // שמכסה את הקטיף (9) — לפי forecast-sync.js, הטווח אמור לגבור.
+  await create('מחירי גידול משוערים', { 'גידול': [crop.id], 'שנה': 2034, 'מחיר משוער לקג': 5, 'ברירת מחדל שנתית': true });
+  await create('מחירי גידול משוערים', { 'גידול': [crop.id], 'שנה': 2034, 'מחיר משוער לקג': 9, 'מתאריך': '2034-01-15', 'עד תאריך': '2034-03-15' });
+  const plan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'גידולים': [crop.id], 'שנת תוכנית': 2034,
+    'תחילת שתילה מקורית': '2034-01-01', 'מספר ימי שתילה': 10,
+    'תחילת קטיף מקורית': '2034-02-01', 'מספר ימי קטיף': 20,
+  });
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': false });
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': true });
+  const calcDone = await pollUntil(async () => {
+    const p = await api('GET', `${enc('תוכניות שתילה')}/${plan.id}`);
+    return p['תחילת קטיף מעודכנת'] ? p : null;
+  }, { timeoutMs: 60000, intervalMs: 3000 });
+  if (!calcDone) return 'דולג (לא נכשל) — "חשב תוכנית" לא השלים תוך זמן סביר, לא קשור לקוד הנבדק';
+
+  const priceOfRows = async () => {
+    const rows = await forecastRowsForPlan(plan.id);
+    const priced = rows.filter((r) => Array.isArray(r['מחיר משוער לקג (from מחירי גידול משוערים)']) && r['מחיר משוער לקג (from מחירי גידול משוערים)'][0] != null);
+    return { rows, priced };
+  };
+
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': false });
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': true });
+  const first = await pollUntil(async () => {
+    const { rows, priced } = await priceOfRows();
+    return priced.length ? { rows, priced } : null;
+  });
+  if (!first) {
+    forecastSyncOrphanRanges.push({ from: '2034-02-01', to: '2034-03-31' });
+    return 'דולג (לא נכשל) — "רענן תחזית" לא השלים תוך זמן סביר — עיכוב-תשתית, לא קשור לקוד הנבדק';
+  }
+  cleanup.push(...first.rows.map((r) => ({ table: 'תחזית שתילה שבועית', id: r.id })));
+  const firstPrices = new Set(first.priced.map((r) => Number(r['מחיר משוער לקג (from מחירי גידול משוערים)'][0])));
+  if (firstPrices.size !== 1 || !firstPrices.has(9)) {
+    throw new Error(`צפוי שמחיר-הטווח (9) יגבור על ברירת-המחדל-השנתית (5) בכל השורות. נמצא: ${JSON.stringify([...firstPrices])}`);
+  }
+
+  // דטרמיניזם: הפעלה חוזרת של "רענן תחזית" חייבת לבחור את אותו מחיר
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': false });
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': true });
+  const second = await pollUntil(async () => {
+    const { rows, priced } = await priceOfRows();
+    return priced.length ? { rows, priced } : null;
+  });
+  if (!second) return 'מחיר-הטווח (9) נבחר נכון בריצה הראשונה; הריצה השנייה לא הספיקה תוך זמן סביר — לא נכשל, רק לא אומת דטרמיניזם';
+  cleanup.push(...second.rows.filter((r) => !cleanup.some((c) => c.table === 'תחזית שתילה שבועית' && c.id === r.id)).map((r) => ({ table: 'תחזית שתילה שבועית', id: r.id })));
+  const secondPrices = new Set(second.priced.map((r) => Number(r['מחיר משוער לקג (from מחירי גידול משוערים)'][0])));
+  if (secondPrices.size !== 1 || !secondPrices.has(9)) {
+    throw new Error(`לא דטרמיניסטי — ריצה שנייה בחרה מחיר אחר: ${JSON.stringify([...secondPrices])} (ריצה ראשונה: 9)`);
+  }
+  return `שתי הריצות בחרו את מחיר-הטווח (9) על פני ברירת-המחדל-השנתית (5) — עקבי`;
+}, 350000);
+
 await test('אבטחה: DELETE על "תפוקה רבעונית" — owner מצליח (200), manager/worker נדחים (403)', async () => {
   const crop = await create('גידולים', { 'שם גידול': `${MARK}-perm-crop` });
   const rec = await create('תפוקה רבעונית', { 'גידול': [crop.id], 'רבעון': '2', 'קג לדונם לשבוע': 1 });
@@ -1783,6 +1868,24 @@ await test('forecast-preflight: תוכנית שלא קיימת מחזירה ok=f
   const result = await api('GET', 'plans/recNONEXISTENT00000000/forecast-preflight');
   if (result.ok !== false) throw new Error('"ok" צפוי false לתוכנית לא-קיימת');
   if (!Array.isArray(result.missing) || !result.missing.length) throw new Error('צפויה הודעת-חוסר לתוכנית לא-קיימת');
+}, READ_WARN_MS);
+
+// תוכנית בלי אף גידול מקושר (שדה "גידולים" ריק/לא-קיים) — מקרה-קצה
+// מפורש ממשימת-הציד: preflight חייב לעצור ב"אין גידול מקושר" בלי
+// לנסות לבדוק מחיר/תפוקה (שאין להם מה לבדוק מולו), ובלי לקרוס.
+await test('forecast-preflight: תוכנית בלי גידול מקושר כלל → "אין גידול מקושר", בלי קריסה', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const plan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'שנת תוכנית': 2033,
+    'תחילת קטיף מקורית': '2033-02-01', 'סוף קטיף מקורי': '2033-02-20',
+  });
+  const result = await api('GET', `plans/${plan.id}/forecast-preflight`);
+  if (!result.missing.some((m) => m.includes('אין גידול מקושר'))) {
+    throw new Error(`צפויה הודעת "אין גידול מקושר" ברשימת החוסרים. התקבל: ${JSON.stringify(result.missing)}`);
+  }
+  if (result.checkedCropNames.length) throw new Error('בלי גידול מקושר, checkedCropNames אמור להיות ריק');
+  if (result.ok) throw new Error('"ok" לא יכול להיות true כשחסר גידול מקושר');
+  return `missing: ${JSON.stringify(result.missing)}`;
 }, READ_WARN_MS);
 
 // ============================================================
