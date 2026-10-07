@@ -560,9 +560,9 @@ function ManualExpenseModal({ categories, suppliers, onClose, onSaved }) {
   const [lineErrs, setLineErrs] = useState({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  // עקביות עם LinkSupplierModal (אותו קובץ) ועם DeleteConfirm: Escape סוגר,
-  // אבל לא באמצע שמירה — אותה הגנה בדיוק שיש ללחיצה על הרקע
-  useEscapeClose(onClose, !saving);
+  // (הקריאה הזו הייתה כבר קיימת לפני משימת-U; מקבץ 1 הוסיף לידה בטעות
+  // קריאה כפולה זהה — שני listeners על document, Escape קרא ל-onClose
+  // פעמיים. תוקן כאן — נשארת קריאה אחת.)
   useEscapeClose(onClose, !saving);
 
   // רשימת-בחירה ל"מה נקנה" — קטגוריות המלאי הקיימות בפועל (datalist,
