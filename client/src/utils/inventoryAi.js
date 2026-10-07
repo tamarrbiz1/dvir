@@ -41,6 +41,13 @@ export function logisticsAiSummary(status) {
   const missingItem = results.find((r) => r.skipped === 'אין פריט מלאי בקטגוריה הזו');
   if (missingItem) return { kind: 'warn', text: `אין פריט מלאי בקטגוריית "${missingItem.category}"` };
   const deducted = results.filter((r) => r.deducted);
-  if (deducted.length) return { kind: 'ok', text: `הורדה מ-${deducted.length} קטגוריות` };
+  if (deducted.length) {
+    // סעיף N1 (2026-10-07): משטחים יורדים תמיד מהחשבונית, גם בלי התאמה
+    // לתעודת המשלוח — התאמה-חסרה מסומנת softWarning, לא needsApproval,
+    // כי ההורדה מתבצעת בכל זאת. עדיין חשוב להראות לתמר שהייתה אי-התאמה.
+    const mismatched = deducted.filter((r) => r.softWarning);
+    if (mismatched.length) return { kind: 'warn', text: `הורדה מ-${deducted.length} קטגוריות — ${mismatched.map((r) => r.reason).filter(Boolean).join(' · ') || 'אין התאמה לתעודת המשלוח'}` };
+    return { kind: 'ok', text: `הורדה מ-${deducted.length} קטגוריות` };
+  }
   return { kind: 'none', text: 'אין פעולה' };
 }

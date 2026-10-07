@@ -1122,22 +1122,27 @@ await test('הורדה נגזרת: תעודה+חשבונית תואמות (קר�
 // ============================================================
 // תוספת 2026-10-06 (אחה"צ) — ממצא-אמת מול Airtable חי: סטייה מעל הסף
 // לא אמורה לחסום קרטונים/נילונים/כובעים (התעודה היא עדות ישירה לכמות
-// שיצאה פיזית — מורידים, רק מסמנים אזהרה), אבל *כן* חוסמת משטחי-עץ
-// (נגזרים מהחשבונית בלבד, בלי "תעודה" ישירה לאמת אותם).
+// שיצאה פיזית — מורידים, רק מסמנים אזהרה).
+// עודכן 2026-10-07 (סעיף N1, הוראת תמר): גם משטחי-עץ **לא** נחסמים
+// יותר — יורדים תמיד מהחשבונית, ורק מתועדת אי-התאמה בהערה (עם הפניה
+// למספרי המסמכים), בלי needsApproval.
 // ============================================================
-await test(`הורדה נגזרת: סטייה מעל הסף (${(DEVIATION_THRESHOLD * 100)}%) → קרטונים/נילונים/כובעים יורדים עם אזהרה, רק משטחים דורשים אישור`, () => {
+await test(`הורדה נגזרת: סטייה מעל הסף (${(DEVIATION_THRESHOLD * 100)}%) → כל הקטגוריות (כולל משטחים) יורדות עם ציון אי-התאמה, בלי חסימה`, () => {
   const note = { id: 'recN2', 'קוד שבוע': 'W2', 'כמות קרטונים': '100', 'מספר תעודה': 2 };
   const invoice = { id: 'recI2', 'קוד שבוע': 'W2', 'כמות קרטונים': '140', 'מספר משטחים': '5', 'מספר חשבונית': 2 }; // 28.5% סטייה
-  const { cartonsCrossCheck, deductions } = deriveDeductions({ note, invoice });
+  const { cartonsCrossCheck, deductions } = deriveDeductions({ note, invoice, weekNoteNumbers: [2] });
   if (cartonsCrossCheck.ok) throw new Error('סטייה גדולה — ההצלבה לא הייתה אמורה לעבור');
   const byCategory = Object.fromEntries(deductions.map((d) => [d.category, d]));
   for (const cat of ['קרטונים', 'נילונים', 'כובעים']) {
     if (byCategory[cat].needsApproval) throw new Error(`${cat}: לא אמור לדרוש אישור — התעודה מוסמכת להוריד בכל מקרה`);
     if (!byCategory[cat].reason || !byCategory[cat].reason.includes('%')) throw new Error(`${cat}: חייב להכיל אזהרת-סטייה עם האחוז`);
   }
-  if (!byCategory['משטחי עץ'].needsApproval) throw new Error('משטחים: אמור לדרוש אישור כשיש חריגה בהצלבה (אין "תעודה" ישירה לאמת אותם)');
-  if (!byCategory['משטחי עץ'].reason) throw new Error('משטחים דורשי-אישור חייבים הסבר');
-  return `סטייה ${(cartonsCrossCheck.deviation * 100).toFixed(1)}% זוהתה: קרטונים/נילונים/כובעים ירדו עם אזהרה, משטחים נחסמו`;
+  if (byCategory['משטחי עץ'].needsApproval) throw new Error('משטחים: לא אמורים לדרוש אישור יותר (N1) — צריכים לרדת בכל מקרה');
+  if (byCategory['משטחי עץ'].quantity !== 5) throw new Error('משטחים: הכמות אמורה לרדת בכל מקרה, כולל בסטייה');
+  if (!byCategory['משטחי עץ'].mismatchNote || !byCategory['משטחי עץ'].mismatchNote.includes('חשבונית #2') || !byCategory['משטחי עץ'].mismatchNote.includes('תעודות #2')) {
+    throw new Error(`משטחים: mismatchNote חייב להפנות לחשבונית ולתעודה, התקבל: ${byCategory['משטחי עץ'].mismatchNote}`);
+  }
+  return `סטייה ${(cartonsCrossCheck.deviation * 100).toFixed(1)}% זוהתה: כל 4 הקטגוריות ירדו, משטחים עם הערת-אי-התאמה מפורטת`;
 });
 
 await test('הורדה נגזרת: רק תעודה קיימת (אין חשבונית מקבילה לשבוע) → נגזר עם אזהרת "בלי הצלבה", לא חוסם', () => {
@@ -1182,8 +1187,11 @@ await test('הורדה נגזרת: הצלבה שבועית מצליבה את ס�
   const byCategory = Object.fromEntries(agg.deductions.map((d) => [d.category, d]));
   if (byCategory['קרטונים'].quantity !== 328) throw new Error('קרטונים: עדיין נגזר מהתעודה הבודדת (328), לא מהסכום השבועי');
   if (byCategory['קרטונים'].needsApproval) throw new Error('קרטונים לא אמורים להיחסם גם בסטייה שבועית אמיתית (5.6%)');
-  if (!byCategory['משטחי עץ'].needsApproval) throw new Error('משטחים אמורים להיחסם — 5.6% מעל הסף של 5%');
-  return `זוג-בודד: ${(single.cartonsCrossCheck.deviation * 100).toFixed(0)}% (שגוי), אגרגציה שבועית: ${(dev * 100).toFixed(1)}% (נכון, כמו הנתון האמיתי מהיום)`;
+  // N1 (2026-10-07): משטחים לא נחסמים יותר — יורדים עם ציון אי-התאמה (זה בדיוק המקרה האמיתי של חשבונית #61)
+  if (byCategory['משטחי עץ'].needsApproval) throw new Error('משטחים לא אמורים להיחסם יותר (N1) — צריכים לרדת 27 עם הערת אי-התאמה');
+  if (byCategory['משטחי עץ'].quantity !== 27) throw new Error('משטחים: 27 אמור לרדת בכל מקרה (מספר משטחים מהחשבונית)');
+  if (!byCategory['משטחי עץ'].mismatchNote?.includes('5.6%')) throw new Error(`משטחים: mismatchNote חייב לציין את אחוז-הסטייה המדויק, התקבל: ${byCategory['משטחי עץ'].mismatchNote}`);
+  return `זוג-בודד: ${(single.cartonsCrossCheck.deviation * 100).toFixed(0)}% (שגוי), אגרגציה שבועית: ${(dev * 100).toFixed(1)}% (נכון, כמו הנתון האמיתי מהיום) — משטחים ירדו 27 עם הערת-אי-התאמה (N1)`;
 });
 
 await test('findCounterpart: מוצא רשומה תואמת-שבוע בדיוק, לא מתאים שבוע שונה', () => {

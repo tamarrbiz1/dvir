@@ -25,6 +25,15 @@
 // נתוני-אמת); הקוד כאן מתוקן כדי שזה לא יקרה לתעודות/חשבוניות עתידיות,
 // ולאפשר ריצה חוזרת תקינה היכן שהתגית עדיין לא ננעלה (ר' PENDING_SKIP
 // ו-deductOne למטה — "ממתין לנתון" לעולם לא כותב שום דבר ל-Airtable).
+//
+// ⚠️⚠️ סעיף N1 (2026-10-07, הוראת תמר) — כלל חדש למשטחים: בניגוד
+// לקרטונים/נילונים/כובעים (שכבר לא נחסמים מ-2026-10-06), **משטחי-עץ
+// עצמם גם לא נחסמים יותר כש-needsApproval** — זה שינוי-מדיניות, לא
+// המשך של אותו תיקון. משטחים יורדים *תמיד* מ"מספר משטחים" בחשבונית,
+// בלי קשר להתאמה לתעודת-המשלוח; כשאין התאמה (סטייה>5% או אין תעודה
+// לשבוע כלל) — מתועד `mismatchNote` מפורט בהערות הפריט (עם מספרי
+// החשבונית/התעודות הרלוונטיות), לא חסימה. חשבונית #61 (recxVMx3Fw5rKwY57,
+// 5.58% סטייה) היא המקרה שהניע את השינוי — אושר ע"י תמר להרצה לאחר המיזוג.
 // ============================================================
 import { fetchRecords, updateRecord } from './airtable.js';
 
@@ -96,7 +105,7 @@ function pendingResult(sourceTable, record, fieldLabel) {
  * אמיתית (needsApproval) נשארת רק למשטחי-עץ, שנגזרים מהחשבונית בלבד
  * וללא "תעודה" ישירה שאפשר להסתמך עליה כשההצלבה נכשלת.
  */
-export function deriveDeductions({ note, invoice, weekNoteCartonsTotal, weekInvoiceCartonsTotal } = {}) {
+export function deriveDeductions({ note, invoice, weekNoteCartonsTotal, weekInvoiceCartonsTotal, weekNoteNumbers } = {}) {
   const weekCode = note?.['קוד שבוע'] || invoice?.['קוד שבוע'] || null;
   const crossNote = weekNoteCartonsTotal !== undefined ? weekNoteCartonsTotal : (note ? num(note['כמות קרטונים']) : null);
   const crossInvoice = weekInvoiceCartonsTotal !== undefined ? weekInvoiceCartonsTotal : (invoice ? num(invoice['כמות קרטונים']) : null);
@@ -133,13 +142,26 @@ export function deriveDeductions({ note, invoice, weekNoteCartonsTotal, weekInvo
     if (!pallets) {
       out.push(pendingResult(INVOICES_TABLE, invoice, 'מספר משטחים'));
     } else {
+      // ⚠️ סעיף N1 (2026-10-07, הוראת תמר — מחליף את ההתנהגות הקודמת):
+      // משטחים יורדים **תמיד** מהחשבונית, בלי קשר להתאמה לתעודת המשלוח.
+      // כשאין התאמה (סטייה>5% או אין תעודה לשבוע כלל) — לא חוסמים, רק
+      // מתעדים בהערות הפריט את אי-ההתאמה עם הפניה למספרי המסמכים.
+      const invoiceNum = invoice['מספר חשבונית'] ?? '?';
+      const mismatch = deviated || !hasCross;
+      const noteNumsText = (weekNoteNumbers && weekNoteNumbers.length)
+        ? `תעודות ${weekNoteNumbers.map((n) => `#${n}`).join(', ')}`
+        : 'אין תעודות לשבוע זה';
+      const mismatchNote = mismatch
+        ? `אין התאמה לתעודת המשלוח (${hasCross ? `סטייה ${(deviation * 100).toFixed(1)}%` : 'אין תעודה לשבוע זה'}) · חשבונית #${invoiceNum} · ${noteNumsText}`
+        : null;
       out.push({
         category: 'משטחי עץ', quantity: pallets, weekCode,
-        sourceTable: INVOICES_TABLE, sourceId: invoice.id, sourceLabel: `חשבונית #${invoice['מספר חשבונית'] ?? '?'}`,
+        sourceTable: INVOICES_TABLE, sourceId: invoice.id, sourceLabel: `חשבונית #${invoiceNum}`,
         derivedFrom: 'ישיר מהחשבונית (מספר משטחים)',
-        needsApproval: !!deviated,
-        reason: deviated ? `סטייה ${(deviation * 100).toFixed(1)}% בין סה"כ תעודות (${crossNote}) לסה"כ חשבוניות (${crossInvoice}) לשבוע ${weekCode} — לא ניתן לאמת משטחים` : null,
-        softWarning: !hasCross,
+        needsApproval: false,
+        reason: mismatchNote,
+        softWarning: mismatch,
+        mismatchNote,
       });
     }
   }
@@ -174,7 +196,10 @@ async function deductOne(item, d) {
   }
 
   const current = Number(item['מלאי נוכחי']) || 0;
-  const line = `↓ ${d.quantity} ממלאי: ${d.category} (${d.sourceLabel}, שבוע ${d.weekCode}${d.derivedFrom.startsWith('ישיר') ? '' : ` · ${d.derivedFrom}`})${d.softWarning ? ' ⚠ בלי הצלבה' : ''} ${tag}`;
+  // mismatchNote (סעיף N1, משטחים) נותן תיאור-מלא-ומפורש של אי-ההתאמה
+  // כולל הפניה למסמכים — גובר על הסיומת הגנרית "⚠ בלי הצלבה".
+  const suffix = d.mismatchNote ? ` — ${d.mismatchNote}` : (d.softWarning ? ' ⚠ בלי הצלבה' : '');
+  const line = `↓ ${d.quantity} ממלאי: ${d.category} (${d.sourceLabel}, שבוע ${d.weekCode}${d.derivedFrom.startsWith('ישיר') ? '' : ` · ${d.derivedFrom}`})${suffix} ${tag}`;
   await updateRecord(INVENTORY_TABLE, item.id, { 'מלאי נוכחי': current - d.quantity, 'הערות': notes ? `${notes}\n${line}` : line });
   return { ...d, deducted: true, itemId: item.id };
 }
@@ -201,8 +226,10 @@ export async function analyzeLogisticsInventory(table, recordId) {
   const weekInvoices = weekCode ? invoices.filter((r) => r['קוד שבוע'] === weekCode) : [];
   const weekNoteCartonsTotal = sumOrNull(weekNotes.map((r) => r['כמות קרטונים']));
   const weekInvoiceCartonsTotal = sumOrNull(weekInvoices.map((r) => r['כמות קרטונים']));
+  // מספרי התעודות של השבוע — לציטוט בהערת-אי-התאמה של משטחים (סעיף N1)
+  const weekNoteNumbers = weekNotes.map((r) => r['מספר תעודה']).filter((n) => n != null);
 
-  const { cartonsCrossCheck, deductions } = deriveDeductions({ note, invoice, weekNoteCartonsTotal, weekInvoiceCartonsTotal });
+  const { cartonsCrossCheck, deductions } = deriveDeductions({ note, invoice, weekNoteCartonsTotal, weekInvoiceCartonsTotal, weekNoteNumbers });
   const results = [];
   for (const d of deductions) {
     if (d.pending) { results.push({ ...d }); continue; }

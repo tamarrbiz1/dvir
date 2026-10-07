@@ -26,6 +26,8 @@ import { useEscapeClose } from '../utils/navigation.jsx';
 import { exportCsv, fileStamp, paginate, pagerSummary, sortRows, dateValue } from '../utils/table.js';
 import { periodRange, inPeriod, periodCaption } from '../utils/period.js';
 import PeriodSelect from '../components/PeriodSelect.jsx';
+import { authFetch } from '../utils/authFetch.js';
+import { logisticsAiSummary } from '../utils/inventoryAi.js';
 import {
   INVOICES_TABLE, invNumber, invLabel, invTitle, invDate, invStatus, invGross, invNet, invWeight, invCartons, invPallets,
   invNetPerKg, invGrossPerKg, invAvgCarton, invDeduction, invDeductionPct, invDeductionDev, invDeductionCheck,
@@ -117,6 +119,15 @@ export default function InvoicesPage() {
       setDrawer((cur) => (cur?.inv ? { ...cur, inv: arr.find((x) => x.id === cur.inv.id) || cur.inv } : cur));
     })
     .catch((e) => setError(e.message || 'שגיאה בטעינת החשבוניות')), [app.api]);
+
+  // מצב הורדת-מלאי-נגזרת (משטחים מהחשבונית, ר' logistics-deduction.js) —
+  // מגיע מהשרת בלבד (אין שדה "הערות" על חשבוניות), לכרטיס/חיווי "אין
+  // התאמה לתעודה" בטבלה (סעיף N1, 2026-10-07).
+  const [logisticsStatus, setLogisticsStatus] = useState({});
+  useEffect(() => {
+    authFetch(`/api/logistics/${encodeURIComponent(INVOICES_TABLE)}/status`)
+      .then((r) => (r.ok ? r.json() : {})).then(setLogisticsStatus).catch(() => {});
+  }, [items]);
 
   useEffect(() => { load().finally(() => setLoading(false)); }, [load]);
   useAutoRefresh(load);
@@ -407,7 +418,15 @@ export default function InvoicesPage() {
                         <td>{cell(invDeductionDev(i), (v) => <span style={{ color: isDeductionAnomaly(i) ? 'var(--error)' : undefined }}>{formatMoney(v)}</span>)}</td>
                         <td>{invDeductionCheck(i) ? <CheckBadgeValue value={invDeductionCheck(i)} /> : <span className="muted">לא זמין</span>}</td>
                         <td>{cell(invTransport(i), formatMoney)}</td>
-                        <td>{cell(invPallets(i), formatNumber)}</td>
+                        <td>
+                          {cell(invPallets(i), formatNumber)}
+                          {(() => {
+                            const summary = logisticsAiSummary(logisticsStatus[i.id]);
+                            return summary?.kind === 'warn' ? (
+                              <span title={summary.text} style={{ marginInlineStart: 4 }}>⚠</span>
+                            ) : null;
+                          })()}
+                        </td>
                         <td>{cell(invTransportPerPallet(i), formatMoney)}</td>
                         <td>{invTransportCheck(i) ? <CheckBadgeValue value={invTransportCheck(i)} /> : <span className="muted">לא זמין</span>}</td>
                         <td>
