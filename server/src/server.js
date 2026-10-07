@@ -127,19 +127,24 @@ async function computedFieldNames(table) {
   }
 }
 
-function stripTestRecords(records, req, table, computed) {
-  if (!Array.isArray(records) || req?.query?.includeTest === '1') return records;
+// פרדיקט על רשומה בודדת (מופרד מ-stripTestRecords כדי שגם fetchRecords
+// (airtable.js) יוכל להשתמש בו כ-filter תוך-כדי-דגימת-עמודים — ר' R3
+// למטה: maxRecords חייב להתפרש כ-"N אחרי סינון", לא "N גולמי מ-Airtable").
+function isTestRecord(rec, table, computed) {
   if (table === 'מלאי בסיסי') {
-    return records.filter((r) => !TEST_RECORD_PATTERN.test(String(r['קטגוריה'] || '')));
+    return TEST_RECORD_PATTERN.test(String(rec['קטגוריה'] || ''));
   }
   if (computed?.size) {
-    return records.filter((r) => {
-      const own = {};
-      for (const [k, v] of Object.entries(r)) if (!computed.has(k)) own[k] = v;
-      return !TEST_RECORD_PATTERN.test(JSON.stringify(own));
-    });
+    const own = {};
+    for (const [k, v] of Object.entries(rec)) if (!computed.has(k)) own[k] = v;
+    return TEST_RECORD_PATTERN.test(JSON.stringify(own));
   }
-  return records.filter((r) => !TEST_RECORD_PATTERN.test(JSON.stringify(r)));
+  return TEST_RECORD_PATTERN.test(JSON.stringify(rec));
+}
+
+function stripTestRecords(records, req, table, computed) {
+  if (!Array.isArray(records) || req?.query?.includeTest === '1') return records;
+  return records.filter((r) => !isTestRecord(r, table, computed));
 }
 
 // מטא-נתונים — שדות של טבלה ספציפית
@@ -1004,19 +1009,31 @@ app.get('/api/:table', authorizeRead, async (req, res) => {
     // עובד: רק הרשומות ששייכות אליו. הערה חשובה: אי-אפשר לסנן את זה עם
     // filterByFormula ישירות על שדה קישור — ARRAYJOIN על שדה מקושר מחזיר
     // את שם הרשומה המקושרת (Primary Field), לא את מזהה ה-record שלה,
-    // כך שהשוואה למזהה תמיד נכשלת בשקט. לכן מסננים כאן ב-Node, אחרי
-    // הקריאה — לא ניתן לעקוף מהלקוח (opts.fields תמיד כולל את שדה
-    // השיוך גם אם הלקוח לא ביקש אותו, כדי שהסינון יהיה אפשרי).
+    // כך שהשוואה למזהה תמיד נכשלת בשקט. לכן מסננים כאן ב-Node (opts.fields
+    // תמיד כולל את שדה השיוך גם אם הלקוח לא ביקש אותו, כדי שהסינון יהיה
+    // אפשרי) — לא ניתן לעקוף מהלקוח.
     const ownField = ownFilterField(req.auth.role, table);
     if (ownField && opts.fields && !opts.fields.includes(ownField)) opts.fields.push(ownField);
-    let records = stripTestRecords(await fetchRecords(table, opts), req, table, await computedFieldNames(table));
-    if (ownField) {
-      records = records.filter((r) => {
-        const linked = r[ownField];
+
+    // ⚠️ 7.10.2026 (R3): כשיש ?maxRecords=N, אי-אפשר יותר לקרוא
+    // fetchRecords(opts) עם maxRecords ואז לסנן (stripTestRecords +
+    // ownField) אחרי — כי אז N הוא "N גולמי מ-Airtable", וסינון יכול
+    // לצמצם אותו ל-פחות או לאפס (אומת בפועל: מבנים?maxRecords=1 החזיר
+    // []). במקום זה בונים פרדיקט יחיד ומעבירים אותו ל-fetchRecords יחד
+    // עם maxRecords; airtable.js דוגם עמוד-עמוד ועוצר רק כשיש מספיק
+    // תוצאות *אחרי* הסינון (או שאזל המקור ב-Airtable).
+    const includeTest = req.query.includeTest === '1';
+    const computed = includeTest ? null : await computedFieldNames(table);
+    const filter = (rec) => {
+      if (!includeTest && isTestRecord(rec, table, computed)) return false;
+      if (ownField) {
+        const linked = rec[ownField];
         const ids = Array.isArray(linked) ? linked.map((x) => (x && typeof x === 'object' ? x.id : x)) : [];
-        return ids.includes(req.auth.sub);
-      });
-    }
+        if (!ids.includes(req.auth.sub)) return false;
+      }
+      return true;
+    };
+    const records = await fetchRecords(table, { ...opts, filter });
 
     // העשרה: שדות מקושרים -> אובייקטים עם שם (אלא אם raw=1)
     const payload = req.query.raw === '1' ? records : await attachLinkedNames(table, records);
@@ -1274,6 +1291,56 @@ app.delete('/api/:table/:id', authorizeWrite, async (req, res) => {
     console.error(`[api] DELETE /api/${req.params.table}/${req.params.id} (role=${req.auth?.role || '?'}): ${e.message}`);
     sendApiError(res, e);
   }
+});
+
+// ============================================================
+// שובר-מעגל אחרון לכל שגיאה ולכל נתיב-API לא מוכר (לילה 3, 7.10.2026 —
+// בדיקת עמידות). הבלוק הזה חייב להיות **אחרי כל הראוטים**: מטפל-שגיאות
+// ב-Express נבחר לפי סדר ההרשמה, ולכן המטפל שרשום בראש הקובץ (JSON לא
+// תקין) לא תופס שגיאות שנזרקות בראוטים/ב-multer שמוגדרים אחריו — הן
+// נפלו עד כה למטפל ברירת-המחדל של Express שמחזיר **HTML**.
+//
+// למה זה חשוב: כל קריאות הלקוח עוברות ב-serverErrorMessage (App.jsx)
+// שעושה `res.json()` ונכשל בשקט על HTML. אומת בפועל מול השרת:
+//   • גוף JSON מעל 100kb        → HTML 413  → המשתמש ראה טוסט "שגיאה" חשוף
+//   • קובץ העלאה מעל 15MB       → HTML 500  → "תקלה בתקשורת עם השרת"
+//     (במקום "הקובץ גדול מדי") — התרחיש הסביר ביותר בפועל: סריקת PDF
+//     מהטלפון עוברת 15MB בקלות, והמשתמש חושב שהשרת שבור.
+//   • multipart פגום/קטוע       → HTML 500
+//   • נתיב /api לא מוכר         → HTML 404 "Cannot GET ..."
+// מעתה כל אלה מוחזרים כ-JSON עם הודעה בעברית, בדיוק כמו כל שאר ה-API.
+// ============================================================
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: `נתיב לא קיים: ${req.method} ${req.originalUrl.split('?')[0]}` });
+});
+
+app.use((err, req, res, _next) => {
+  // הודעת השגיאה המקורית נרשמת תמיד ללוג השרת — אבל לעולם לא מוחזרת
+  // ללקוח כמו-שהיא (היא כוללת stack ונתיבי-קבצים מוחלטים).
+  console.error(`[api] שגיאה לא-מטופלת ב-${req.method} ${req.originalUrl}: ${err?.message || err}`);
+
+  if (res.headersSent) return; // התשובה כבר יצאה (למשל 207 בהוצאה ידנית)
+
+  const code = err?.code || err?.type;
+  if (code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: 'הקובץ גדול מדי. יש להעלות קובץ עד 5MB.' });
+  }
+  if (code === 'entity.too.large' || err?.status === 413 || err?.statusCode === 413) {
+    return res.status(413).json({ error: 'הבקשה גדולה מדי. יש לקצר את התוכן ולנסות שוב.' });
+  }
+  if (code === 'LIMIT_UNEXPECTED_FILE' || code === 'LIMIT_FILE_COUNT' || code === 'LIMIT_PART_COUNT') {
+    return res.status(400).json({ error: 'שגיאה בשדות הקובץ בבקשה.' });
+  }
+  // multipart קטוע (חיבור שנקטע באמצע העלאה / גוף פגום) — busboy זורק
+  // "Unexpected end of form". זו שגיאת-קלט, לא תקלת-שרת.
+  if (/Unexpected end of form|Malformed part|Unsupported content type|Boundary not found/i.test(err?.message || '')) {
+    return res.status(400).json({ error: 'ההעלאה נקטעה או שהבקשה פגומה. יש לנסות שוב.' });
+  }
+  const status = err?.statusCode || err?.status;
+  if (status >= 400 && status < 500) {
+    return res.status(status).json({ error: err.message });
+  }
+  res.status(500).json({ error: 'תקלה בשרת. יש לנסות שוב בעוד רגע.' });
 });
 
 app.listen(PORT, () => {

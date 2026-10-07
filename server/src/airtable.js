@@ -10,6 +10,7 @@ import path from 'path';
 import fs from 'fs';
 import Airtable from 'airtable';
 import { fileURLToPath } from 'url';
+import { maybeFail } from './fault-inject.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -94,6 +95,7 @@ async function fetchWithRetry(url, options, maxAttempts = 4) {
 // (מחזיר רק שמות ומבנה; אינו חושף את הסוד)
 // ============================================================
 export async function getMeta() {
+  maybeFail('meta');
   if (!PAT || !BASE_ID) {
     throw new Error('סודות חסרים — בדוק את קובץ .env');
   }
@@ -111,17 +113,54 @@ export async function getMeta() {
 // ============================================================
 // קריאת רשומות / כתיבה
 // ============================================================
+// ⚠️ 7.10.2026 (R3, עמידות): options.maxRecords ו-options.filter יחד.
+// הבעיה שתוקנה כאן: אם הקורא מעביר גם maxRecords וגם צריך לסנן את
+// התוצאות אחר-כך (stripTestRecords, סינון "הרשומות שלי" לעובד), אסור
+// להעביר את maxRecords כמו שהוא ל-Airtable — ה-SDK עוצר שם אחרי N
+// *שורות גולמיות*, ורק אחר כך הסינון מצמצם את זה ל-פחות (או אפס).
+// אומת בפועל: GET מבנים?maxRecords=1 החזיר [] כי הרשומה הגולמית
+// היחידה שהוחזרה הייתה רשומת-QA שנופלת בסינון. maxRecords חייב
+// להתפרש כ-"N תוצאות אחרי סינון" — לכן כש-filter מועבר, דוגמים
+// עמוד-עמוד (ללא maxRecords ב-select עצמו), מסננים כל שורה בזמן-אמת,
+// ועוצרים לבקש עוד עמודים ברגע שיש מספיק תוצאות שעברו את הסינון (או
+// שנגמר המקור ב-Airtable). ללא filter ההתנהגות נשארת כמו שהייתה.
 export async function fetchRecords(tableName, options = {}) {
+  maybeFail('fetch', tableName);
   const base = getBase();
+  const { filter, maxRecords, ...rest } = options;
+
+  if (typeof filter !== 'function') {
+    const selectOptions = maxRecords !== undefined ? { ...rest, maxRecords } : rest;
+    const records = [];
+    await base(tableName).select(selectOptions).eachPage((page, fetchNextPage) => {
+      records.push(...page.map((r) => ({ id: r.id, ...r.fields })));
+      fetchNextPage();
+    });
+    return records;
+  }
+
   const records = [];
-  await base(tableName).select(options).eachPage((page, fetchNextPage) => {
-    records.push(...page.map((r) => ({ id: r.id, ...r.fields })));
-    fetchNextPage();
+  await new Promise((resolve, reject) => {
+    base(tableName).select(rest).eachPage(
+      (page, fetchNextPage) => {
+        for (const r of page) {
+          const rec = { id: r.id, ...r.fields };
+          if (filter(rec)) records.push(rec);
+        }
+        if (maxRecords !== undefined && records.length >= maxRecords) {
+          resolve(); // מספיק תוצאות אחרי סינון — לא מבקשים עוד עמודים
+        } else {
+          fetchNextPage();
+        }
+      },
+      (err) => (err ? reject(err) : resolve()), // עמודים נגמרו (או שגיאה)
+    );
   });
-  return records;
+  return maxRecords !== undefined ? records.slice(0, maxRecords) : records;
 }
 
 export async function createRecord(tableName, fields, { typecast = false } = {}) {
+  maybeFail('create', tableName);
   const base = getBase();
   const created = typecast ? await base(tableName).create(fields, { typecast: true }) : await base(tableName).create(fields);
   return { id: created.id, ...created.fields };
@@ -129,6 +168,7 @@ export async function createRecord(tableName, fields, { typecast = false } = {})
 
 /** יצירת כמה רשומות במנות של 10 (מגבלת Airtable לבקשה) */
 export async function createRecords(tableName, fieldsList) {
+  maybeFail('create', tableName);
   const base = getBase();
   const out = [];
   for (let i = 0; i < fieldsList.length; i += 10) {
@@ -140,6 +180,7 @@ export async function createRecords(tableName, fieldsList) {
 }
 
 export async function updateRecord(tableName, recordId, fields, { typecast = false } = {}) {
+  maybeFail('update', tableName);
   const base = getBase();
   const updated = typecast ? await base(tableName).update(recordId, fields, { typecast: true }) : await base(tableName).update(recordId, fields);
   return { id: updated.id, ...updated.fields };
@@ -148,6 +189,7 @@ export async function updateRecord(tableName, recordId, fields, { typecast = fal
 // העלאת קובץ לרשומה קיימת — נקודת הקצה הרשמית של Airtable לקבצים.
 // (יצירת רשומה עם content מוטבע אינה נתמכת ונדחית ב-"Invalid attachment object".)
 export async function uploadAttachmentToRecord(recordId, fieldName, { filename, contentType, base64 }) {
+  maybeFail('upload');
   const res = await fetchWithRetry(
     `https://content.airtable.com/v0/${BASE_ID}/${recordId}/${encodeURIComponent(fieldName)}/uploadAttachment`,
     {
@@ -164,6 +206,7 @@ export async function uploadAttachmentToRecord(recordId, fieldName, { filename, 
 }
 
 export async function deleteRecord(tableName, recordId) {
+  maybeFail('delete', tableName);
   const base = getBase();
   await base(tableName).destroy(recordId);
   return true;

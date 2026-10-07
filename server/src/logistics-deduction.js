@@ -318,20 +318,39 @@ export function planLogisticsReversal(inventoryItems, sourceTable, sourceId) {
  * מחזיר למלאי את כל ההורדות שבוצעו בעבר בפועל למסמך לוגיסטי (תעודת
  * משלוח/חשבונית) שעומד להימחק — נקרא לפני המחיקה בפועל (ר' server.js,
  * DELETE /api/:table/:id). כשל בעדכון פריט בודד לא עוצר את הפריטים
- * האחרים (עד 3 קטגוריות לתעודה אחת) — מתועד בלוג, לא חוסם את המחיקה.
- * מחזירה true אם משהו בפועל הוחזר, אחרת false (כולל "אין מה לבטל").
+ * האחרים (עד 3 קטגוריות לתעודה אחת).
+ *
+ * ⚠️ תוקן 7.10.2026 (לילה 3, בדיקת-עמידות עם 429 מוזרק ב-fault-inject.js):
+ * עד כה הפונקציה **בלעה** כל כשל — כשל בקריאת "מלאי בסיסי" החזיר `false`,
+ * וכשל בעדכון פריט בודד נרשם ללוג בלבד — ובשני המקרים
+ * `cascadeDocumentDelete` לא קיבל שום סימן, לא הוסיף שגיאת "מלאי:" לדוח,
+ * וה-DELETE ב-server.js המשיך ומחק את המסמך. התוצאה (**אומתה בפועל, לא
+ * תאוריה**): 429 חולף אחד על `updateRecord` = המלאי לא חוזר, המסמך נמחק,
+ * והתגית `[מלאי-D:טבלה:מזהה:...]` בהערות פריט-המלאי מצביעה על מסמך שלא
+ * קיים — אין שום דרך לדעת מה היה צריך לחזור. בנוסף הדוח דיווח "↩7 הוחזרו"
+ * כי `report.inventory` נבנה מה-plan שחושב *לפני* הביצוע.
+ *
+ * מעתה מוחזר דוח מפורט; `document-cascade.js` ממפה כל שגיאה כאן ל-
+ * "מלאי: ..." ב-report.errors, וזה מה שחוסם את המחיקה (המדיניות הקיימת
+ * ב-server.js: אם ביטול-המלאי נכשל — לא מוחקים, כדי לא לאבד מעקב).
+ * ניסיון חוזר בטוח ואידמפוטנטי: שורת ה-"↩" והמלאי החדש נכתבים באותו
+ * `updateRecord` **יחיד** — או ששניהם קרו או שאף אחד מהם.
+ *
+ * @returns {Promise<{reversed: Array<{itemId:string,quantity:number}>, errors: string[]}>}
  */
 export async function reverseLogisticsDeduction(sourceTable, sourceId) {
+  const out = { reversed: [], errors: [] };
   let inventoryItems;
   try {
     inventoryItems = await fetchRecords(INVENTORY_TABLE, {});
   } catch (e) {
-    console.error(`[logistics-reverse] קריאת "מלאי בסיסי" נכשלה לפני ביטול הורדה ל-${sourceTable}/${sourceId}: ${e.message}`);
-    return false;
+    const msg = `קריאת "${INVENTORY_TABLE}" נכשלה לפני ביטול הורדה ל-${sourceTable}/${sourceId}: ${e.message}`;
+    console.error(`[logistics-reverse] ${msg}`);
+    out.errors.push(msg);
+    return out;
   }
 
   const plan = planLogisticsReversal(inventoryItems, sourceTable, sourceId);
-  let changedAny = false;
   for (const p of plan) {
     try {
       await updateRecord(INVENTORY_TABLE, p.itemId, {
@@ -339,10 +358,12 @@ export async function reverseLogisticsDeduction(sourceTable, sourceId) {
         'הערות': `${p.currentNotes}\n${p.reversalLines.join('\n')}`,
         'תאריך עדכון': new Date().toISOString().slice(0, 10),
       });
-      changedAny = true;
+      out.reversed.push({ itemId: p.itemId, quantity: p.totalBack });
     } catch (e) {
-      console.error(`[logistics-reverse] עדכון פריט מלאי ${p.itemId} נכשל בביטול הורדה ל-${sourceTable}/${sourceId}: ${e.message}`);
+      const msg = `עדכון פריט מלאי ${p.itemId} נכשל בביטול הורדה ל-${sourceTable}/${sourceId} (${p.totalBack} יחידות לא חזרו): ${e.message}`;
+      console.error(`[logistics-reverse] ${msg}`);
+      out.errors.push(msg);
     }
   }
-  return changedAny;
+  return out;
 }
