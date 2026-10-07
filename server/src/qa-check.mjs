@@ -1667,7 +1667,7 @@ await test("typecast: ללא הדגל — ערך שאינו ברשימה נדח�
   catch (e) { if (/^4\d\d/.test(String(e.message))) return "נדחה כנדרש"; throw e; }
   throw new Error("ערך לא-ברשימה נשמר בלי typecast");
 });
-if (process.env.RUN_SCHEMA_TESTS === "1") {
+if (process.env.RUN_SCHEMA_TESTS !== "0") { // ברירת מחדל דלוק (הוראת תמר 7.10: שרידי בדיקה מותרים לפני המסירה ללקוח); כיבוי עם RUN_SCHEMA_TESTS=0
   await test("typecast: קטגוריה חדשה נוצרת בפועל (RUN_SCHEMA_TESTS)", async () => {
     const rec = await api("POST", `${enc("מלאי בסיסי")}?typecast=1`, { "קטגוריה": MARK, "מלאי נוכחי": 1, "הערות": MARK });
     if (rec?.id) cleanup.push({ table: "מלאי בסיסי", id: rec.id });
