@@ -277,18 +277,28 @@ export default function InvoicesPage() {
   // תצוגה-מקדימה (dryRun) של מה שהמחיקה תחזיר/תנתק — נטענת ברגע שנפתח
   // אישור-המחיקה (סעיף P3.8, 2026-10-07)
   const [deletePreview, setDeletePreview] = useState('');
+  // מצב-טעינה (משימה U): כאן, בשונה מ-removeRecord (שמחכה לתצוגה-המקדימה
+  // *לפני* פתיחת חלון-האישור), החלון נפתח מיד והטקסט מגיע אחר-כך. בלי
+  // סימון-טעינה + נטרול כפתור "מחק" אפשר לאשר מחיקה בדיוק לפני שהאזהרה
+  // ("יוחזרו 328 קרטונים למלאי") הופיעה — כלומר האזהרה מפספסת את תפקידה.
+  const [previewLoading, setPreviewLoading] = useState(false);
   useEffect(() => {
-    if (!confirmDel) { setDeletePreview(''); return; }
+    if (!confirmDel) { setDeletePreview(''); setPreviewLoading(false); return undefined; }
+    let cancelled = false;
+    setDeletePreview('');
+    setPreviewLoading(true);
     authFetch(`/api/documents/${encodeURIComponent(INVOICES_TABLE)}/${confirmDel.id}/cascade-preview`)
       .then((r) => (r.ok ? r.json() : null))
       .then((report) => {
-        if (!report) return;
+        if (cancelled || !report) return;
         const lines = [];
         if (report.inventory?.length) lines.push(`המחיקה תחזיר למלאי: ${report.inventory.map((r) => `${r.category || '?'} (${r.quantity})`).join(', ')}`);
         if (report.week) lines.push(report.week.action === 'delete' ? `רשומת השבוע ${report.week.weekCode} תימחק` : `תנותק מרשומת השבוע ${report.week.weekCode}`);
         setDeletePreview(lines.join('\n'));
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setPreviewLoading(false); });
+    return () => { cancelled = true; };
   }, [confirmDel]);
 
   const Th = ({ k, children }) => {
@@ -498,7 +508,7 @@ export default function InvoicesPage() {
         />
       )}
 
-      {confirmDel && <DeleteConfirm label={invLabel(confirmDel)} previewText={deletePreview} onCancel={() => setConfirmDel(null)} onConfirm={() => doDelete(confirmDel)} />}
+      {confirmDel && <DeleteConfirm label={invLabel(confirmDel)} previewText={deletePreview} previewLoading={previewLoading} onCancel={() => setConfirmDel(null)} onConfirm={() => doDelete(confirmDel)} />}
 
       {toast && (
         <div role="status" aria-live="polite" style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', background: 'var(--text-main)', color: '#fff', padding: '10px 18px', borderRadius: 10, boxShadow: '0 6px 20px rgba(0,0,0,0.2)', zIndex: 80, fontSize: 14 }}>
@@ -510,7 +520,7 @@ export default function InvoicesPage() {
 }
 
 // חלון אישור מחיקה — הנוסח והכפתורים לפי סעיף "ניהול מחיקה" באיפיון
-function DeleteConfirm({ label, previewText, onCancel, onConfirm }) {
+function DeleteConfirm({ label, previewText, previewLoading, onCancel, onConfirm }) {
   const [busy, setBusy] = useState(false);
   useEscapeClose(onCancel, !busy);
   return (
@@ -519,12 +529,16 @@ function DeleteConfirm({ label, previewText, onCancel, onConfirm }) {
         <h3 id="del-title">מחיקת {label}</h3>
         <p id="del-desc" style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 18 }}>
           הפריט ימחק ולא יינתן לשחזור.
+          {previewLoading && <><br /><br /><span className="muted">בודק מה המחיקה תשפיע...</span></>}
           {previewText && <><br /><br />{previewText.split('\n').map((l, i) => <span key={i}>{l}<br /></span>)}</>}
           <br />האם אתה בטוח שברצונך לבצע פעולה זו?
         </p>
         <div className="form-actions">
           <button type="button" className="btn btn-ghost" disabled={busy} onClick={onCancel}>ביטול</button>
-          <button type="button" className="btn btn-danger" disabled={busy} onClick={async () => { setBusy(true); await onConfirm(); setBusy(false); }}>{busy ? 'מוחק...' : 'מחק'}</button>
+          {/* נטרול גם בזמן טעינת התצוגה-המקדימה — אחרת אפשר למחוק לפני
+              שהאזהרה על ההחזרה-למלאי הופיעה בכלל */}
+          <button type="button" className="btn btn-danger" disabled={busy || previewLoading}
+            onClick={async () => { setBusy(true); await onConfirm(); setBusy(false); }}>{busy ? 'מוחק...' : 'מחק'}</button>
         </div>
       </div>
     </div>

@@ -488,7 +488,9 @@ function LedgerDrawer({ item, onClose }) {
 
   return (
     <div className="drawer-overlay" onClick={onClose}>
-      <div className="drawer" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 720 }}>
+      {/* min(...) כדי לא לבטל את `max-width: 92vw` של `.drawer` — maxWidth
+          אינליין גובר על ה-CSS, ובמסך של ~650px הדרואר היה משתלט כמעט על כולו */}
+      <div className="drawer" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 'min(720px, 92vw)' }}>
         <div className="drawer-header">
           <span>📜 היסטוריית ירידות · {item['קטגוריה'] || 'פריט מלאי'}</span>
           <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>

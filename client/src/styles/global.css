@@ -1705,3 +1705,24 @@ th.sortable.active .sort-ind { color: var(--weight); }
   border-inline-start-color: var(--error);
   color: #912018;
 }
+
+/* ============================ kpi-label / kpi-value מחוץ ל-kpi-card (2026-10-07, משימה U) ============================
+   `.kpi-card .kpi-label` ו-`.kpi-card .kpi-value` מוגדרים **רק** בתוך
+   `.kpi-card`. בכרטיס המשווק (FinancePage · MarketersTab) שורת ה-KPI
+   המוקטנת יושבת בתוך `.card` רגיל ומשתמשת באותן מחלקות — כלומר עד כה הן
+   היו חסרות-תוקף שם לגמרי (תווית ללא צבע/גודל, ערך ללא font-weight).
+   הכללים כאן הם ספציפיות 0,1,0 מול 0,2,0 של הכללים הקיימים — כך שבתוך
+   `.kpi-card` שום דבר לא משתנה, והם חלים רק במקום שבו לא היה כלום.
+   במכוון **לא** משוחזרים כאן המאפיינים התלויים-בפריסה של הכרטיס
+   (clamp על font-size, nowrap/ellipsis, margin-bottom, direction) — הם
+   נכונים לכרטיס-KPI מלא, לא לתא קטן בתוך שורת-flex. */
+.kpi-label {
+  font-size: var(--fs-label);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.kpi-value {
+  font-weight: 800;
+  color: var(--text-main);
+  line-height: 1.2;
+}

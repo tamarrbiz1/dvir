@@ -41,6 +41,11 @@ export function confirmDialog({
     message.split('\n').forEach((line) => {
       const row = document.createElement('div');
       row.textContent = line;
+      // שורה ריקה = מפריד-פסקאות שהכותב התכוון אליו (ר' removeRecord:
+      // "...לשחזור.\n\n<תצוגה מקדימה>\n\nהאם אתה בטוח?"). `<div>` ריק הוא
+      // בגובה 0, ולכן עד כה כל השורות נדחסו יחד בלי שום הפרדה חזותית —
+      // והטקסט של המחיקה-המדורגת (סעיף P3) נראה כהמשך של אותו משפט.
+      if (!line) row.style.height = '0.7em';
       p.appendChild(row);
     });
 
