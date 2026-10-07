@@ -1674,3 +1674,55 @@ th.sortable.active .sort-ind { color: var(--weight); }
   color: #B42318;
   line-height: 1.1;
 }
+
+/* ============================ באנר-הודעה ברוחב מלא (2026-10-07, משימה U) ============================
+   עד כה באנרים ברוחב-מלא נבנו ע"י `className="badge badge-warn/badge-error"` +
+   `style={{ width: '100%' }}`. זה עובד לתג-מילה-אחת, אבל לפסקה רב-שורתית זה
+   מייצר טקסט בגודל 12px (--fs-badge) בכתום-על-כתום (#F79009 על #FFF3E0 =
+   יחס ניגודיות 2.15:1, מתחת לתקן AA של 4.5:1) בתוך לוזנג' בעל border-radius: 20px.
+   `.notice` הוא באנר אמיתי: גודל-גוף, ניגודיות תקנית, פס-צד בכיוון-לוגי (RTL). */
+.notice {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  border-inline-start-width: 4px;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+}
+.notice-warn {
+  background: var(--warning-soft);
+  border-color: rgba(247, 144, 9, 0.35);
+  border-inline-start-color: var(--warning);
+  color: #93370D; /* ניגודיות 7.0:1 על --warning-soft */
+}
+.notice-error {
+  background: var(--error-soft);
+  border-color: rgba(217, 45, 32, 0.35);
+  border-inline-start-color: var(--error);
+  color: #912018;
+}
+
+/* ============================ kpi-label / kpi-value מחוץ ל-kpi-card (2026-10-07, משימה U) ============================
+   `.kpi-card .kpi-label` ו-`.kpi-card .kpi-value` מוגדרים **רק** בתוך
+   `.kpi-card`. בכרטיס המשווק (FinancePage · MarketersTab) שורת ה-KPI
+   המוקטנת יושבת בתוך `.card` רגיל ומשתמשת באותן מחלקות — כלומר עד כה הן
+   היו חסרות-תוקף שם לגמרי (תווית ללא צבע/גודל, ערך ללא font-weight).
+   הכללים כאן הם ספציפיות 0,1,0 מול 0,2,0 של הכללים הקיימים — כך שבתוך
+   `.kpi-card` שום דבר לא משתנה, והם חלים רק במקום שבו לא היה כלום.
+   במכוון **לא** משוחזרים כאן המאפיינים התלויים-בפריסה של הכרטיס
+   (clamp על font-size, nowrap/ellipsis, margin-bottom, direction) — הם
+   נכונים לכרטיס-KPI מלא, לא לתא קטן בתוך שורת-flex. */
+.kpi-label {
+  font-size: var(--fs-label);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.kpi-value {
+  font-weight: 800;
+  color: var(--text-main);
+  line-height: 1.2;
+}

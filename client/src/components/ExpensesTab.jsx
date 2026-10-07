@@ -166,9 +166,8 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged, openI
                       <td>{expDate(e) ? formatDate(expDate(e)) : 'לא זמין'}</td>
                       <td>
                         {link ? (
-                          <span className="obj-chip" role="button" tabIndex={0}
-                            onClick={(ev) => { ev.stopPropagation(); navigate(`/suppliers?supplier=${firstId(e['ספקים'])}`); }}
-                            onKeyDown={(ev) => { if (ev.key === 'Enter') { ev.stopPropagation(); navigate(`/suppliers?supplier=${firstId(e['ספקים'])}`); } }}>
+                          <span className="obj-chip"
+                            {...activatable((ev) => { ev.stopPropagation(); navigate(`/suppliers?supplier=${firstId(e['ספקים'])}`); }, `פתיחת כרטיס הספק ${supplierName(e) || ''}`)}>
                             🚚 {supplierName(e) || 'ספק'}
                           </span>
                         ) : supplierName(e) ? (
@@ -335,8 +334,8 @@ function ExpenseDrawer({ expense, canEdit, api, onClose, onLink, onEdit, onOpenS
               <span className="obj-row-label">ספק</span>
               <span className="obj-row-value">
                 {link ? (
-                  <span className="obj-chip" role="button" tabIndex={0} onClick={() => onOpenSupplier(firstId(expense['ספקים']))}
-                    onKeyDown={(e) => { if (e.key === 'Enter') onOpenSupplier(firstId(expense['ספקים'])); }}>
+                  <span className="obj-chip"
+                    {...activatable(() => onOpenSupplier(firstId(expense['ספקים'])), `פתיחת כרטיס הספק ${supplierName(expense) || ''}`)}>
                     🚚 {supplierName(expense) || 'ספק'}
                   </span>
                 ) : supplierName(expense) ? (
@@ -398,7 +397,7 @@ function NotesRow({ api, expense, canEdit, onChanged }) {
         <span className="obj-row-value" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {display || <span className="muted">—</span>}
           {canEdit && (
-            <button type="button" className="btn btn-sm btn-ghost" title="עריכת הערות"
+            <button type="button" className="btn btn-sm btn-ghost" aria-label="עריכת הערות" title="עריכת הערות"
               onClick={() => { setDraft(display); setEditing(true); }}>✎</button>
           )}
         </span>
@@ -423,7 +422,7 @@ function NotesRow({ api, expense, canEdit, onChanged }) {
   return (
     <div className="obj-row" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
       <span className="obj-row-label">הערות</span>
-      <textarea className="input" rows={2} value={draft} disabled={saving} onChange={(e) => setDraft(e.target.value)} />
+      <textarea className="input" rows={2} aria-label="הערות להוצאה" autoFocus value={draft} disabled={saving} onChange={(e) => setDraft(e.target.value)} />
       <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
         <button type="button" className="btn btn-sm btn-ghost" disabled={saving} onClick={() => setEditing(false)}>ביטול</button>
         <button type="button" className="btn btn-sm btn-primary" disabled={saving} onClick={save}>{saving ? 'שומר...' : 'שמירה'}</button>
@@ -561,6 +560,9 @@ function ManualExpenseModal({ categories, suppliers, onClose, onSaved }) {
   const [lineErrs, setLineErrs] = useState({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // (הקריאה הזו הייתה כבר קיימת לפני משימת-U; מקבץ 1 הוסיף לידה בטעות
+  // קריאה כפולה זהה — שני listeners על document, Escape קרא ל-onClose
+  // פעמיים. תוקן כאן — נשארת קריאה אחת.)
   useEscapeClose(onClose, !saving);
 
   // רשימת-בחירה ל"מה נקנה" — קטגוריות המלאי הקיימות בפועל (datalist,
@@ -660,7 +662,11 @@ function ManualExpenseModal({ categories, suppliers, onClose, onSaved }) {
 
   return (
     <div className="modal-overlay" onClick={() => !saving && onClose()}>
-      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 620 }}>
+      {/* min(...) כדי לא לבטל את `max-width: 92vw` של `.modal` — maxWidth:620
+          לבדו היה עוקף אותו לגמרי (סטייל אינליין > CSS), והמודאל (width:480
+          מה-CSS) היה גולש מעבר לרוחב-מסך של נייד (ר' תיקון דומה בדראור
+          יומן-הירידות במלאי, מקבץ 2 של משימה U) */}
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 'min(620px, 92vw)' }}>
         <h3 style={{ textAlign: 'center' }}>➕ הוצאה ידנית</h3>
         <div className="muted" style={{ textAlign: 'center', marginBottom: 12, fontSize: 13 }}>
           ניתן להזין הוצאה עם או בלי קובץ מצורף — הנתונים נכנסים לכל הדוחות בדיוק כמו הוצאה שהועלתה.
@@ -673,7 +679,10 @@ function ManualExpenseModal({ categories, suppliers, onClose, onSaved }) {
             {suppliers.length === 0 ? (
               <div className="muted" style={{ fontSize: 13 }}>
                 אין ספקים —{' '}
-                <a href="/suppliers" onClick={(e) => { e.preventDefault(); onClose(); navigate('/suppliers'); }}>הוסיפי במסך ספקים</a>
+                {/* ניווט פנימי: כפתור עם .crumb-link (הדפוס הקיים לקישור-טקסט במערכת),
+                    לא <a href> — תג עוגן גורם לטעינה-מחדש מלאה אם ה-preventDefault נכשל */}
+                <button type="button" className="crumb-link"
+                  onClick={() => { onClose(); navigate('/suppliers'); }}>הוסיפי במסך ספקים</button>
               </div>
             ) : (
               <select className="select" value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
