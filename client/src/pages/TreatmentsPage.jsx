@@ -840,7 +840,7 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
 
 
 // ============================================================
-// לשונית הרשימה — התצוגה התפעולית (חיפוש · פעולות · ייצוא)
+// לשונית הרשימה — התצוגה התפעולית (חיפוש · פעולות)
 // ============================================================
 function ListTab({ rows, search, setSearch, canEdit, busy, limit, onMore, onOpen, onEdit, onToggle, onDelete }) {
   const rangeLabel = (e) => (e.start.getTime() === e.end.getTime()

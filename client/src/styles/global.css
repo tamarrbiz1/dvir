@@ -1439,7 +1439,7 @@ th.sortable.active .sort-ind { color: var(--weight); }
 .kpi-card.clickable { cursor: pointer; transition: box-shadow 150ms ease, transform 150ms ease; }
 .kpi-card.clickable:hover { box-shadow: 0 4px 14px rgba(16,24,40,0.08); transform: translateY(-1px); }
 
-/* ============================ הדפסה (סעיף: הדפסה / ייצוא בכל רשימה מרכזית) ============================ */
+/* ============================ הדפסה (סעיף: הדפסה בכל רשימה מרכזית) ============================ */
 @media print {
   .sidebar, .topbar, .page-nav, .no-print, .drawer-overlay, .filter-bar { display: none !important; }
   .app-shell, .main-area { display: block !important; width: 100% !important; margin: 0 !important; padding: 0 !important; }
