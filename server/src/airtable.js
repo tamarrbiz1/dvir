@@ -10,6 +10,7 @@ import path from 'path';
 import fs from 'fs';
 import Airtable from 'airtable';
 import { fileURLToPath } from 'url';
+import { maybeFail } from './fault-inject.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -94,6 +95,7 @@ async function fetchWithRetry(url, options, maxAttempts = 4) {
 // (מחזיר רק שמות ומבנה; אינו חושף את הסוד)
 // ============================================================
 export async function getMeta() {
+  maybeFail('meta');
   if (!PAT || !BASE_ID) {
     throw new Error('סודות חסרים — בדוק את קובץ .env');
   }
@@ -112,6 +114,7 @@ export async function getMeta() {
 // קריאת רשומות / כתיבה
 // ============================================================
 export async function fetchRecords(tableName, options = {}) {
+  maybeFail('fetch', tableName);
   const base = getBase();
   const records = [];
   await base(tableName).select(options).eachPage((page, fetchNextPage) => {
@@ -122,6 +125,7 @@ export async function fetchRecords(tableName, options = {}) {
 }
 
 export async function createRecord(tableName, fields, { typecast = false } = {}) {
+  maybeFail('create', tableName);
   const base = getBase();
   const created = typecast ? await base(tableName).create(fields, { typecast: true }) : await base(tableName).create(fields);
   return { id: created.id, ...created.fields };
@@ -129,6 +133,7 @@ export async function createRecord(tableName, fields, { typecast = false } = {})
 
 /** יצירת כמה רשומות במנות של 10 (מגבלת Airtable לבקשה) */
 export async function createRecords(tableName, fieldsList) {
+  maybeFail('create', tableName);
   const base = getBase();
   const out = [];
   for (let i = 0; i < fieldsList.length; i += 10) {
@@ -140,6 +145,7 @@ export async function createRecords(tableName, fieldsList) {
 }
 
 export async function updateRecord(tableName, recordId, fields, { typecast = false } = {}) {
+  maybeFail('update', tableName);
   const base = getBase();
   const updated = typecast ? await base(tableName).update(recordId, fields, { typecast: true }) : await base(tableName).update(recordId, fields);
   return { id: updated.id, ...updated.fields };
@@ -148,6 +154,7 @@ export async function updateRecord(tableName, recordId, fields, { typecast = fal
 // העלאת קובץ לרשומה קיימת — נקודת הקצה הרשמית של Airtable לקבצים.
 // (יצירת רשומה עם content מוטבע אינה נתמכת ונדחית ב-"Invalid attachment object".)
 export async function uploadAttachmentToRecord(recordId, fieldName, { filename, contentType, base64 }) {
+  maybeFail('upload');
   const res = await fetchWithRetry(
     `https://content.airtable.com/v0/${BASE_ID}/${recordId}/${encodeURIComponent(fieldName)}/uploadAttachment`,
     {
@@ -164,6 +171,7 @@ export async function uploadAttachmentToRecord(recordId, fieldName, { filename, 
 }
 
 export async function deleteRecord(tableName, recordId) {
+  maybeFail('delete', tableName);
   const base = getBase();
   await base(tableName).destroy(recordId);
   return true;

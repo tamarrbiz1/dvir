@@ -79,25 +79,47 @@ export async function cascadeDocumentDelete(table, id, { dryRun = false } = {}) 
   const report = { table, id, dryRun, inventory: [], week: null, checksLinked: 0, errors: [] };
 
   // 1) הורדת-מלאי שתבוטל
+  //
+  // ⚠️ 7.10.2026 (לילה 3, בדיקת-עמידות עם 429 מוזרק): `report.inventory`
+  // חייב לתאר מה **קרה בפועל**, לא מה תוכנן לקרות, וכל כשל-החזרה חייב
+  // להגיע ל-`report.errors` עם התחילית "מלאי:" — זה הסימן **היחיד**
+  // שעליו ה-DELETE ב-server.js מסתמך כדי *לא* למחוק את המסמך. לפני
+  // התיקון, 429 חולף יחיד על עדכון פריט-מלאי אחד הספיק כדי שהדוח ידווח
+  // "↩הוחזר" והמסמך יימחק בלי שהמלאי חזר באמת, ובלי שום דרך לשחזר מה
+  // היה צריך לחזור (ר' הערת reverseLogisticsDeduction).
   try {
     if (table === EXPENSES_TABLE) {
-      report.inventory = dryRun
-        ? await previewExpenseInventory(id)
-        : (await reverseInventoryDeduction(id))?.results?.filter((r) => r.reversed).map((r) => ({ itemId: r.itemId, category: r.category, quantity: r.quantity })) || [];
+      if (dryRun) {
+        report.inventory = await previewExpenseInventory(id);
+      } else {
+        const state = await reverseInventoryDeduction(id);
+        const lines = state?.results || [];
+        report.inventory = lines
+          .filter((r) => r.reversed)
+          .map((r) => ({ itemId: r.itemId, category: r.category, quantity: r.quantity }));
+        // שורה שירדה בעבר, טרם בוטלה, וניסיון-הביטול שלה נכשל עכשיו.
+        // בלי הדיווח הזה ההוצאה נמחקת — ואיתה ה-state שב"הערות" שלה, שהוא
+        // המקום **היחיד** שבו כתוב מה צריך לחזור ולאיזה פריט-מלאי.
+        for (const r of lines) {
+          if (r.deducted && !r.reversed && r.reverseError) {
+            report.errors.push(`מלאי: החזרת ${r.quantity} ל"${r.category || r.itemId}" נכשלה: ${r.reverseError}`);
+          }
+        }
+      }
     } else if (LOGISTICS_TABLES.has(table)) {
       if (dryRun) {
         report.inventory = await previewLogisticsInventory(table, id);
       } else {
-        // תוכנית-הביטול מחושבת *לפני* הביצוע בפועל (מידע-לדוח בלבד —
-        // reverseLogisticsDeduction עצמה מחשבת ומבצעת, לא מחזירה shape זהה)
-        const items = await fetchRecords(INVENTORY_TABLE, {});
-        const plan = planLogisticsReversal(items, table, id);
-        await reverseLogisticsDeduction(table, id);
-        report.inventory = plan.map((p) => ({
-          itemId: p.itemId,
-          category: items.find((i) => i.id === p.itemId)?.['קטגוריה'] || null,
-          quantity: p.totalBack,
+        const result = await reverseLogisticsDeduction(table, id);
+        // שמות-הקטגוריות לדוח — נקראים אחרי הביצוע, ורק לפריטים שבאמת חזרו
+        let items = [];
+        try { items = await fetchRecords(INVENTORY_TABLE, {}); } catch { /* שם-קטגוריה הוא קוסמטיקה בדוח */ }
+        report.inventory = result.reversed.map((r) => ({
+          itemId: r.itemId,
+          category: items.find((i) => i.id === r.itemId)?.['קטגוריה'] || null,
+          quantity: r.quantity,
         }));
+        result.errors.forEach((msg) => report.errors.push(`מלאי: ${msg}`));
       }
     }
   } catch (e) {
