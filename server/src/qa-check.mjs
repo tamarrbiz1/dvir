@@ -1079,32 +1079,24 @@ await test('הוצאה ידנית: שורת פריט חלקית (רק "מה נק
 // מקצה-לקצה... בלי קובץ מצורף") כבר סימנה כדורשת אישור מפורש של תמר
 // שעדיין לא ניתן. נשמר כאן רק יעד סביר יותר לנתיב-עם-קובץ (כולל זמן
 // העלאת הקובץ עצמו ל-Airtable, שהוא הרכיב האיטי מבין השניים).
-// הערה חשובה (נמצא בפועל תוך הרצת הבדיקה הזו): matchLinesToInventory
-// מזהה קטגוריה רק דרך מילון-כינויים קבוע של 4 שמות (ר' CATEGORY_ALIASES
-// ב-inventory-matching.js: נילונים/קרטונים/משטחי עץ/כובעים) — לא כל
-// "קטגוריה פנויה" שרירותית. freeInventoryCategory() (המשמש בבדיקות
-// אחרות למעלה שלא עוברות דרך ההתאמה האמיתית, רק מזריקות state מדומה)
-// כבר לא יכול להחזיר אחת מה-4 האלה בפועל (כולן תפוסות ע"י פריטים
-// אמיתיים + עשרות קטגוריות-QA שיוריות מהרצות קודמות) — פריט כזה
-// לעולם לא יתאים לשום שורה, וה-polling למטה היה נתקע ל-20 שניות על
-// "אי-התאמה", לא על עיכוב אמיתי. לכן כאן, כדי לבדוק בפועל את צינור
-// ההתאמה/הורדה האמיתי (לא רק הזרקת state), נעשה שימוש בפריט אמיתי
-// וקיים באחת מ-4 הקטגוריות המוכרות — הפחתה זעירה (2 יחידות) ומוחזרת
-// במדויק ע"י reverseInventoryDeduction במחיקת ההוצאה (אותו מנגנון
-// הפיך שנבדק ואומת בבדיקות אחרות למעלה).
-async function matchableInventoryItem() {
-  const KNOWN = new Set(['נילונים', 'קרטונים', 'משטחי עץ', 'כובעים']);
-  const items = await api('GET', `${enc('מלאי בסיסי')}?raw=1`);
-  const candidates = items.filter((i) => KNOWN.has(String(i['קטגוריה'] || '').trim()) && Number(i['מלאי נוכחי']) >= 10);
-  if (!candidates.length) throw new Error('אין פריט מלאי קיים באחת מ-4 הקטגוריות המוכרות עם מלאי מספיק לבדיקה בטוחה');
-  return candidates.sort((a, b) => Number(b['מלאי נוכחי']) - Number(a['מלאי נוכחי']))[0];
-}
-
-await test('הוצאה ידנית + קובץ אמיתי: supplierId אמיתי מקושר נכון, בלי "יחידה" בפלט, שורת פריט מורידה מלאי (ברקע), מחיקה מחזירה אותו', async () => {
+// ⚠️ מה הבדיקה הזו **לא** עושה, ולמה (שינוי מהגרסה הראשונה שלה):
+// `matchLinesToInventory` מזהה קטגוריה רק דרך מילון-כינויים קבוע של 4
+// שמות (ר' CATEGORY_ALIASES ב-inventory-matching.js: נילונים/קרטונים/
+// משטחי עץ/כובעים) — `categoryOfDescription` לא יכול להחזיר שום ערך
+// אחר, ולכן פריט-מלאי QA (בקטגוריה שרירותית) לעולם לא יתאים לשום שורה.
+// המשמעות: אי-אפשר לאמת הורדת-מלאי **אמיתית** מקצה-לקצה בלי לגעת
+// בפריט מלאי אמיתי — וזה אסור מפורשות ("אסור לגעת בנתונים אמיתיים").
+// לכן הבדיקה הזו מאמתת את מה שסעיף R בפועל שינה — ספק-מקושר, היעדר
+// "יחידה", וש-fire-and-forget **באמת רץ** (state נכתב להוצאה ברקע) —
+// עם תיאור-QA שלא מתאים לאף קטגוריה, ובנוסף מאמתת מפורשות שאף פריט
+// מלאי אמיתי לא השתנה. צינור ההתאמה/ההורדה/הביטול האמיתי מכוסה
+// בנפרד: בדיקות-היחידה הטהורות של matchLinesToInventory, והבדיקות
+// "הורדת מלאי: החלמה מכשל-באמצע"/"ביטול הורדה במחיקת הוצאה" למעלה
+// (שמזריקות state על פריט QA ולא נוגעות בנתונים אמיתיים).
+await test('הוצאה ידנית + קובץ אמיתי: supplierId אמיתי מקושר נכון, בלי "יחידה", ההורדה-ברקע רצה (fire-and-forget), ו-0 נגיעה במלאי אמיתי', async () => {
   if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
   const supplier = await create('ספקים', { 'שם ספק': MARK });
-  const item = await matchableInventoryItem();
-  const before = Number(item['מלאי נוכחי']);
+  const invBefore = await api('GET', `${enc('מלאי בסיסי')}?raw=1&includeTest=1`);
 
   const fileBuf = await readFile(REAL_FIXTURE_PATH);
   const fd = new FormData();
@@ -1114,7 +1106,7 @@ await test('הוצאה ידנית + קובץ אמיתי: supplierId אמיתי �
   fd.append('total', '123');
   fd.append('category', MARK);
   fd.append('lines', JSON.stringify([
-    { description: item['קטגוריה'], quantity: 2 }, // בלי unit בכלל; כמות קטנה-בכוונה (פריט אמיתי, לא QA)
+    { description: MARK, quantity: 2 }, // בלי unit בכלל; תיאור-QA שלא מתאים לשום קטגוריה אמיתית
     { description: '', quantity: '' }, // שורה ריקה-לגמרי — צפוי להתעלם, לא שגיאה
   ]));
   const t0 = Date.now();
@@ -1131,26 +1123,30 @@ await test('הוצאה ידנית + קובץ אמיתי: supplierId אמיתי �
   const full = await api('GET', `${enc('הוצאות')}/${rec.id}?raw=1`);
   if (!Array.isArray(full['חשבונית']) || !full['חשבונית'].length) throw new Error('הקובץ לא מצורף לשדה "חשבונית"');
 
-  // הורדת-המלאי רצה ברקע (fire-and-forget) — ממתינים לה ב-polling
-  let after = before;
-  let settled = false;
-  for (let i = 0; i < 20 && !settled; i++) {
+  // הורדת-המלאי רצה ברקע (fire-and-forget) — ממתינים לה ב-polling על
+  // ה-state שנכתב להוצאה עצמה, **לא** על שינוי מלאי: ר' הערת-המסגרת
+  // למטה — הבדיקה הזו לא נוגעת בשום פריט מלאי אמיתי.
+  let state = null;
+  for (let i = 0; i < 20 && !state; i++) {
     await new Promise((r) => setTimeout(r, 1000));
-    const cur = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
-    after = Number(cur['מלאי נוכחי']);
-    if (after !== before) settled = true;
+    const cur = await api('GET', `${enc('הוצאות')}/${rec.id}?raw=1`);
+    state = readState(cur['הערות']);
   }
-  if (!settled) throw new Error('הורדת-המלאי ברקע לא הסתיימה תוך 20 שניות');
-  if (before - after !== 2) throw new Error(`ירידת מלאי ${before - after}, צפוי בדיוק 2 (לא כולל השורה הריקה)`);
+  if (!state) throw new Error('ההורדה-ברקע (fire-and-forget) לא כתבה state להוצאה תוך 20 שניות — כלומר לא רצה בכלל');
+  // השורה הריקה דולגה; השורה היחידה שנשלחה מתועדת ב-state
+  if ((state.results || []).length !== 1) throw new Error(`צפויה שורה אחת ב-state (השורה הריקה דולגת), התקבלו ${(state.results || []).length}`);
+  const line = state.results[0];
+  if (line.deducted) throw new Error('שורת-הבדיקה ירדה בפועל ממלאי — אסור: תיאור-QA לא אמור להתאים לשום קטגוריה אמיתית');
 
-  await del('הוצאות', rec.id); // מפעיל reverseInventoryDeduction בצד השרת (ר' server.js, מחיקת "הוצאות")
-  const idx = cleanup.findIndex((c) => c.table === 'הוצאות' && c.id === rec.id);
-  if (idx >= 0) cleanup.splice(idx, 1);
+  // ⚠️ אימות-ליבה של הבדיקה הזו: **שום** פריט מלאי אמיתי לא השתנה
+  const invAfter = await api('GET', `${enc('מלאי בסיסי')}?raw=1&includeTest=1`);
+  const changed = invAfter.filter((a) => {
+    const b = invBefore.find((x) => x.id === a.id);
+    return b && Number(b['מלאי נוכחי']) !== Number(a['מלאי נוכחי']);
+  });
+  if (changed.length) throw new Error(`הבדיקה שינתה מלאי אמיתי (אסור): ${changed.map((c) => `${c['קטגוריה']}→${c['מלאי נוכחי']}`).join(', ')}`);
 
-  const afterDelete = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
-  if (Number(afterDelete['מלאי נוכחי']) !== before) throw new Error(`מחיקה לא החזירה מלאי ל-${before} (פריט אמיתי "${item['קטגוריה']}"), התקבל ${afterDelete['מלאי נוכחי']}`);
-
-  return `תגובת ה-POST (עם קובץ): ${requestMs}ms · supplierId מקושר + ספק-AI תקין · ירידת מלאי 2 ברקע מפריט אמיתי "${item['קטגוריה']}" (לא 3) · מחיקה החזירה מלאי ל-${before}`;
+  return `תגובת ה-POST (עם קובץ): ${requestMs}ms · supplierId מקושר + ספק-AI תקין · בלי "יחידה" בפלט · ההורדה-ברקע רצה וכתבה state (${state.status}, שורה אחת, לא ירדה — תיאור-QA) · 0 שינוי בפריטי מלאי אמיתיים`;
 });
 
 // ============================================================
