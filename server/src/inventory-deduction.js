@@ -40,10 +40,68 @@ function writeStateIntoNotes(notes, state) {
   return existing ? `${existing}\n${line}` : line;
 }
 
-async function saveState(expenseId, currentNotes, state) {
-  const notes = writeStateIntoNotes(currentNotes, state);
-  await updateRecord(EXPENSES_TABLE, expenseId, { 'הערות': notes });
-  return notes;
+// ============================================================
+// נעילה לפי מפתח (ליל-חיזוק 2026-10-07, סעיפים E1/E2/E4) — אותה תבנית-תור
+// בדיוק כמו withInventoryLock ב-server.js, אבל כאן המפתחות הם
+// **פריט-מלאי** (`item:<id>`) ו**רשומת-הוצאה** (`notes:<id>`), לא מסמך:
+// ההערה ב-server.js אמרה במפורש ש-race בין שתי רשומות-מקור שמורידות
+// מאותו פריט-מלאי "לא טופל" — זה מה שנסגר כאן. כל read-modify-write
+// על פריט מלאי או על שדה "הערות" של הוצאה חייב לרוץ בתוך הנעילה.
+// ============================================================
+const keyLocks = new Map();
+function withKeyLock(key, fn) {
+  const prev = keyLocks.get(key) || Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  keyLocks.set(key, run.catch(() => {}));
+  return run;
+}
+
+/**
+ * כותב את מצב-המלאי לשדה "הערות" של ההוצאה — **קורא את הרשומה מחדש**
+ * בתוך נעילה, ולא מסתמך על snapshot/cursor מקומי (סעיף E4): ההורדה היא
+ * fire-and-forget, ובמקביל אליה תמר יכולה לערוך את הטקסט החופשי מכרטיס
+ * ההוצאה. לפני התיקון כל כתיבה כאן דרסה את הטקסט שהוקלד בינתיים —
+ * ובכיוון ההפוך, עריכת ההערות דרסה את מצב-ההורדה, מה שגרם
+ * ל-reverseInventoryDeduction לא להחזיר למלאי את מה שכן ירד.
+ * הפרמטר currentNotes נשמר לתאימות-חתימה בלבד ואינו בשימוש.
+ */
+async function saveState(expenseId, _currentNotes, state) {
+  return withKeyLock(`notes:${expenseId}`, async () => {
+    const rec = await getBase()(EXPENSES_TABLE).find(expenseId);
+    const notes = writeStateIntoNotes(rec.fields['הערות'] || '', state);
+    await updateRecord(EXPENSES_TABLE, expenseId, { 'הערות': notes });
+    return notes;
+  });
+}
+
+/**
+ * הורדה אטומית מפריט-מלאי אחד (סעיפים E1+E2).
+ * לפני התיקון ההורדה חישבה `current` מתוך ה-snapshot שנקרא פעם אחת
+ * ב-fetchRecords — ו-matchLinesToInventory מחזיר את **אותו אובייקט**
+ * לכל שורה באותה קטגוריה, כך ששתי שורות קרטונים (10 ו-5) מתוך 100
+ * הסתיימו ב-95 במקום 85 (כל כתיבה דרסה את הקודמת), ושורת-התנועה
+ * ב"הערות" של הפריט נדרסה באותה דרך בדיוק. כאן: נעילה לפי מזהה-הפריט,
+ * קריאה-מחדש טרייה, וכתיבה **אחת** של "מלאי נוכחי"+"הערות"+"תאריך עדכון"
+ * (חצי מהקריאות ל-Airtable מול הקוד הקודם).
+ * כמות חייבת להיות מספר סופי: `Infinity` נכתב ל-Airtable כ-null, כלומר
+ * **מחיקת** ערך המלאי של הפריט. כמות שלילית מותרת כאן בכוונה — זו
+ * ההחזרה של reverseInventoryDeduction — אבל נחסמת בוולידציית הקלט.
+ */
+export async function deductFromInventoryItem(itemId, quantity, noteText) {
+  const qty = Number(quantity);
+  if (!Number.isFinite(qty)) throw new Error(`כמות לא חוקית להורדה מהמלאי (${quantity})`);
+  return withKeyLock(`item:${itemId}`, async () => {
+    const rec = await getBase()(INVENTORY_TABLE).find(itemId);
+    const current = Number(rec.fields['מלאי נוכחי']) || 0;
+    const after = current - qty;
+    const fields = { 'מלאי נוכחי': after, 'תאריך עדכון': new Date().toISOString().slice(0, 10) };
+    if (noteText) {
+      const currentNotes = String(rec.fields['הערות'] || '');
+      fields['הערות'] = currentNotes ? `${currentNotes}\n${noteText}` : noteText;
+    }
+    await updateRecord(INVENTORY_TABLE, itemId, fields);
+    return { before: current, after };
+  });
 }
 
 /** מוריד קובץ מצורף (URL של Airtable) לזיכרון — לא נשמר על דיסק */
@@ -54,17 +112,19 @@ async function downloadAttachment(url) {
   return Buffer.from(arrayBuf);
 }
 
-/** מוסיף שורת תנועה אחרונה ל"הערות" של פריט מלאי (לא מוחק היסטוריה קודמת) */
-async function appendItemMovementNote(item, text) {
-  const current = String(item['הערות'] || '');
-  const next = current ? `${current}\n${text}` : text;
-  await updateRecord(INVENTORY_TABLE, item.id, { 'הערות': next });
-}
+// appendItemMovementNote הוסרה (ליל-חיזוק 2026-10-07, סעיף E1): היא
+// בנתה את ההערה החדשה מתוך ה-snapshot שהועבר אליה, ולכן שתי שורות
+// שמורידות מאותו פריט דרסו זו את שורת-התנועה של זו. שורת-התנועה
+// נכתבת עכשיו בתוך deductFromInventoryItem — באותה כתיבה כמו
+// "מלאי נוכחי", על ערך שנקרא מחדש בתוך הנעילה.
 
 /**
  * ממשיכים ריצה שנעצרה באמצע (status "processing"/"partial") — בלי
- * לקרוא שוב ל-AI. רק שורות שסומנו "נכשלו עם שגיאה" (למשל 429 באמצע)
- * מנוסות שוב; שורות שכבר ירדו או מחכות לאישור ידני נשארות כמו שהן.
+ * לקרוא שוב ל-AI. מנוסות שוב רק שורות שנכשלו עם שגיאה (למשל 429
+ * באמצע) או שתוכננו אך **מעולם לא הורצו** (pendingRun — ר' סעיף E6:
+ * לפני התיקון שורה כזו לא הייתה ב-results בכלל, אז restart באמצע
+ * ההורדה השאיר הוצאה תקועה ב-processing בלי שום דרך להשלים אותה).
+ * שורות שכבר ירדו או מחכות לאישור ידני נשארות כמו שהן.
  */
 async function resumeUnresolvedLines(expenseId, currentNotes, existingState) {
   const base = getBase();
@@ -82,23 +142,17 @@ async function resumeUnresolvedLines(expenseId, currentNotes, existingState) {
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
     if (r.deducted || r.needsApproval) continue; // כבר טופל או ממתין לאישור — לא נוגעים
-    if (!r.error) continue; // לא אמור לקרות, אבל ליתר ביטחון
+    if (!r.error && !r.pendingRun) continue; // לא אמור לקרות, אבל ליתר ביטחון
     try {
-      const itemRec = await base(INVENTORY_TABLE).find(r.itemId);
-      const current = Number(itemRec.fields['מלאי נוכחי']) || 0;
-      await updateRecord(INVENTORY_TABLE, r.itemId, {
-        'מלאי נוכחי': current - r.quantity,
-        'תאריך עדכון': new Date().toISOString().slice(0, 10),
-      });
-      await appendItemMovementNote({ id: r.itemId, ...itemRec.fields }, `↓ ${r.quantity} · הוצאה #${expenseNum ?? '?'} · ${supplierLabel || 'ספק לא ידוע'} · ${dateLabel || new Date().toISOString().slice(0, 10)}`);
-      results[i] = { ...r, deducted: true, deductedAt: new Date().toISOString(), error: undefined };
+      await deductFromInventoryItem(r.itemId, r.quantity, `↓ ${r.quantity} · הוצאה #${expenseNum ?? '?'} · ${supplierLabel || 'ספק לא ידוע'} · ${dateLabel || new Date().toISOString().slice(0, 10)}`);
+      results[i] = { ...r, deducted: true, deductedAt: new Date().toISOString(), error: undefined, pendingRun: undefined };
     } catch (e) {
-      results[i] = { ...r, error: e.message };
+      results[i] = { ...r, error: e.message, pendingRun: undefined };
     }
     await saveProgress('processing');
   }
 
-  const finalStatus = results.some((r) => r.error) ? 'partial' : 'done';
+  const finalStatus = results.some((r) => r.error || r.pendingRun) ? 'partial' : 'done';
   await saveProgress(finalStatus);
   return { ...existingState, status: finalStatus, results, notes: notesCursor };
 }
@@ -118,7 +172,16 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
   // "ידני?" מסומן = המשתמש שולט בזה בעצמו (סעיף E, תוספת 2026-10-06) —
   // אין ניתוח AI אוטומטי בכלל, גם אם המשתמש מסמן אותו אחרי שכבר הייתה
   // הורדה אוטומטית (לא מבטלים את מה שכבר קרה, רק לא ממשיכים לנתח).
+  // (סעיף E6, ליל-חיזוק 2026-10-07) יוצא-מן-הכלל אחד: הוצאה ידנית
+  // שההורדה-ברקע שלה נקטעה באמצע (restart/429) נשארת ב-"processing"
+  // לנצח — ה-return הזה חסם גם את **ההחלמה**, וכפתור "נתח מחדש" לא
+  // שולח force, אז לא הייתה שום דרך להשלים אותה. החלמה אינה "ניתוח
+  // אוטומטי": resumeUnresolvedLines לא קורא ל-AI בכלל, הוא רק מנסה
+  // שוב שורות שנכשלו/לא הורצו לפי ה-state שכבר נקבע.
   if (fields['ידני?'] && !force) {
+    if (existingState?.status === 'processing' || existingState?.status === 'partial') {
+      return resumeUnresolvedLines(expenseId, currentNotes, existingState);
+    }
     return existingState || { status: 'manual', note: 'מסומן כ"ידני?" — ללא ניתוח אוטומטי' };
   }
 
@@ -199,7 +262,17 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
  */
 async function deductMatchedLines(expenseId, startNotes, matched, meta) {
   let notesCursor = startNotes;
-  const results = [];
+  // results נבנה מראש **בסדר של matched** (לא push הדרגתי), כי ההורדה
+  // עצמה מתבצעת מקובצת לפי פריט-מלאי ולא שורה-שורה (סעיף E1), ו-lineIndex
+  // שה-UI שולח ל-approve חייב להמשיך להתאים למיקום בשורות.
+  // שורה שתוכננה להורדה ועוד לא הורצה מסומנת pendingRun — כך
+  // resumeUnresolvedLines יודע להמשיך אותה אחרי restart (סעיף E6).
+  const results = matched.map((m) => ({
+    description: m.line.description, quantity: m.quantity, unit: m.line.unit,
+    category: m.category, itemId: m.item.id, confidence: m.confidence,
+    deducted: false,
+    ...(m.needsApproval ? { needsApproval: true, reason: m.reason } : { pendingRun: true }),
+  }));
   // אם שמירת ה-state על ההוצאה עצמה נכשלת (למשל ההוצאה נמחקה "תחת
   // הרגליים" באמצע העיבוד — ר' משימת M3, "רשומה נמחקת בין קריאה
   // לכתיבה") — לא ממשיכים ללולאה: אין לאן לשמור את המשך ההתקדמות,
@@ -219,41 +292,38 @@ async function deductMatchedLines(expenseId, startNotes, matched, meta) {
     }
   };
 
-  for (const m of matched) {
+  // תיעוד-כוונה לפני ההורדה הראשונה: אחרי השמירה הזו ה-state כבר מכיל
+  // את **כל** השורות המתוכננות (pendingRun), כך ש-restart באמצע משאיר
+  // משהו להמשיך ממנו ולא שורות שנעלמו בלי זכר (סעיף E6).
+  await saveProgress('processing');
+
+  // קיבוץ לפי פריט-מלאי (סעיף E1): כמה שורות שמתאימות לאותה קטגוריה =
+  // הורדה אחת מסוכמת, בתוך נעילה ועל ערך שנקרא מחדש. לפני כן כל שורה
+  // חישבה מתוך אותו snapshot ולכן רק האחרונה "נשארה" בפועל. בונוס:
+  // 50 שורות באותה קטגוריה = 3 קריאות Airtable במקום ~150 (בלי 429).
+  const groups = new Map();
+  results.forEach((r, i) => {
+    if (r.needsApproval) return;
+    if (!groups.has(r.itemId)) groups.set(r.itemId, []);
+    groups.get(r.itemId).push(i);
+  });
+
+  for (const [itemId, idxs] of groups) {
     if (sourceGone) break;
-    if (m.needsApproval) {
-      results.push({
-        description: m.line.description, quantity: m.quantity, unit: m.line.unit,
-        category: m.category, itemId: m.item.id, confidence: m.confidence,
-        deducted: false, needsApproval: true, reason: m.reason,
-      });
-      await saveProgress('processing');
-      continue;
-    }
+    const totalQty = idxs.reduce((sum, i) => sum + Number(results[i].quantity), 0);
     try {
-      const current = Number(m.item['מלאי נוכחי']) || 0;
-      await updateRecord(INVENTORY_TABLE, m.item.id, {
-        'מלאי נוכחי': current - m.quantity,
-        'תאריך עדכון': new Date().toISOString().slice(0, 10),
-      });
-      await appendItemMovementNote(m.item, `↓ ${m.quantity} · הוצאה #${meta.expenseNum ?? '?'} · ${meta.supplierLabel || 'ספק לא ידוע'} · ${meta.dateLabel || new Date().toISOString().slice(0, 10)}`);
-      results.push({
-        description: m.line.description, quantity: m.quantity, unit: m.line.unit,
-        category: m.category, itemId: m.item.id, confidence: m.confidence,
-        deducted: true, deductedAt: new Date().toISOString(),
-      });
+      if (!Number.isFinite(totalQty) || totalQty <= 0) throw new Error(`כמות מסוכמת לא חוקית להורדה (${totalQty})`);
+      await deductFromInventoryItem(itemId, totalQty, `↓ ${totalQty} · הוצאה #${meta.expenseNum ?? '?'} · ${meta.supplierLabel || 'ספק לא ידוע'} · ${meta.dateLabel || new Date().toISOString().slice(0, 10)}`);
+      const deductedAt = new Date().toISOString();
+      idxs.forEach((i) => { results[i] = { ...results[i], deducted: true, deductedAt, pendingRun: undefined }; });
     } catch (e) {
-      results.push({
-        description: m.line.description, quantity: m.quantity, unit: m.line.unit,
-        category: m.category, itemId: m.item.id, confidence: m.confidence,
-        deducted: false, needsApproval: false, error: e.message,
-      });
+      idxs.forEach((i) => { results[i] = { ...results[i], deducted: false, needsApproval: false, error: e.message, pendingRun: undefined }; });
     }
-    // שמירה אחרי כל שורה בפועל — לא מחכים לכל הלולאה (ר' הערה למעלה)
+    // שמירה אחרי כל פריט בפועל — לא מחכים לכל הלולאה (ר' הערה למעלה)
     await saveProgress('processing');
   }
 
-  const finalStatus = results.some((r) => r.error) ? 'partial' : 'done';
+  const finalStatus = results.some((r) => r.error || r.pendingRun) ? 'partial' : 'done';
   await saveProgress(finalStatus);
   return { status: finalStatus, results, notes: notesCursor };
 }
@@ -285,13 +355,30 @@ export class ValidationError extends Error {
  * ו/או כמות) חייבת למלא את שני השדות — שורה חלקית = שגיאה. שורה
  * ריקה-לגמרי מתעלמים ממנה בשקט.
  */
+/**
+ * תקרה למספר שורות-פריטים בהוצאה אחת (ליל-חיזוק 2026-10-07, סעיף E7).
+ * לא הייתה שום תקרה — בקשה אחת יכלה לתזמן מאות כתיבות סדרתיות
+ * ל-Airtable ברקע (429 ודאי). 100 נדיב בהרבה מכל מסמך אמיתי.
+ */
+export const MAX_MANUAL_LINES = 100;
+
 export function validateManualExpenseInput({ supplierId, date, total, category, lines }) {
   const missing = [];
-  if (!supplierId || !String(supplierId).trim()) missing.push('ספק');
-  if (!date || !String(date).trim()) missing.push('תאריך');
-  if (total == null || String(total).trim() === '' || Number.isNaN(Number(total))) missing.push('סכום');
-  if (!category || !String(category).trim()) missing.push('קטגוריה');
+  // supplierId חייב להיות מחרוזת: אובייקט/מערך היו "עוברים" את
+  // String(...).trim() ונופלים רק בהמשך (סעיף E7)
+  if (!supplierId || typeof supplierId !== 'string' || !supplierId.trim()) missing.push('ספק');
+  if (!date || typeof date !== 'string' || !date.trim()) missing.push('תאריך');
+  // Number.isFinite ולא Number.isNaN (סעיף E3): "1e999" → Infinity עבר
+  // את הבדיקה הקודמת ונכתב לשדה הסכום כ-"Infinity"; גם true עבר כ-1.
+  if (total == null || typeof total === 'boolean' || String(total).trim() === '' || !Number.isFinite(Number(total))) missing.push('סכום');
+  if (!category || typeof category !== 'string' || !category.trim()) missing.push('קטגוריה');
   if (missing.length) throw new ValidationError(`חסר שדה חובה: ${missing.join(', ')}`);
+
+  // lines שאינו מערך גרם ל-TypeError ולכן ל-500 במקום 400 (סעיף E7)
+  if (lines != null && !Array.isArray(lines)) throw new ValidationError('פורמט שורות הפריטים אינו תקין');
+  if (Array.isArray(lines) && lines.length > MAX_MANUAL_LINES) {
+    throw new ValidationError(`יותר מ-${MAX_MANUAL_LINES} שורות פריטים בהוצאה אחת (התקבלו ${lines.length}) — יש לפצל לכמה הוצאות`);
+  }
 
   (lines || []).forEach((l, i) => {
     const desc = String(l?.description || '').trim();
@@ -299,8 +386,106 @@ export function validateManualExpenseInput({ supplierId, date, total, category, 
     if (!desc && !hasQty) return; // שורה ריקה-לגמרי — מתעלמים, לא שולחים שגיאה
     const lineMissing = [];
     if (!desc) lineMissing.push('מה נקנה');
-    if (!hasQty || Number.isNaN(Number(l.quantity))) lineMissing.push('כמות');
+    const qty = Number(l?.quantity);
+    if (!hasQty || !Number.isFinite(qty)) lineMissing.push('כמות');
     if (lineMissing.length) throw new ValidationError(`שורת פריט ${i + 1}: חסר/ה ${lineMissing.join(', ')}`);
+    // סעיף E3: כמות <= 0 עברה בשקט, סומנה "דורש אישור" עם נימוק מטעה
+    // ("יחידת מידה לא ברורה"), ואישור בקליק אחד היה מריץ
+    // `current - (-5)` — כלומר **הגדלת** המלאי. 0 רק מייצר רעש.
+    if (qty <= 0) throw new ValidationError(`שורת פריט ${i + 1}: הכמות חייבת להיות גדולה מאפס (התקבל ${l.quantity})`);
+  });
+}
+
+// ============================================================
+// הגנה מפני שמירה כפולה (ליל-חיזוק 2026-10-07, סעיף E5) — בלקוח יש
+// disabled={saving}, אבל בשרת לא הייתה שום הגנה: שני טאבים, retry של
+// הרשת או קליק-כפול שחומק יצרו **שתי** רשומות הוצאה, שתי הרצות Make
+// (קרדיטים אמיתיים) ו**שתי הורדות מלאי** על אותן שורות.
+// חלון קצר בזיכרון: בקשה זהה בתוך 15 שניות ממתינה לראשונה ומקבלת את
+// אותה רשומה. כשל אמיתי מנקה את המפתח כדי שניסיון חוזר יעבוד מיד.
+// ============================================================
+const MANUAL_SUBMIT_WINDOW_MS = 15000;
+const manualSubmits = new Map();
+
+/** חתימת-תוכן של בקשת הוצאה ידנית — זהות מלאה בלבד נחשבת כפילות */
+export function manualExpenseSubmitKey({ supplierId, date, total, category, notes, lines }) {
+  return JSON.stringify([
+    String(supplierId || ''), String(date || ''), String(total ?? ''),
+    String(category || ''), String(notes || ''),
+    (Array.isArray(lines) ? lines : []).map((l) => [
+      String(l?.description || '').trim(),
+      l?.quantity == null ? '' : String(l.quantity),
+    ]),
+  ]);
+}
+
+/**
+ * תובע בעלות על חתימת-בקשה. `{ fresh: true, settle }` — אתה הראשון,
+ * חייב לקרוא ל-settle(record) בהצלחה או settle(null) בכשל.
+ * `{ fresh: false, wait }` — יש בקשה זהה בחלון; wait() מחזיר את הרשומה
+ * שנוצרה (או null אם הראשונה נכשלה).
+ */
+export function claimManualExpenseSubmission(key, now = Date.now()) {
+  for (const [k, v] of manualSubmits) {
+    if (now - v.at > MANUAL_SUBMIT_WINDOW_MS) manualSubmits.delete(k);
+  }
+  const existing = manualSubmits.get(key);
+  if (existing) return { fresh: false, wait: () => existing.promise };
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  manualSubmits.set(key, { at: now, promise });
+  return {
+    fresh: true,
+    settle: (record) => {
+      if (!record) manualSubmits.delete(key);
+      resolve(record || null);
+    },
+  };
+}
+
+// ============================================================
+// עריכת הטקסט החופשי של "הערות" בהוצאה (ליל-חיזוק 2026-10-07, סעיף E4).
+// קודם הלקוח שלח את **כל** השדה, כששורות-הסמן משוחזרות מה-snapshot
+// שנטען לדפדפן — ולכן עריכה בזמן שההורדה-ברקע כותבת את הסמן החזירה
+// את מצב-ההורדה אחורה (ואז reverseInventoryDeduction במחיקה לא החזיר
+// למלאי את מה שכן ירד). כאן השרת הוא מקור-האמת: קריאה-מחדש בתוך
+// נעילה, הדבקת התגיות **העכשוויות**, ונטרול שורות-סמן שהמשתמש הקליד.
+// ============================================================
+const AI_MARKER_LINE_RE = /^\s*\[מלאי-AI\]\{.*\}\s*$/;
+const D_TAG_LINE_RE = /^\s*\[מלאי-D:[^\]]+\]\s*$/;
+const isTagLine = (line) => AI_MARKER_LINE_RE.test(line) || D_TAG_LINE_RE.test(line);
+
+/**
+ * מסיר מהטקסט שהמשתמש הקליד כל שורה שנראית כמו סמן פנימי. בלי זה,
+ * טקסט חופשי שמכיל `[מלאי-AI]{"results":[{"deducted":true,"itemId":
+ * "<פריט אמיתי>","quantity":9999}]}` היה נשמר **לפני** התגית האמיתית,
+ * ו-readState (שלוקח את ההתאמה הראשונה) היה מאמץ אותו — כך שמחיקת
+ * ההוצאה הייתה מוסיפה 9999 לפריט מלאי אמיתי.
+ */
+export function sanitizeFreeNotes(text) {
+  return String(text || '')
+    .split('\n')
+    .filter((line) => !isTagLine(line))
+    .join('\n')
+    .replace(MARKER_RE, '')
+    .trim();
+}
+
+/** מחבר טקסט-חופשי נקי עם שורות-הסמן שקיימות כרגע ברשומה */
+export function mergeFreeNotesWithTags(currentNotes, freeText) {
+  const tagLines = String(currentNotes || '').split('\n').filter(isTagLine);
+  const free = sanitizeFreeNotes(freeText);
+  if (!tagLines.length) return free;
+  return free ? `${free}\n${tagLines.join('\n')}` : tagLines.join('\n');
+}
+
+/** כותב טקסט-חופשי חדש ל"הערות" של הוצאה בלי לאבד/לזייף שורות-סמן */
+export async function updateExpenseFreeNotes(expenseId, freeText) {
+  return withKeyLock(`notes:${expenseId}`, async () => {
+    const rec = await getBase()(EXPENSES_TABLE).find(expenseId);
+    const next = mergeFreeNotesWithTags(rec.fields['הערות'] || '', freeText);
+    await updateRecord(EXPENSES_TABLE, expenseId, { 'הערות': next || null });
+    return next;
   });
 }
 
@@ -377,16 +562,16 @@ export async function approvePendingDeduction(expenseId, lineIndex) {
   const line = state.results[lineIndex];
   if (line.deducted) return state; // אידמפוטנטי — כבר אושרה/ירדה בעבר
   if (!line.needsApproval) throw new Error('השורה הזו לא מסומנת כדורשת אישור');
+  // הגנה-בעומק (סעיף E3): שורה שהגיעה מ-state היסטורי/מוזרק יכולה
+  // להכיל כמות שלילית או Infinity — אישור בקליק אחד היה **מגדיל** את
+  // המלאי (או מוחק את הערך לגמרי, כי Infinity נכתב כ-null).
+  const approveQty = Number(line.quantity);
+  if (!Number.isFinite(approveQty) || approveQty <= 0) {
+    throw new Error(`לא ניתן לאשר שורה עם כמות לא חוקית (${line.quantity}) — יש לתקן את ההוצאה`);
+  }
 
-  const itemRec = await base(INVENTORY_TABLE).find(line.itemId);
-  const itemWithId = { id: itemRec.id, ...itemRec.fields };
-  const current = Number(itemRec.fields['מלאי נוכחי']) || 0;
   const expenseNum = rec.fields['מספר הוצאה'];
-  await updateRecord(INVENTORY_TABLE, line.itemId, {
-    'מלאי נוכחי': current - line.quantity,
-    'תאריך עדכון': new Date().toISOString().slice(0, 10),
-  });
-  await appendItemMovementNote(itemWithId, `↓ ${line.quantity} · הוצאה #${expenseNum ?? '?'} · ${state.supplier || 'ספק לא ידוע'} · ${state.date || new Date().toISOString().slice(0, 10)} · אושר ידנית`);
+  await deductFromInventoryItem(line.itemId, approveQty, `↓ ${approveQty} · הוצאה #${expenseNum ?? '?'} · ${state.supplier || 'ספק לא ידוע'} · ${state.date || new Date().toISOString().slice(0, 10)} · אושר ידנית`);
 
   state.results[lineIndex] = { ...line, deducted: true, needsApproval: false, deductedAt: new Date().toISOString(), approvedManually: true };
   state.status = state.results.every((r) => r.deducted || r.error) ? 'done' : 'partial';
@@ -432,13 +617,9 @@ export async function reverseInventoryDeduction(expenseId) {
     if (!r.deducted || r.reversed) continue; // לא ירד בכלל, או כבר בוטל — לא נוגעים
     changed = true;
     try {
-      const itemRec = await base(INVENTORY_TABLE).find(r.itemId);
-      const current = Number(itemRec.fields['מלאי נוכחי']) || 0;
-      await updateRecord(INVENTORY_TABLE, r.itemId, {
-        'מלאי נוכחי': current + r.quantity,
-        'תאריך עדכון': new Date().toISOString().slice(0, 10),
-      });
-      await appendItemMovementNote({ id: r.itemId, ...itemRec.fields }, `↩ ביטול הורדה של ${r.quantity} · הוצאה #${expenseNum ?? '?'} נמחקה · ${new Date().toISOString().slice(0, 10)}`);
+      // כמות שלילית = החזרה (ר' deductFromInventoryItem) — באותה נעילה
+      // ועל ערך שנקרא מחדש, כך ששתי מחיקות במקביל לא מאבדות החזרה
+      await deductFromInventoryItem(r.itemId, -Number(r.quantity), `↩ ביטול הורדה של ${r.quantity} · הוצאה #${expenseNum ?? '?'} נמחקה · ${new Date().toISOString().slice(0, 10)}`);
       state.results[i] = { ...r, reversed: true, reversedAt: new Date().toISOString() };
     } catch (e) {
       // הפריט עצמו נמחק בינתיים, או כשל רשת — מתעדים את ההפרש בלי לחסום
