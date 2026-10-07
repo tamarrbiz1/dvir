@@ -311,22 +311,18 @@ function MarketersTab({ marketers, invoices, deliveries = [], app, onChanged }) 
         const ids = links.map((l) => (typeof l === 'object' && l.id ? l.id : l));
         let revenue = 0;
         let count = 0;
-        const byDate = {};
+        // שורות גולמיות (תאריך+סכום) לכל חשבונית — ל-MarketerTrend, כדי
+        // שיוכל לסנן לפי התקופה הנבחרת (3 חודשים/השנה/הכל) ולצבור בעצמו
+        const rows = [];
         ids.forEach((id) => {
           const inv = invById.get(id);
           const amt = Number(inv?.['סכום נטו']) || 0;
           revenue += amt;
           if (amt > 0) count++;
           const d = new Date(inv?.['תאריך']);
-          if (!Number.isNaN(d.getTime())) {
-            const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-            byDate[k] = (byDate[k] || 0) + amt;
-          }
+          if (!Number.isNaN(d.getTime())) rows.push({ date: d, amt });
         });
-        const trend = Object.entries(byDate)
-          .sort((a, b) => a[0].localeCompare(b[0]))
-          .map(([k, v]) => ({ month: k, פדיון: Math.round(v) }));
-        return { mk, revenue, count, trend, invoiceCount: ids.length };
+        return { mk, revenue, count, rows, invoiceCount: ids.length };
       }),
     [marketers, invById]
   );
@@ -339,7 +335,7 @@ function MarketersTab({ marketers, invoices, deliveries = [], app, onChanged }) 
         </div>
       )}
       <div className="grid">
-        {cards.map(({ mk, revenue, count, trend, invoiceCount }) => (
+        {cards.map(({ mk, revenue, count, rows, invoiceCount }) => (
           <div
             key={mk.id || mk['שם משווק']}
             className="card"
@@ -353,14 +349,14 @@ function MarketersTab({ marketers, invoices, deliveries = [], app, onChanged }) 
               {mk['כתובת'] && <div>{mk['כתובת']}</div>}
               {mk['תנאי תשלום'] && <div>תנאי תשלום: {mk['תנאי תשלום']}</div>}
             </div>
-            <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 13 }}>
+            <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 13, flexWrap: 'wrap' }}>
               <div><span className="kpi-label">חשבוניות</span><div className={kpiValueClass(invoiceCount)} style={{ fontSize: 18 }}>{invoiceCount}</div></div>
               <div><span className="kpi-label">תעודות משלוח</span><div className={kpiValueClass(notesOfMarketer(deliveries, mk.id).length)} style={{ fontSize: 18, color: 'var(--docs)' }}>{notesOfMarketer(deliveries, mk.id).length}</div></div>
               <div><span className="kpi-label">פדיון · כל התקופה</span><div className={kpiValueClass(formatMoney(revenue))} style={{ fontSize: 18, color: 'var(--revenue)' }}>{formatMoney(revenue)}</div></div>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
               <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); navigate(`/delivery-notes?marketer=${encodeURIComponent(mk.id)}`); }}>📄 תעודות משלוח</button>
-              <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); navigate('/invoices'); }}>🧾 חשבוניות</button>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); navigate(`/invoices?marketer=${encodeURIComponent(mk.id)}`); }}>🧾 חשבוניות</button>
               {canEdit && (
                 <span style={{ marginInlineStart: 'auto', display: 'flex', gap: 4 }}>
                   <button type="button" className="btn btn-sm btn-ghost" aria-label="עריכה" title="עריכה" onClick={(e) => { e.stopPropagation(); setForm(mk); }}>✎</button>
@@ -377,26 +373,7 @@ function MarketersTab({ marketers, invoices, deliveries = [], app, onChanged }) 
                 {invoiceCount} חשבוניות ללא סכום נטו
               </div>
             )}
-            {active === mk.id && (
-              <div style={{ marginTop: 12 }}>
-                <div className="section-title" style={{ marginTop: 0 }}>פדיון לאורך זמן · כל התקופה, לפי חודש</div>
-                {trend.length === 0 ? (
-                  <div className="empty-state" style={{ padding: '14px 0' }}>אין נתוני פדיון למשווק זה</div>
-                ) : (
-                  <div style={{ direction: 'ltr' }}>
-                    <ResponsiveContainer width="100%" height={180}>
-                      <LineChart data={trend} margin={CHART_MARGIN}>
-                        <CartesianGrid {...GRID_PROPS} />
-                        <XAxis dataKey="month" {...xAxisProps(trend.length)} />
-                        <YAxis {...yAxisProps({ money: true })} />
-                        <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
-                        <Line type="monotone" dataKey="פדיון" stroke="#08A878" strokeWidth={2} dot={{ r: 3 }} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                )}
-              </div>
-            )}
+            {active === mk.id && <MarketerTrend rows={rows} />}
           </div>
         ))}
         {marketers.length === 0 && <div className="empty-state">אין נתונים לתקופה זו</div>}
@@ -411,6 +388,88 @@ function MarketersTab({ marketers, invoices, deliveries = [], app, onChanged }) 
           onClose={() => setForm(null)}
           onSaved={async () => { setForm(null); await onChanged(); toast('המשווק נשמר בהצלחה'); }}
         />
+      )}
+    </div>
+  );
+}
+
+// גרף פדיון-לאורך-זמן של כרטיס משווק — בורר תקופה קטן (3 חודשים/השנה/
+// כל התקופה) בדומה ל"בורר תקופה בכל המערכת" (סעיף A), אך כאן כ-3 כפתורים
+// קטנים במקום <select> כי מדובר בתקופות מצומצמות ייעודיות לגרף הזה בלבד.
+const TREND_PERIODS = [
+  { key: '3m', label: '3 חודשים' },
+  { key: 'year', label: 'השנה' },
+  { key: 'all', label: 'כל התקופה' },
+];
+
+// טווח "3 חודשים" — 3 החודשים הקלנדריים האחרונים (כולל החודש הנוכחי),
+// באותה לוגיקת "סוף חודש 23:59:59" כמו periodRange ב-utils/period.js
+function last3MonthsRange() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+  return [start, end];
+}
+
+function trendRange(key) {
+  if (key === 'year') return periodRange('year');
+  if (key === '3m') return last3MonthsRange();
+  return null; // 'all' — ללא סינון
+}
+
+function trendCaption(key) {
+  if (key === 'year') return periodCaption('year');
+  if (key === '3m') return '3 חודשים אחרונים';
+  return 'כל התקופה';
+}
+
+function MarketerTrend({ rows }) {
+  const [period, setPeriod] = useState(
+    () => (rows.some((r) => inPeriod(r.date, trendRange('year'))) ? 'year' : 'all')
+  );
+
+  const trend = useMemo(() => {
+    const range = trendRange(period);
+    const byMonth = {};
+    rows.forEach((r) => {
+      if (!inPeriod(r.date, range)) return;
+      const k = `${r.date.getFullYear()}-${String(r.date.getMonth() + 1).padStart(2, '0')}`;
+      byMonth[k] = (byMonth[k] || 0) + r.amt;
+    });
+    return Object.entries(byMonth)
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([k, v]) => ({ month: k, פדיון: Math.round(v) }));
+  }, [rows, period]);
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {TREND_PERIODS.map((p) => (
+          <button
+            key={p.key}
+            type="button"
+            className={`btn btn-sm ${period === p.key ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={(e) => { e.stopPropagation(); setPeriod(p.key); }}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <div className="section-title" style={{ marginTop: 8 }}>פדיון לפי חודש · {trendCaption(period)}</div>
+      {trend.length === 0 ? (
+        <div className="empty-state" style={{ padding: '14px 0' }}>אין נתוני פדיון בתקופה זו</div>
+      ) : (
+        <div style={{ direction: 'ltr' }}>
+          <ResponsiveContainer width="100%" height={180}>
+            <LineChart data={trend} margin={CHART_MARGIN}>
+              <CartesianGrid {...GRID_PROPS} />
+              <XAxis dataKey="month" {...xAxisProps(trend.length)} />
+              <YAxis {...yAxisProps({ money: true })} />
+              <Tooltip {...TOOLTIP_STYLE} formatter={(v) => formatMoney(v)} />
+              <Line type="monotone" dataKey="פדיון" stroke="#08A878" strokeWidth={2} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
       )}
     </div>
   );
