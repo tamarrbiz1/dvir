@@ -121,9 +121,9 @@ export async function fetchRecords(tableName, options = {}) {
   return records;
 }
 
-export async function createRecord(tableName, fields) {
+export async function createRecord(tableName, fields, { typecast = false } = {}) {
   const base = getBase();
-  const created = await base(tableName).create(fields);
+  const created = typecast ? await base(tableName).create(fields, { typecast: true }) : await base(tableName).create(fields);
   return { id: created.id, ...created.fields };
 }
 
@@ -139,9 +139,9 @@ export async function createRecords(tableName, fieldsList) {
   return out;
 }
 
-export async function updateRecord(tableName, recordId, fields) {
+export async function updateRecord(tableName, recordId, fields, { typecast = false } = {}) {
   const base = getBase();
-  const updated = await base(tableName).update(recordId, fields);
+  const updated = typecast ? await base(tableName).update(recordId, fields, { typecast: true }) : await base(tableName).update(recordId, fields);
   return { id: updated.id, ...updated.fields };
 }
 

@@ -904,6 +904,39 @@ app.get('/api/:table/:id', authorizeRead, async (req, res) => {
 });
 
 // יצירת רשומה (או כמה רשומות — כשנשלח מערך, למשל בייבוא חגים)
+// ============================================================
+// הוספת אפשרות חדשה לשדה-בחירה (סעיף G, 7.10.2026) — "קטגוריה חדשה" במלאי.
+// Airtable מאפשר זאת דרך הפרמטר הרשמי typecast=true בכתיבת רשומה: ערך
+// שאינו ברשימה הופך לאפשרות חדשה. אין לנו הרשאת schema (PATCH למטא
+// מחזיר 403), ולכן זו הדרך היחידה — והיא מוגבלת כאן בכוונה:
+//   • מנהל ראשי בלבד;
+//   • רק טבלאות/שדות ברשימה הלבנה למטה;
+//   • רק שדות-בחירה (נבדק מול המטא בזמן הבקשה);
+//   • הערך החדש חייב להיות טקסט סביר (לא ריק, עד 60 תווים).
+// כל שדה אחר בגוף הבקשה שערכו אינו ברשימת האפשרויות שלו — נדחה, כדי
+// ש-typecast לא "ייצר" בטעות אפשרויות בשדות אחרים.
+// ============================================================
+const TYPECAST_ALLOWED = { 'מלאי בסיסי': new Set(['קטגוריה']) };
+async function validateTypecastRequest(req, table, body) {
+  if (req.auth.role !== 'owner') return 'הוספת קטגוריה חדשה זמינה למנהל הראשי בלבד';
+  const allowed = TYPECAST_ALLOWED[table];
+  if (!allowed) return 'הוספת אפשרויות חדשות אינה מותרת בטבלה זו';
+  const meta = (await getMeta()).find((t) => t.name === table);
+  if (!meta) return 'טבלה לא נמצאה';
+  for (const [name, value] of Object.entries(body || {})) {
+    const f = meta.fields.find((x) => x.name === name);
+    if (!f || !/singleSelect|multipleSelects/.test(f.type)) continue; // typecast משפיע רק על שדות-בחירה
+    const choices = new Set((f.options?.choices || []).map((c) => c.name));
+    const values = Array.isArray(value) ? value : [value];
+    for (const v of values) {
+      if (v == null || v === '' || choices.has(v)) continue;
+      if (!allowed.has(name)) return `לא ניתן להוסיף אפשרות חדשה לשדה "${name}"`;
+      if (typeof v !== 'string' || !v.trim() || v.trim().length > 60) return `שם ${name} חדש חייב להיות טקסט של עד 60 תווים`;
+    }
+  }
+  return null;
+}
+
 app.post('/api/:table', authorizeWrite, async (req, res) => {
   try {
     const { table } = req.params;
@@ -918,7 +951,12 @@ app.post('/api/:table', authorizeWrite, async (req, res) => {
     // עובד: שדה השיוך נכפה תמיד להיות הרשומה של עצמו, בלי קשר למה שנשלח —
     // מונע יצירת רשומה בשם עובד אחר דרך payload מזויף.
     const body = ownField ? { ...req.body, [ownField]: [req.auth.sub] } : req.body;
-    const created = await createRecord(table, body);
+    const typecast = req.query.typecast === '1';
+    if (typecast) {
+      const problem = await validateTypecastRequest(req, table, body);
+      if (problem) return res.status(403).json({ error: problem });
+    }
+    const created = await createRecord(table, body, { typecast });
     invalidateReads(table); // כדי שהרשומה החדשה תיקרא מיד ותיפתר לשם
     res.status(201).json(created);
   } catch (e) {
@@ -935,7 +973,12 @@ app.patch('/api/:table/:id', authorizeWrite, async (req, res) => {
     const ownField = ownFilterField(req.auth.role, table);
     // עובד לא יכול "להעביר" רשומה לעובד אחר דרך עדכון שדה השיוך
     const body = ownField && req.body?.[ownField] ? { ...req.body, [ownField]: [req.auth.sub] } : req.body;
-    const updated = await updateRecord(table, req.params.id, body);
+    const typecast = req.query.typecast === '1';
+    if (typecast) {
+      const problem = await validateTypecastRequest(req, table, body);
+      if (problem) return res.status(403).json({ error: problem });
+    }
+    const updated = await updateRecord(table, req.params.id, body, { typecast });
     invalidateReads(table);
     res.json(updated);
   } catch (e) {

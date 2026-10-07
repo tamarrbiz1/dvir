@@ -499,8 +499,8 @@ export default function App() {
       if (!r.ok) throw new Error(await serverErrorMessage(r));
       return r.json();
     },
-    async create(table, body) {
-      const r = await authFetch(`/api/${encodeURIComponent(table)}`, {
+    async create(table, body, { typecast = false } = {}) {
+      const r = await authFetch(`/api/${encodeURIComponent(table)}${typecast ? '?typecast=1' : ''}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -508,8 +508,8 @@ export default function App() {
       if (!r.ok) throw new Error(await serverErrorMessage(r));
       return r.json();
     },
-    async update(table, id, body) {
-      const r = await authFetch(`/api/${encodeURIComponent(table)}/${id}`, {
+    async update(table, id, body, { typecast = false } = {}) {
+      const r = await authFetch(`/api/${encodeURIComponent(table)}/${id}${typecast ? '?typecast=1' : ''}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

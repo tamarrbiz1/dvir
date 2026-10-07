@@ -28,7 +28,7 @@ const TABLE = 'מלאי בסיסי';
 // כך שאפשר לקשר ספק לפריט מלאי ישירות מהטופס (לא רק דרך הקישור ההפוך
 // בכרטיס הספק עצמו). ר' RecordForm.jsx type:'link'.
 const ITEM_FORM_FIELDS = [
-  { name: 'קטגוריה', label: 'קטגוריה', type: 'select', required: true },
+  { name: 'קטגוריה', label: 'קטגוריה', type: 'select', required: true, allowNew: true }, // "➕ קטגוריה חדשה…" — נוצרת ב-Airtable דרך typecast (סעיף G)
   { name: 'ספקים', label: 'ספק', type: 'link', linkTable: 'ספקים', linkNameField: 'שם ספק', multiple: true },
   { name: 'מלאי נוכחי', label: 'מלאי נוכחי', type: 'number' },
   { name: 'מלאי מינימום', label: 'מלאי מינימום', type: 'number' },
