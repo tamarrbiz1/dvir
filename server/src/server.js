@@ -1036,12 +1036,33 @@ async function validateTypecastRequest(req, table, body) {
 // ר' progress.md) — אלה דורשות החלטת-מיזוג/מחיקה של תמר, לא פעולה
 // אוטומטית; הבדיקה הזו רק חוסמת **הצטברות** כפילויות חדשות מעתה.
 // ============================================================
+// ⚠️ 7.10.2026 (לילה 3) — נורמליזציה: ההשוואה הייתה `trim()` בלבד, כך
+// ש"משטחי  עץ" (רווח כפול) או הבדל-רישיות עקפו את הכלל לגמרי. מנרמלים
+// רווחים-פנימיים ורישיות **לצורך ההשוואה בלבד** — הערך שנשמר ב-Airtable
+// נשאר בדיוק כפי שנשלח.
+function normalizeCategory(v) {
+  return String(v ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('he');
+}
+
 async function findDuplicateInventoryCategory(table, body, excludeId) {
   if (table !== 'מלאי בסיסי') return null;
   const category = body?.['קטגוריה'];
   if (category == null || String(category).trim() === '') return null;
-  const normalized = String(category).trim();
+  const normalized = normalizeCategory(category);
   const existing = await fetchRecords('מלאי בסיסי', {});
+  // ⚠️ 7.10.2026 (לילה 3) — באג שנתפס חי, רגרסיה מסעיף Q עצמו: RecordForm
+  // שולח ב-PATCH את **כל** שדות הטופס, כולל "קטגוריה", גם כשהמשתמשת שינתה
+  // רק "מלאי נוכחי". לכן כל שמירה מטופס-העריכה של אחת משתי רשומות
+  // "נילונים" הכפולות (כפילות-אמת שממתינה להחלטת תמר) נדחתה ב-409 —
+  // כלומר שתי הרשומות האלה היו **בלתי-ניתנות-לעריכה בכלל**, בניגוד
+  // מפורש לדרישה של תמר שעריכת "מלאי נוכחי" שלהן תמשיך לעבוד.
+  // כתיבה שאינה *משנה* את הקטגוריה לא יכולה ליצור כפילות חדשה — ולכן
+  // אינה נבדקת. אומת בפועל: PATCH ללא-שינוי → 200 (היה 409), ויצירת
+  // כפילות אמיתית → עדיין 409.
+  if (excludeId) {
+    const self = existing.find((it) => it.id === excludeId);
+    if (self && normalizeCategory(self['קטגוריה']) === normalized) return null;
+  }
   // שריד-בדיקה (TEST_RECORD_PATTERN) לעולם לא נחשב "קיים" לצורך החסימה —
   // אחרת שתי רשומות QA בקטגוריית-QA חדשה-זהה היו חוסמות זו את זו בטעות,
   // ורשומת QA ישנה שלא נוקתה הייתה חוסמת יצירה אמיתית של קטגוריה.
@@ -1054,7 +1075,7 @@ async function findDuplicateInventoryCategory(table, body, excludeId) {
   const dup = existing.find((it) =>
     it.id !== excludeId &&
     !TEST_RECORD_PATTERN.test(String(it['קטגוריה'] || '')) &&
-    String(it['קטגוריה'] || '').trim() === normalized
+    normalizeCategory(it['קטגוריה']) === normalized
   );
   return dup || null;
 }
