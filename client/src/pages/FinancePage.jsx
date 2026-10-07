@@ -25,6 +25,9 @@ const MARKETER_FORM_FIELDS = [
 import { CHECKS_TABLE, CHECK_FIELDS, checkDueDate, checkStatus } from '../utils/checks.js';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { DELIVERY_TABLE, notesOfMarketer } from '../utils/deliveryNotes.js';
+// תאריך חשבונית — סדר-העדיפות וההסבר המלא ב-utils/weekYear.js
+// (לא `inv['תאריך']`: שדה כזה לא קיים בטבלת "חשבוניות" — ר' שם).
+import { invoiceDate } from '../utils/weekYear.js';
 
 const TABS = ['סקירה', 'הוצאות', "צ'קים", 'משווקים'];
 // מפתחות ל-URL (?tab=) — כדי שקישור/חזרה יפתחו את הטאב הנכון
@@ -314,15 +317,26 @@ function MarketersTab({ marketers, invoices, deliveries = [], app, onChanged }) 
         // שורות גולמיות (תאריך+סכום) לכל חשבונית — ל-MarketerTrend, כדי
         // שיוכל לסנן לפי התקופה הנבחרת (3 חודשים/השנה/הכל) ולצבור בעצמו
         const rows = [];
+        // חשבוניות שלא נמצאו בכלל ב-invById: הקישור קיים על המשווק אבל
+        // הרשומה לא בטווח ה-maxRecords שנטען (ר' loadAll). בלי המנייה הזו
+        // הפדיון היה פשוט קטן יותר בשקט, בלי שאף אחד ידע למה.
+        let missingInvoices = 0;
+        let undatedInvoices = 0;
         ids.forEach((id) => {
           const inv = invById.get(id);
-          const amt = Number(inv?.['סכום נטו']) || 0;
+          if (!inv) { missingInvoices++; return; }
+          const amt = Number(inv['סכום נטו']) || 0;
           revenue += amt;
           if (amt > 0) count++;
-          const d = new Date(inv?.['תאריך']);
-          if (!Number.isNaN(d.getTime())) rows.push({ date: d, amt });
+          const d = invoiceDate(inv);
+          // רק חשבונית עם סכום *וגם* תאריך נכנסת לגרף: בלי התנאי על
+          // הסכום, חשבונית בסכום 0 פותחת חודש-דלי בערך 0 ומשטיחה את קו
+          // הפדיון בין שתי נקודות אמיתיות.
+          if (amt === 0) return;
+          if (d) rows.push({ date: d, amt });
+          else undatedInvoices++;
         });
-        return { mk, revenue, count, rows, invoiceCount: ids.length };
+        return { mk, revenue, count, rows, invoiceCount: ids.length, missingInvoices, undatedInvoices };
       }),
     [marketers, invById]
   );
@@ -335,7 +349,7 @@ function MarketersTab({ marketers, invoices, deliveries = [], app, onChanged }) 
         </div>
       )}
       <div className="grid">
-        {cards.map(({ mk, revenue, count, rows, invoiceCount }) => (
+        {cards.map(({ mk, revenue, count, rows, invoiceCount, missingInvoices, undatedInvoices }) => (
           <div
             key={mk.id || mk['שם משווק']}
             className="card"
@@ -373,7 +387,12 @@ function MarketersTab({ marketers, invoices, deliveries = [], app, onChanged }) 
                 {invoiceCount} חשבוניות ללא סכום נטו
               </div>
             )}
-            {active === mk.id && <MarketerTrend rows={rows} />}
+            {missingInvoices > 0 && (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+                {missingInvoices} חשבוניות מקושרות לא נטענו — הפדיון המוצג חלקי
+              </div>
+            )}
+            {active === mk.id && <MarketerTrend rows={rows} undatedInvoices={undatedInvoices} />}
           </div>
         ))}
         {marketers.length === 0 && <div className="empty-state">אין נתונים לתקופה זו</div>}
@@ -423,10 +442,19 @@ function trendCaption(key) {
   return 'כל התקופה';
 }
 
-function MarketerTrend({ rows }) {
+function MarketerTrend({ rows, undatedInvoices = 0 }) {
   const [period, setPeriod] = useState(
     () => (rows.some((r) => inPeriod(r.date, trendRange('year'))) ? 'year' : 'all')
   );
+
+  // כמה חשבוניות עם פדיון יש בכל תקופה — כדי שמסך-ריק יוכל להגיד
+  // *למה* הוא ריק ("יש נתונים, אבל לא בתקופה הזו") במקום להשאיר את
+  // המשתמשת בלי מושג אם אין נתונים בכלל או שרק הכפתור לא מתאים.
+  const countsByPeriod = useMemo(() => {
+    const out = {};
+    for (const p of TREND_PERIODS) out[p.key] = rows.filter((r) => inPeriod(r.date, trendRange(p.key))).length;
+    return out;
+  }, [rows]);
 
   const trend = useMemo(() => {
     const range = trendRange(period);
@@ -459,8 +487,17 @@ function MarketerTrend({ rows }) {
         ))}
       </div>
       <div className="section-title" style={{ marginTop: 8 }}>פדיון לפי חודש · {trendCaption(period)}</div>
+      {undatedInvoices > 0 && (
+        <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+          {undatedInvoices} חשבוניות עם פדיון אך בלי תאריך — לא מופיעות בגרף
+        </div>
+      )}
       {trend.length === 0 ? (
-        <div className="empty-state" style={{ padding: '14px 0' }}>אין נתוני פדיון בתקופה זו</div>
+        <div className="empty-state" style={{ padding: '14px 0' }}>
+          {countsByPeriod.all > 0
+            ? <>אין נתוני פדיון ב{trendCaption(period)} — יש {countsByPeriod.all} חשבוניות בתקופות אחרות (נסי "כל התקופה")</>
+            : 'אין נתוני פדיון למשווק זה'}
+        </div>
       ) : (
         <div style={{ direction: 'ltr' }}>
           <ResponsiveContainer width="100%" height={180}>

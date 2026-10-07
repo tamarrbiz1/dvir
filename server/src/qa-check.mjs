@@ -30,11 +30,12 @@ import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOL
 import { fixFilenameEncoding } from './filename-utils.js';
 import { weekCodeFromDate, WEEK_CODE_RE } from './weekly-sync.js';
 import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggestions, summarizeSuggestions, AUTO_THRESHOLD } from './supplier-linking.js';
-import { parseSummary, parseDateRange, parseDosage, markerOf } from './spray-report-import.js';
+import { parseSummary, parseDateRange, parseDosage, markerOf, isTestRecord as isSprayTestRecord } from './spray-report-import.js';
 import { cascadeDocumentDelete } from './document-cascade.js';
 import { parseInventoryLedger, resolveExpenseLinks, documentLink } from '../../client/src/utils/inventoryLedger.js';
 import { stripInventoryAiMarker, withPreservedInventoryTags } from '../../client/src/utils/inventoryAi.js';
-import { yearFromWeekValue } from '../../client/src/utils/weekYear.js';
+import { yearFromWeekValue, dateFromWeekValue, invoiceDate } from '../../client/src/utils/weekYear.js';
+import { shouldResetOption } from '../../client/src/utils/selectGuard.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
@@ -129,10 +130,17 @@ if (!qaOwner) { console.error('אין רשומת מנהל ראשי עם קוד �
 const RUN_UPLOAD_TESTS = process.env.RUN_UPLOAD_TESTS === '1';
 const REAL_FIXTURE_PATH = new URL('../fixtures/qa-real-invoice.pdf', import.meta.url);
 const REAL_FIXTURE_NAME = 'qa-real-invoice.pdf';
-const createWithFile = async (table, field, extraFields = {}) => {
+// filename — עקיפה אופציונלית לשם-הקובץ שמועלה. נחוצה לטבלאות שאין בהן
+// שום שדה-טקסט שיכול לשאת את ה-MARK (ר' "דוחות ריסוסים": 4 שדות, 2 מהם
+// מחושבים) — שם-הקובץ נשמר בתוך אובייקט ה-attachment, ו-isTestRecord מריץ
+// את התבנית על JSON.stringify של הרשומה כולה, ולכן MARK בשם-הקובץ מסמן
+// את הרשומה כבדיקה לכל דבר. **המפריד חייב להיות מקף ולא קו-תחתי**:
+// התבנית היא /\bQA-\d{10,}\b/ ו-"_" הוא תו-מילה ב-regex, כך ש-
+// "QA-1234567890123_x.pdf" לא היה נתפס בכלל.
+const createWithFile = async (table, field, extraFields = {}, filename = REAL_FIXTURE_NAME) => {
   const fileBuf = await readFile(REAL_FIXTURE_PATH);
   const fd = new FormData();
-  fd.append('file', new Blob([fileBuf], { type: 'application/pdf' }), REAL_FIXTURE_NAME);
+  fd.append('file', new Blob([fileBuf], { type: 'application/pdf' }), filename);
   fd.append('table', table);
   fd.append('field', field);
   const j = await api('POST', 'upload-document', fd, true);
@@ -766,6 +774,147 @@ await test('forecast-sync: QA-מחיר + QA-תפוקה-רבעונית + QA-תו�
   }
   return `${rows.length} שורות נוצרו עם מחיר 7; אחרי מחיקה — אף שורה לא נשארה עם המחיר הישן (${afterDelete.rowsNow.length} שורות כעת)`;
 }, 350000);
+
+// גידול בלי אף תוכנית-שתילה מקושרת: שינוי/יצירת מחיר או תפוקה-רבעונית
+// עבורו חייב לעבור fire-and-forget בשקט (forecast-sync.js, "אין
+// תוכניות שתילה מקושרות") — לא לזרוק/לחסום את הכתיבה המקורית, ולא
+// להשפיע על אף תוכנית אחרת.
+await test('forecast-sync: גידול בלי אף תוכנית מקושרת — כתיבת מחיר/תפוקה לא נכשלת, לא נוגעת באף תוכנית', async () => {
+  const orphanCrop = await create('גידולים', { 'שם גידול': `${MARK}-orphan-crop` });
+  // שתי הטבלאות ש-forecast-sync.js עוקב אחריהן (ר' FORECAST_SOURCE_TABLES)
+  const price = await create('מחירי גידול משוערים', { 'גידול': [orphanCrop.id], 'שנה': 2035, 'מחיר משוער לקג': 3 });
+  const yieldRec = await create('תפוקה רבעונית', { 'גידול': [orphanCrop.id], 'רבעון': '2', 'קג לדונם לשבוע': 5 });
+  // גם עדכון וגם מחיקה — שני הנתיבים שמפעילים syncForecastForChangedRecord
+  await patch('מחירי גידול משוערים', price.id, { 'מחיר משוער לקג': 4 });
+  await del('תפוקה רבעונית', yieldRec.id);
+  cleanup.splice(cleanup.findIndex((c) => c.table === 'תפוקה רבעונית' && c.id === yieldRec.id), 1);
+  // לא מחכים לרקע (fire-and-forget) — רק מוודאים שה-API עצמו לא קרס/נתקע
+  return 'יצירה+עדכון+מחיקה של מחיר/תפוקה לגידול יתום — כל הקריאות הסתיימו בהצלחה';
+});
+
+// ============================================================
+// שתי רשומות-מחיר חופפות לאותו גידול/שנה (לילה 3, מצוד מפורש בתדריך):
+// ברירת-מחדל-שנתית *וגם* מחיר-טווח-תאריכים שמכסה את שבוע-הקטיף.
+// לפי התיעוד ב-forecast-sync.js וב-forecast-preflight.js, האוטומציה
+// ב-Airtable אמורה להעדיף תמיד את מחיר-הטווח על פני ברירת-המחדל-
+// השנתית. בודקים בפועל איזה מחיר מקושר לשורת-התחזית, ושזה לא "מזל" —
+// מפעילים "רענן תחזית" פעמיים (false→true, false→true) ומוודאים שאותו
+// מחיר נבחר בשתי הפעמים (דטרמיניסטי, לא race שמתחלף בין ריצות).
+// ============================================================
+await test('forecast-sync: שני מחירים חופפים (טווח-תאריכים + ברירת-מחדל-שנתית) — טווח גובר, דטרמיניסטי', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const crop = await create('גידולים', { 'שם גידול': `${MARK}-overlap-crop` });
+  await create('תפוקה רבעונית', { 'גידול': [crop.id], 'רבעון': '1', 'קג לדונם לשבוע': 40 });
+  // שני מחירים חופפים לאותה שנה/גידול: ברירת-מחדל-שנתית (5) ומחיר-טווח
+  // שמכסה את הקטיף (9) — לפי forecast-sync.js, הטווח אמור לגבור.
+  await create('מחירי גידול משוערים', { 'גידול': [crop.id], 'שנה': 2034, 'מחיר משוער לקג': 5, 'ברירת מחדל שנתית': true });
+  await create('מחירי גידול משוערים', { 'גידול': [crop.id], 'שנה': 2034, 'מחיר משוער לקג': 9, 'מתאריך': '2034-01-15', 'עד תאריך': '2034-03-15' });
+  const plan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'גידולים': [crop.id], 'שנת תוכנית': 2034,
+    'תחילת שתילה מקורית': '2034-01-01', 'מספר ימי שתילה': 10,
+    'תחילת קטיף מקורית': '2034-02-01', 'מספר ימי קטיף': 20,
+  });
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': false });
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': true });
+  const calcDone = await pollUntil(async () => {
+    const p = await api('GET', `${enc('תוכניות שתילה')}/${plan.id}`);
+    return p['תחילת קטיף מעודכנת'] ? p : null;
+  }, { timeoutMs: 60000, intervalMs: 3000 });
+  if (!calcDone) return 'דולג (לא נכשל) — "חשב תוכנית" לא השלים תוך זמן סביר, לא קשור לקוד הנבדק';
+
+  const priceOfRows = async () => {
+    const rows = await forecastRowsForPlan(plan.id);
+    const priced = rows.filter((r) => Array.isArray(r['מחיר משוער לקג (from מחירי גידול משוערים)']) && r['מחיר משוער לקג (from מחירי גידול משוערים)'][0] != null);
+    return { rows, priced };
+  };
+
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': false });
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': true });
+  const first = await pollUntil(async () => {
+    const { rows, priced } = await priceOfRows();
+    return priced.length ? { rows, priced } : null;
+  });
+  if (!first) {
+    forecastSyncOrphanRanges.push({ from: '2034-02-01', to: '2034-03-31' });
+    return 'דולג (לא נכשל) — "רענן תחזית" לא השלים תוך זמן סביר — עיכוב-תשתית, לא קשור לקוד הנבדק';
+  }
+  cleanup.push(...first.rows.map((r) => ({ table: 'תחזית שתילה שבועית', id: r.id })));
+  const firstPrices = new Set(first.priced.map((r) => Number(r['מחיר משוער לקג (from מחירי גידול משוערים)'][0])));
+  if (firstPrices.size !== 1 || !firstPrices.has(9)) {
+    throw new Error(`צפוי שמחיר-הטווח (9) יגבור על ברירת-המחדל-השנתית (5) בכל השורות. נמצא: ${JSON.stringify([...firstPrices])}`);
+  }
+
+  // דטרמיניזם: הפעלה חוזרת של "רענן תחזית" חייבת לבחור את אותו מחיר
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': false });
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': true });
+  const second = await pollUntil(async () => {
+    const { rows, priced } = await priceOfRows();
+    return priced.length ? { rows, priced } : null;
+  });
+  if (!second) return 'מחיר-הטווח (9) נבחר נכון בריצה הראשונה; הריצה השנייה לא הספיקה תוך זמן סביר — לא נכשל, רק לא אומת דטרמיניזם';
+  cleanup.push(...second.rows.filter((r) => !cleanup.some((c) => c.table === 'תחזית שתילה שבועית' && c.id === r.id)).map((r) => ({ table: 'תחזית שתילה שבועית', id: r.id })));
+  const secondPrices = new Set(second.priced.map((r) => Number(r['מחיר משוער לקג (from מחירי גידול משוערים)'][0])));
+  if (secondPrices.size !== 1 || !secondPrices.has(9)) {
+    throw new Error(`לא דטרמיניסטי — ריצה שנייה בחרה מחיר אחר: ${JSON.stringify([...secondPrices])} (ריצה ראשונה: 9)`);
+  }
+  return `שתי הריצות בחרו את מחיר-הטווח (9) על פני ברירת-המחדל-השנתית (5) — עקבי`;
+}, 350000);
+
+// ============================================================
+// מחיקת "תפוקה רבעונית" *בזמן* שרענון-תחזית באמצע-ריצה (מצוד מפורש
+// בתדריך): מפעילים "רענן תחזית" ומיד, בלי להמתין שיסיים, מוחקים את
+// רשומת-התפוקה-הרבעונית שהרבעון הזה תלוי בה. בודקים שאין קריסה/כפילות
+// — לכל היותר שורה אחת לכל שבוע (תעודת-הזהות של שורת-תחזית), ו-
+// forecast-preflight אחרי שהאבק שקע חייב לדווח "חסרה תפוקה רבעונית"
+// (לא לקרוס, לא "לשקר" שהכל תקין).
+// ============================================================
+await test('forecast-sync: מחיקת תפוקה-רבעונית באמצע "רענן תחזית" — בלי קריסה/כפילות', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const crop = await create('גידולים', { 'שם גידול': `${MARK}-midflight-crop` });
+  const qYield = await create('תפוקה רבעונית', { 'גידול': [crop.id], 'רבעון': '1', 'קג לדונם לשבוע': 40 });
+  await create('מחירי גידול משוערים', { 'גידול': [crop.id], 'שנה': 2036, 'מחיר משוער לקג': 7, 'ברירת מחדל שנתית': true });
+  const plan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'גידולים': [crop.id], 'שנת תוכנית': 2036,
+    'תחילת שתילה מקורית': '2036-01-01', 'מספר ימי שתילה': 10,
+    'תחילת קטיף מקורית': '2036-02-01', 'מספר ימי קטיף': 20,
+  });
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': false });
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': true });
+  const calcDone = await pollUntil(async () => {
+    const p = await api('GET', `${enc('תוכניות שתילה')}/${plan.id}`);
+    return p['תחילת קטיף מעודכנת'] ? p : null;
+  }, { timeoutMs: 60000, intervalMs: 3000 });
+  if (!calcDone) return 'דולג (לא נכשל) — "חשב תוכנית" לא השלים תוך זמן סביר, לא קשור לקוד הנבדק';
+
+  // מפעילים "רענן תחזית" **ומיד** (בלי להמתין) מוחקים את התפוקה הרבעונית
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': false });
+  await patch('תוכניות שתילה', plan.id, { 'רענן תחזית': true });
+  await del('תפוקה רבעונית', qYield.id);
+  cleanup.splice(cleanup.findIndex((c) => c.table === 'תפוקה רבעונית' && c.id === qYield.id), 1); // כבר נמחק
+
+  // ממתינים שהאבק ישקע (אין "אירוע-סיום" לצפות לו — פשוט זמן סביר)
+  await new Promise((r) => setTimeout(r, 20000));
+  const rows = await forecastRowsForPlan(plan.id);
+  cleanup.push(...rows.map((r) => ({ table: 'תחזית שתילה שבועית', id: r.id })));
+
+  // בדיקת-השפיות העיקרית: לא נוצרה יותר משורת-תחזית אחת לכל שבוע
+  // (אין race שמכפיל שורות כשהאוטומציה "מתבלבלת" בין delete לבין יצירה)
+  const byWeek = new Map();
+  for (const r of rows) {
+    const w = r['תחילת שבוע'] || '?';
+    byWeek.set(w, (byWeek.get(w) || 0) + 1);
+  }
+  const dup = [...byWeek.entries()].filter(([, n]) => n > 1);
+  if (dup.length) throw new Error(`כפילות שורות-תחזית לאותו שבוע אחרי מחיקה-באמצע-ריצה: ${JSON.stringify(dup)}`);
+
+  // forecast-preflight אחרי שהתפוקה נמחקה — לא יכול "לשקר" שהכל תקין
+  const after = await api('GET', `plans/${plan.id}/forecast-preflight`);
+  if (!after.missing.some((m) => m.includes('תפוקה רבעונית'))) {
+    throw new Error(`אחרי מחיקת התפוקה הרבעונית, preflight היה אמור לדווח עליה כחסרה. התקבל: ${JSON.stringify(after.missing)}`);
+  }
+  forecastSyncOrphanRanges.push({ from: '2036-02-01', to: '2036-03-31' });
+  return `${rows.length} שורות-תחזית, בלי כפילות שבוע; preflight מדווח נכון על התפוקה החסרה`;
+}, 120000);
 
 await test('אבטחה: DELETE על "תפוקה רבעונית" — owner מצליח (200), manager/worker נדחים (403)', async () => {
   const crop = await create('גידולים', { 'שם גידול': `${MARK}-perm-crop` });
@@ -1968,6 +2117,24 @@ await test('forecast-preflight: תוכנית שלא קיימת מחזירה ok=f
   if (!Array.isArray(result.missing) || !result.missing.length) throw new Error('צפויה הודעת-חוסר לתוכנית לא-קיימת');
 }, READ_WARN_MS);
 
+// תוכנית בלי אף גידול מקושר (שדה "גידולים" ריק/לא-קיים) — מקרה-קצה
+// מפורש ממשימת-הציד: preflight חייב לעצור ב"אין גידול מקושר" בלי
+// לנסות לבדוק מחיר/תפוקה (שאין להם מה לבדוק מולו), ובלי לקרוס.
+await test('forecast-preflight: תוכנית בלי גידול מקושר כלל → "אין גידול מקושר", בלי קריסה', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const plan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'שנת תוכנית': 2033,
+    'תחילת קטיף מקורית': '2033-02-01', 'סוף קטיף מקורי': '2033-02-20',
+  });
+  const result = await api('GET', `plans/${plan.id}/forecast-preflight`);
+  if (!result.missing.some((m) => m.includes('אין גידול מקושר'))) {
+    throw new Error(`צפויה הודעת "אין גידול מקושר" ברשימת החוסרים. התקבל: ${JSON.stringify(result.missing)}`);
+  }
+  if (result.checkedCropNames.length) throw new Error('בלי גידול מקושר, checkedCropNames אמור להיות ריק');
+  if (result.ok) throw new Error('"ok" לא יכול להיות true כשחסר גידול מקושר');
+  return `missing: ${JSON.stringify(result.missing)}`;
+}, READ_WARN_MS);
+
 // ============================================================
 // חלק C3 — yearFromWeekValue (client/src/utils/weekYear.js, משימה T):
 // בדיקות-יחידה טהורות (בלי Airtable) לסינון-השנים בטאב "תחזית שתילה" —
@@ -1983,6 +2150,153 @@ await test('yearFromWeekValue: קוד-שבוע / תאריך ISO / ריק-וחס�
   if (yearFromWeekValue('לא-תאריך-בכלל') !== null) throw new Error('טקסט חסר-משמעות אמור להחזיר null, לא לזרוק');
   return 'כל המקרים פוענחו/נדחו כצפוי';
 });
+
+// ============================================================
+// חלק C4 (לילה 3, 2026-10-07) — dateFromWeekValue + invoiceDate
+// ------------------------------------------------------------
+// שתי מלכודות אמיתיות שנמצאו בכרטיס-המשווק:
+//  1. `new Date(null)` הוא 1.1.1970 — Date תקין לכל דבר ש-isNaN לא תופס.
+//     שדה-תאריך ריק הופך לנקודת-נתון פנטום ב-1970 שמותחת כל גרף.
+//  2. טבלת "חשבוניות" **אין בה שדה "תאריך"** בכלל. הקוד קרא אותו, קיבל
+//     undefined, וכל חשבונית נזרקה — גרף "פדיון לפי חודש" הציג "אין
+//     נתוני פדיון בתקופה זו" לכל משווק ובכל שלוש התקופות.
+// ============================================================
+await test('dateFromWeekValue: חצות מקומית, 1970 לא נוצר מ-null, תאריך לא-חוקי נדחה', () => {
+  const iso = dateFromWeekValue('2026-08-28');
+  if (!iso || iso.getFullYear() !== 2026 || iso.getMonth() !== 7 || iso.getDate() !== 28) throw new Error(`ISO שגוי: ${iso}`);
+  if (iso.getHours() !== 0) throw new Error('צפויה חצות מקומית (לא UTC) — אחרת החודש זז באזור-זמן שלילי');
+  const week = dateFromWeekValue('20260822-20260827');
+  if (!week || week.getFullYear() !== 2026 || week.getMonth() !== 7 || week.getDate() !== 22) throw new Error(`קוד-שבוע שגוי: ${week}`);
+  const stamp = dateFromWeekValue('2026-09-09T19:17:58.630Z');
+  if (!stamp || stamp.getMonth() !== 8 || stamp.getDate() !== 9) throw new Error(`חותמת-זמן ISO שגויה: ${stamp}`);
+  for (const bad of [null, undefined, '', '  ', 'לא תאריך', '2026-02-31', '05/12/2026']) {
+    const d = dateFromWeekValue(bad);
+    if (d !== null) throw new Error(`${JSON.stringify(bad)} אמור להחזיר null, התקבל ${d?.toISOString?.() || d}`);
+  }
+  return 'ISO/קוד-שבוע/חותמת → חצות מקומית; null/ריק/לא-חוקי/dd-mm → null (בלי 1970)';
+});
+
+await test('invoiceDate: סדר העדיפות "תאריך-AI" > "קוד שבוע" > תאריכי העלאה, ו-null כשאין כלום', () => {
+  const full = invoiceDate({ 'תאריך-AI': '2026-07-31', 'קוד שבוע': '20260926-20261001', 'תאריך העלאת קובץ': '2026-10-06T12:18:04.749Z' });
+  if (full.getMonth() !== 6 || full.getDate() !== 31) throw new Error(`"תאריך-AI" חייב לגבור (זו חשבונית 61 האמיתית): ${full}`);
+  const byWeek = invoiceDate({ 'קוד שבוע': '20260822-20260827', 'תאריך העלאת קובץ': '2026-09-09T19:17:58.630Z' });
+  if (byWeek.getMonth() !== 7 || byWeek.getDate() !== 22) throw new Error(`"קוד שבוע" חייב לגבור על תאריך-ההעלאה: ${byWeek}`);
+  const byUpload = invoiceDate({ 'תאריך העלאת קובץ': '2026-10-06T06:18:53.712Z' });
+  if (byUpload.getMonth() !== 9 || byUpload.getDate() !== 6) throw new Error(`נפילה-לאחור לתאריך-העלאה נכשלה: ${byUpload}`);
+  if (invoiceDate({}) !== null) throw new Error('רשומה בלי שום תאריך אמורה להחזיר null');
+  if (invoiceDate(null) !== null) throw new Error('null אמור להחזיר null, לא לזרוק');
+  // המלכודת שהפילה את הפיצ'ר: השדה שהקוד קרא ("תאריך") פשוט לא קיים
+  if (invoiceDate({ 'תאריך': '2026-05-05' }) !== null) throw new Error('"תאריך" אינו שדה בטבלת "חשבוניות" — אסור שייחשב מקור-תאריך');
+  return 'תאריך-AI > קוד שבוע > העלאה; חסר → null';
+});
+
+// ============================================================
+// חלק C6 (לילה 3) — shouldResetOption (client/src/utils/selectGuard.js)
+// ------------------------------------------------------------
+// בורר-שנה/גידול/מבנה מבוקר שהערך הנבחר שלו נעלם מרשימת האפשרויות
+// (שורות נמחקו/סוננו, או ערך-התחלתי שחושב ממערך-נתונים אחר מזה שבונה
+// את האפשרויות) נשאר על value בלי <option> תואם — הדפדפן מעמיד
+// selectedIndex=-1 ומציג את הבורר ריק, ובחירה-מחדש של האפשרות הראשונה
+// לא מפעילה onChange (הדפדפן לא משדר change על בחירה שלא שינתה את ה-
+// value המוצג) — מבוי סתום עד רענון-דף. ר' ההסבר המלא בראש הקובץ.
+// ============================================================
+await test('shouldResetOption: מאפס רק כשיש אפשרויות וה-value הנבחר לא ביניהן', () => {
+  // עוד בטעינה (אין אפשרויות בכלל) — לא מאפסים בחירה לגיטימית מוקדם מדי
+  if (shouldResetOption('2026', [], '') !== false) throw new Error('בלי אפשרויות בכלל אסור לאפס');
+  if (shouldResetOption('2026', null, '') !== false) throw new Error('options=null אסור לקרוס/לאפס');
+  // הערך כבר ה-fallback — תמיד תקין, אין מה לאפס
+  if (shouldResetOption('', ['2026', '2027'], '') !== false) throw new Error('fallback עצמו לעולם לא מאופס');
+  // הערך קיים באפשרויות (כולל השוואת-מחרוזת/מספר, כי <option value> תמיד מחרוזת)
+  if (shouldResetOption('2026', ['2026', '2027'], '') !== false) throw new Error('ערך קיים ברשימה — אסור לאפס');
+  if (shouldResetOption(2026, ['2026', '2027'], '') !== false) throw new Error('2026 (מספר) מול "2026" (מחרוזת) — אמורים להיחשב שווים');
+  // המקרה שהתגלה בפועל: הערך הנבחר נעלם מהרשימה
+  if (shouldResetOption('2025', ['2026', '2027'], '') !== true) throw new Error('ערך שנעלם מהרשימה חייב להתאפס');
+  if (shouldResetOption('2025', ['2026', '2027']) !== true) throw new Error('fallback ברירת-מחדל ("") אמור לעבוד בלי פרמטר רביעי');
+  return 'בטעינה/ללא-אפשרויות/fallback/קיים → אין איפוס; נעלם מהרשימה → איפוס';
+});
+
+// בדיקה חיה (קריאה בלבד) שסוגרת את הבאג מקצה-לקצה: כל חשבונית אמיתית
+// שיש לה "סכום נטו" חייבת להניב תאריך שמיש דרך invoiceDate — אחרת
+// כרטיס-המשווק יציג שוב "אין נתוני פדיון בתקופה זו" בכל התקופות. לולא
+// זה, שינוי-שם-שדה ב-Airtable היה שובר את הגרף בשקט מוחלט פעם נוספת.
+await test('כרטיס משווק: לכל חשבונית אמיתית עם "סכום נטו" יש תאריך שמיש (invoiceDate) — לא "אין נתוני פדיון"', async () => {
+  const invoices = await api('GET', `${enc('חשבוניות')}?raw=1&maxRecords=1000`);
+  const withAmount = invoices.filter((i) => Number(i['סכום נטו']) > 0 && !isSprayTestRecord(i));
+  if (!withAmount.length) return 'דולג — אין חשבונית אמיתית עם "סכום נטו" בבסיס';
+  const undated = withAmount.filter((i) => invoiceDate(i) === null);
+  if (undated.length === withAmount.length) {
+    throw new Error(`אף אחת מ-${withAmount.length} החשבוניות עם סכום לא הניבה תאריך — גרף הפדיון בכרטיס המשווק מת (ר' INVOICE_DATE_FIELDS ב-utils/weekYear.js)`);
+  }
+  // בנוסף: לפחות משווק אחד חייב לקבל נקודות-גרף בפועל
+  const marketersList = await api('GET', `${enc('משווקים')}?maxRecords=100`);
+  const invById = new Map(invoices.map((i) => [i.id, i]));
+  let best = 0;
+  for (const mk of marketersList) {
+    const ids = (Array.isArray(mk['חשבוניות']) ? mk['חשבוניות'] : []).map((l) => (l && typeof l === 'object' ? l.id : l));
+    const points = ids.filter((id) => {
+      const inv = invById.get(id);
+      return inv && Number(inv['סכום נטו']) > 0 && invoiceDate(inv) !== null;
+    }).length;
+    if (points > best) best = points;
+  }
+  if (!best) throw new Error('לשום משווק לא נוצרה אף נקודת-גרף — כרטיס המשווק יציג "אין נתוני פדיון" לכולם');
+  return `${withAmount.length - undated.length}/${withAmount.length} חשבוניות עם תאריך שמיש; למשווק המוביל ${best} נקודות-גרף`;
+}, READ_WARN_MS);
+
+// ============================================================
+// חלק C5 (לילה 3) — preflight: מחיר לפי טווח-תאריכים בלי "שנה"
+// ------------------------------------------------------------
+// עד לילה 3 preflight בדק מחיר **רק** לפי Number(שנה)===שנת-תוכנית.
+// מחיר שמוגדר בטווח-תאריכים בלבד ("מתאריך"/"עד תאריך" בלי "שנה" —
+// צירוף חוקי לגמרי בטבלה, והאוטומציה כן יודעת לבחור אותו) דווח בשקר
+// כ"חסר מחיר משוער". זה דיווח-חוסר כזב, והוא גרוע במיוחד במודול שכל
+// תפקידו להסביר למה התחזית ריקה. הבדיקה יוצרת תוכנית+גידול+תפוקה-QA
+// ומחיר-QA **בלי "שנה"** אך בטווח שמכסה את הקטיף, ודורשת שלא יופיע
+// חוסר-מחיר. אין Make בטבלאות האלה — רק אוטומציית Airtable פשוטה.
+// ============================================================
+await test('forecast-preflight: מחיר בטווח-תאריכים בלי "שנה" אינו מדווח כ"חסר מחיר משוער"', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const crop = await create('גידולים', { 'שם גידול': `${MARK}-range-crop` });
+  await create('תפוקה רבעונית', { 'גידול': [crop.id], 'רבעון': '1', 'קג לדונם לשבוע': 11 });
+  const plan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'גידולים': [crop.id], 'שנת תוכנית': 2032,
+    'תחילת קטיף מקורית': '2032-02-01', 'סוף קטיף מקורי': '2032-02-20',
+  });
+
+  // (1) בלי שום מחיר — חייב להתלונן על מחיר
+  const before = await api('GET', `plans/${plan.id}/forecast-preflight`);
+  if (!before.missing.some((m) => m.includes('מחיר'))) {
+    throw new Error(`בלי שום מחיר, preflight היה אמור לדווח חוסר-מחיר. התקבל: ${JSON.stringify(before.missing)}`);
+  }
+
+  // (2) מחיר בטווח-תאריכים שמכסה את הקטיף, **בלי "שנה"** — אסור להתלונן
+  await create('מחירי גידול משוערים', {
+    'גידול': [crop.id], 'מחיר משוער לקג': 5,
+    'מתאריך': '2032-01-15', 'עד תאריך': '2032-03-15',
+  });
+  const after = await api('GET', `plans/${plan.id}/forecast-preflight`);
+  const stillMissingPrice = after.missing.filter((m) => m.includes('מחיר'));
+  if (stillMissingPrice.length) {
+    throw new Error(`מחיר בטווח-תאריכים (בלי "שנה") עדיין מדווח כחסר — דיווח-כזב: ${JSON.stringify(stillMissingPrice)}`);
+  }
+
+  // (3) טווח שאינו חופף לתקופת הקטיף — כן חייב להתלונן (שלא "ריככנו" יותר מדי)
+  const away = await create('גידולים', { 'שם גידול': `${MARK}-away-crop` });
+  await create('תפוקה רבעונית', { 'גידול': [away.id], 'רבעון': '1', 'קג לדונם לשבוע': 11 });
+  await create('מחירי גידול משוערים', { 'גידול': [away.id], 'מחיר משוער לקג': 5, 'מתאריך': '2032-06-01', 'עד תאריך': '2032-07-01' });
+  const awayPlan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'גידולים': [away.id], 'שנת תוכנית': 2032,
+    'תחילת קטיף מקורית': '2032-02-01', 'סוף קטיף מקורי': '2032-02-20',
+  });
+  const awayRes = await api('GET', `plans/${awayPlan.id}/forecast-preflight`);
+  if (!awayRes.missing.some((m) => m.includes('מחיר'))) {
+    throw new Error(`טווח-מחיר שלא חופף לקטיף היה אמור להיחשב חסר, אבל preflight שתק: ${JSON.stringify(awayRes.missing)}`);
+  }
+  // התוכניות האלה לא הופעלו עם "רענן תחזית" בכלל (לא patch-נו את השדה),
+  // ולכן אין להן שורות-תחזית לנקות — רק הרשומות ב-cleanup.
+  forecastSyncOrphanRanges.push({ from: '2032-01-01', to: '2032-12-31' });
+  return 'בלי מחיר → חוסר; מחיר-בטווח בלי "שנה" → אין חוסר; טווח לא-חופף → חוסר';
+}, 30000);
 
 // ⚠️ ניסיתי לכתוב כאן בדיקת-קצה-לקצה חיה (כמו ל-reverseInventoryDeduction
 // למעלה) שמדמה "כמות קרטונים"/"מספר משטחים" ע"י patch ישיר, ואז קוראת
@@ -2007,10 +2321,17 @@ await test('yearFromWeekValue: קוד-שבוע / תאריך ISO / ריק-וחס�
 // (REAL_FIXTURE_PATH — בדיוק כמו הוצאות/חשבוניות/תעודות משלוח/צ'קים
 // למעלה; לעולם לא תוכן סינתטי), רצה רק מאחורי RUN_UPLOAD_TESTS=1,
 // ומוגבלת ל-dryRun בלבד: בודקת שה-dry-run עצמו מחזיר תוצאה סבירה,
-// בלי ליצור אף "ריסוסים"/"חומר ריסוס" אמיתי. הרשומה מסומנת ב-MARK
-// (תבנית QA-<13 ספרות>) כבר בשדה שנשמר איתה מהרגע הראשון, כך שגם
-// האיסוף האוטומטי (poll/sweep ב-spray-report-import.js, שמדלג על
-// isTestRecord) לא ינסה לייבא אותה בפועל ברקע.
+// בלי ליצור אף "ריסוסים"/"חומר ריסוס" אמיתי.
+//
+// סימון הרשומה כבדיקה (תוקן בלילה 3): לטבלה "דוחות ריסוסים" יש 4 שדות
+// בלבד, ושניים מהם מחושבים (מספור אוטומטי / העלאה אחרונה של הקובץ) —
+// אין בה **שום** שדה-טקסט שיכול לשאת MARK. עד לילה 3 הבדיקה קראה ל-
+// createWithFile עם extraFields ריק, ולכן isTestRecord החזיר false:
+// גם poll (scheduleSprayReportImport, כל 15ש') וגם sweep
+// (startSprayImportSweep, כל 10 דק') ראו את רשומת-ה-QA כרשומה אמיתית,
+// ואם Make היה מנתח את ה-PDF לשורות — היו נוצרים טיפולי "ריסוסים"
+// אמיתיים ביומן של תמר מתוך צילום חשבונית. מאז: ה-MARK נישא בשם-הקובץ
+// של הצרופה (ר' ההערה ב-createWithFile על למה דווקא מקף ולא קו-תחתי).
 
 await test('פענוח Attachment Summary: JSON תקין / עטוף ב-fence / "[]" ריק / עטיפת {rows:[...]} / טקסט לא-JSON', () => {
   if (parseSummary(null).status !== 'pending') throw new Error('null צפוי pending');
@@ -2088,24 +2409,64 @@ await test('סמן המקור: markerOf תואם את תבנית הזיהוי ש
   if (!/^\[מדוח ריסוסים #42\]$/.test(marker)) throw new Error(`תבנית סמן לא צפויה: ${marker}`);
 });
 
+// בדיקה טהורה שנוספה בלילה 3 — שומרת על שתי המלכודות שהתגלו בבאג
+// "דוח ריסוסים dry-run":
+// (1) רשומת "דוחות ריסוסים" אין לה שדה-טקסט ל-MARK, ולכן הסימון היחיד
+//     האפשרי הוא שם-הקובץ של הצרופה. אם זה יישבר — poll/sweep יייבאו
+//     רשומות-בדיקה ליומן הטיפולים האמיתי של תמר.
+// (2) המפריד בין MARK לשם-הקובץ חייב להיות **לא תו-מילה**: ב-regex
+//     /\bQA-\d{10,}\b/ אין גבול-מילה בין ספרה ל-"_", ולכן קו-תחתי שובר
+//     את הזיהוי בשקט מוחלט.
+await test('זיהוי רשומת-בדיקה של "דוחות ריסוסים" לפי שם-הקובץ בצרופה (מקף מזוהה, קו-תחתי לא)', () => {
+  const mk = 'QA-1759800000000';
+  const recOf = (filename) => ({ id: 'recX', 'מספור אוטומטי': 77, 'דוח ריסוסים': [{ url: 'https://x/y.pdf', filename }] });
+  if (!isSprayTestRecord(recOf(`${mk}-qa-real-invoice.pdf`))) {
+    throw new Error('MARK במפריד-מקף בשם-הקובץ לא זוהה כרשומת בדיקה — האיסוף האוטומטי יייבא רשומות QA לייצור');
+  }
+  if (isSprayTestRecord(recOf(`${mk}_qa-real-invoice.pdf`))) {
+    throw new Error('המלכודת התהפכה: קו-תחתי כן מזוהה עכשיו — עדכן את התבנית/הבדיקה יחד');
+  }
+  if (isSprayTestRecord(recOf('qa-real-invoice.pdf'))) throw new Error('שם-קובץ בלי MARK זוהה בטעות כבדיקה');
+  if (isSprayTestRecord(recOf('דוח ריסוסים אוקטובר.pdf'))) throw new Error('דוח אמיתי זוהה בטעות כבדיקה');
+  // התבנית דורשת 10 ספרות ומעלה — MARK קצר מדי לא נתפס (שומר על הכוונה)
+  if (isSprayTestRecord(recOf('QA-123-x.pdf'))) throw new Error('"QA-123" (קצר) לא אמור להיחשב סמן בדיקה');
+  return 'מקף→בדיקה, קו-תחתי→לא, שם רגיל→לא';
+});
+
 await test('דוח ריסוסים: רשומה עם קובץ אמיתי שכבר נותח בעבר + dry-run בלבד (0 יצירות אמיתיות)', async () => {
   if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
   // "מיקום" אינו שדה אמיתי בטבלת "דוחות ריסוסים" (ר' getMeta: רק
   // מספור-אוטומטי/דוח-ריסוסים/Attachment Summary/העלאה-אחרונה) — זה שם
   // עמודה בתוך קובץ-הריסוסים שמיובא, לא שדה-Airtable על הרשומה עצמה.
-  // ה-MARK פה רק לזיהוי-לוגי של רשומת-הבדיקה (rec.id), לא לסינון-שדה.
-  const rec = await createWithFile('דוחות ריסוסים', 'דוח ריסוסים', {});
+  // ולכן גם ה-MARK נישא בשם-הקובץ, ולא בשדה (ר' ההערה למעלה).
+  const rec = await createWithFile('דוחות ריסוסים', 'דוח ריסוסים', {}, `${MARK}-${REAL_FIXTURE_NAME}`);
   const dry = await api('POST', `spray-reports/${rec.id}/import?dryRun=1`);
   if (dry.dryRun !== true) throw new Error('התשובה לא מסמנת dryRun:true');
   if (dry.created !== 0) throw new Error(`dry-run "יצר" ${dry.created} — אסור, dry-run לא אמור לכתוב כלום`);
   if (!['pending', 'no-file', 'empty', 'invalid', 'ready'].includes(dry.status)) throw new Error(`status לא מוכר: ${dry.status}`);
-  const made = await api('GET', `${enc('ריסוסים')}?raw=1&includeTest=1&filterByFormula=${enc(`FIND('${MARK}', {הערות})`)}`);
-  if (made.length) throw new Error(`נמצאו ${made.length} רשומות "ריסוסים" אמיתיות עם הסמן — dry-run לא אמור ליצור אף אחת`);
+
+  // הבדיקה הנכונה היא לפי **סמן המקור של הדוח הזה** ([מדוח ריסוסים #N]),
+  // לא לפי ה-MARK הגלובלי של הריצה: ל-MARK יש כבר רשומות "ריסוסים"
+  // לגיטימיות שנוצרו ע"י בדיקות קודמות באותה ריצה (ר' "טיפול/ריסוס:
+  // יצירה + בוצע + עריכה" ו"טיפול משותף: רב-מבני") והן מתנקות רק בסוף
+  // הקובץ — חיפוש לפי MARK תפס אותן ודיווח בשקר ש"ה-dry-run יצר רשומות".
+  if (dry.number == null) throw new Error('הדוח חזר בלי "מספור אוטומטי" — אין סמן מקור לבדוק מולו');
+  const srcMarker = markerOf(dry.number);
+  const made = await api('GET', `${enc('ריסוסים')}?raw=1&includeTest=1&filterByFormula=${enc(`FIND('${srcMarker}', {הערות})`)}`);
+  if (made.length) throw new Error(`נמצאו ${made.length} רשומות "ריסוסים" עם סמן המקור ${srcMarker} — dry-run לא אמור ליצור אף אחת`);
+
+  // גם חומרי ריסוס: dry-run מחזיר ב-createdMaterials את מה ש"היה נוצר" —
+  // ואסור שרשומה כזו תיווצר באמת (materialResolver מדלג על createRecord)
+  for (const name of dry.createdMaterials || []) {
+    const hits = await api('GET', `${enc('חומרי ריסוס')}?raw=1&includeTest=1&filterByFormula=${enc(`{שם חומר}='${String(name).replace(/'/g, "\\'")}'`)}`);
+    if (hits.length) throw new Error(`dry-run יצר באמת חומר ריסוס "${name}" — אסור`);
+  }
+
   const hist = await api('GET', 'spray-reports/history?includeTest=1');
   if (!hist.some((h) => h.id === rec.id)) throw new Error('הדוח לא מופיע בהיסטוריה (includeTest=1)');
   const histPlain = await api('GET', 'spray-reports/history');
-  if (histPlain.some((h) => h.id === rec.id)) throw new Error('רשומת בדיקה דלפה להיסטוריה הרגילה');
-  return `dry-run: status=${dry.status}, created=0 (כצפוי), ${dry.rows?.length ?? 0} שורות בניתוח`;
+  if (histPlain.some((h) => h.id === rec.id)) throw new Error('רשומת בדיקה דלפה להיסטוריה הרגילה — ה-MARK בשם-הקובץ לא נתפס ע"י isTestRecord, והאיסוף האוטומטי עלול לייבא אותה לייצור');
+  return `dry-run: status=${dry.status}, created=0 (כצפוי), ${dry.rows?.length ?? 0} שורות בניתוח, מסומנת כבדיקה`;
 });
 
 await test('אבטחה: /api/spray-reports — עובד 403 בשניהם, מנהל עבודה 200 היסטוריה / 403 ייבוא', async () => {

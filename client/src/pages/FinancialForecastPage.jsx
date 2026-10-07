@@ -7,6 +7,7 @@ import {
 } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import PageHeader from '../components/PageHeader.jsx';
+import { useOptionGuard } from '../utils/selectGuard.js';
 
 // ============================================================
 // הכנסות ותחזית — לפי סיכום שבועי בלבד
@@ -105,6 +106,10 @@ export default function FinancialForecastPage() {
   // ---- שנים זמינות ----
   const years = useMemo(() => [...new Set(rows.map((r) => r.year))].sort(), [rows]);
   const [year, setYear] = useState('');
+  // ר' utils/selectGuard.js: בלי זה, שנה שנבחרה ואז נעלמה מהנתונים
+  // (רענון/מחיקה) משאירה בורר מבוקר בלי <option> תואם — מוצג ריק,
+  // הטבלה ריקה, ובחירה-מחדש לא מפעילה onChange. מבוי סתום עד רענון-דף.
+  useOptionGuard(year, years, setYear);
   const selectedYear = year || (years.length ? years[years.length - 1] : String(new Date().getFullYear()));
 
   const yearRows = rows.filter((r) => r.year === selectedYear);
