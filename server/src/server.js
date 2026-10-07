@@ -4,7 +4,7 @@
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
-import { getMeta, fetchRecords, createRecord, createRecords, updateRecord, deleteRecord, uploadAttachmentToRecord } from './airtable.js';
+import { getMeta, fetchRecords, createRecord, createRecords, updateRecord, deleteRecord, uploadAttachmentToRecord, getBase } from './airtable.js';
 import { attachLinkedNames, invalidateIndex } from './resolve-links.js';
 import {
   signToken, authenticate, authorizeRead, authorizeWrite,
@@ -12,7 +12,7 @@ import {
 } from './auth.js';
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
-import { analyzeExpenseInventory, approvePendingDeduction, readState, createManualExpense, validateManualExpenseInput } from './inventory-deduction.js';
+import { analyzeExpenseInventory, approvePendingDeduction, readState, createManualExpense, runManualExpenseInventoryDeduction, validateManualExpenseInput } from './inventory-deduction.js';
 import { analyzeLogisticsInventory } from './logistics-deduction.js';
 import { cascadeDocumentDelete, summarizeCascade } from './document-cascade.js';
 import { fixFilenameEncoding } from './filename-utils.js';
@@ -437,29 +437,37 @@ app.post('/api/weekly/sync', authenticate, requireOwner, async (req, res) => {
 
 // ============================================================
 // מסמך הוצאה ידני (תוספת 2026-10-06, סעיף E; עודכן סעיף J — אפשרות
-// לצרף קובץ באותו חלון, וולידציית-שרת מלאה) — owner בלבד.
-// אותם שדות -AI שהניתוח האוטומטי כותב אליהם, הורדת מלאי מיידית.
+// לצרף קובץ באותו חלון, וולידציית-שרת מלאה; עודכן סעיף R, 2026-10-07 —
+// ספק חייב להיות רשומה קיימת בטבלת "ספקים" (לא טקסט חופשי): הלקוח
+// שולח supplierId, השרת קורא את הרשומה ל-"שם ספק" וכותב גם קישור
+// אמיתי (שדה 'ספקים') וגם את שדה הטקסט הישן 'ספק-AI' (לתאימות-לאחור
+// עם כל מי שעדיין קורא אותו). כמו כן הורדת-המלאי הפכה fire-and-forget
+// (ר' runManualExpenseInventoryDeduction) — לפני התיקון, ה-fetch של כל
+// פריטי המלאי + updateRecord סדרתי לכל שורה רצו בתוך הבקשה עצמה וחסמו
+// את התגובה ללקוח; עכשיו הרשומה נוצרת ומוחזרת מיד, וההורדה רצה ברקע
+// בדיוק כמו autoAnalyzeExpenseInventory ב-/api/upload-document) — owner בלבד.
+// אותם שדות -AI שהניתוח האוטומטי כותב אליהם.
 //
 // קובץ (אופציונלי): אם מצורף (multipart/form-data, 'file') — נקודת
 // הקצה הקיימת הורחבה (upload.single('file'), במקום נתיב-העלאה נפרד),
 // כדי שהטופס יישאר פעולה אחת אטומית מבחינת המשתמש. אחרי שהרשומה
-// נוצרה (כולל הורדת המלאי כצעד-לוואי) קוראים ל-uploadAttachmentToRecord
-// בדיוק כמו ב-/api/upload-document. בניגוד לשם — כאן *אין* מחיקה
-// של הרשומה אם העלאת הקובץ נכשלת: ב-upload-document הרשומה ריקה-לגמרי
-// לפני ההעלאה, כך שמחיקה "מנקה" בלי תופעות לוואי; כאן המלאי כבר ירד
-// כחלק מהיצירה — מחיקת הרשומה הייתה משאירה הורדת-מלאי בלי רשומה
-// שמצביעה עליה. במקום זאת מחזירים 207 עם fieldError כדי שהלקוח יודיע
-// למשתמש שההוצאה נשמרה אך הקובץ לא עלה, בלי לאבד את ההורדה שבוצעה.
+// נוצרה קוראים ל-uploadAttachmentToRecord בדיוק כמו ב-/api/upload-document.
+// בניגוד לשם — כאן *אין* מחיקה של הרשומה אם העלאת הקובץ נכשלת:
+// ב-upload-document הרשומה ריקה-לגמרי לפני ההעלאה, כך שמחיקה "מנקה"
+// בלי תופעות לוואי; כאן ייתכן שהמלאי כבר התחיל לרדת ברקע — מחיקת
+// הרשומה הייתה משאירה הורדת-מלאי בלי רשומה שמצביעה עליה. במקום זאת
+// מחזירים 207 עם fieldError כדי שהלקוח יודיע למשתמש שההוצאה נשמרה אך
+// הקובץ לא עלה, בלי לאבד את ההורדה שבוצעה/תתבצע.
 // ============================================================
 app.post('/api/expenses/manual', authenticate, requireOwner, upload.single('file'), async (req, res) => {
   try {
-    let { supplier, date, total, category, notes, lines } = req.body || {};
+    let { supplierId, date, total, category, notes, lines } = req.body || {};
     if (typeof lines === 'string') {
       try { lines = JSON.parse(lines); } catch { return res.status(400).json({ error: 'פורמט שורות הפריטים אינו תקין' }); }
     }
     // ולידציה עצמאית בשרת — לא מסתמכים על הלקוח (ר' validateManualExpenseInput)
     try {
-      validateManualExpenseInput({ supplier, date, total, category, lines });
+      validateManualExpenseInput({ supplierId, date, total, category, lines });
     } catch (ve) {
       if (ve.statusCode === 400) return res.status(400).json({ error: ve.message });
       throw ve;
@@ -474,7 +482,30 @@ app.post('/api/expenses/manual', authenticate, requireOwner, upload.single('file
       }
     }
 
-    const created = await createManualExpense({ supplier, date, total, category, notes, lines });
+    // ספק חייב להיות קיים ברשימת "ספקים" — לא טקסט חופשי (סעיף R)
+    let supplierRecord;
+    try {
+      supplierRecord = await getBase()(SUPPLIERS_TABLE).find(supplierId);
+    } catch (e) {
+      return res.status(400).json({ error: 'ספק לא נמצא. יש לבחור ספק קיים מרשימת הספקים.' });
+    }
+    const supplierName = supplierRecord.fields['שם ספק'] || '';
+
+    const created = await createManualExpense({ supplierId, supplierName, date, total, category, notes, lines });
+    const expenseNum = created['מספר הוצאה'];
+    // ניתוח/הורדת מלאי — fire-and-forget, בדיוק כמו autoAnalyzeExpenseInventory
+    // ב-/api/upload-document: לא חוסם את התגובה למשתמש (ר' הערת הכותרת, סעיף R)
+    const runDeduction = () => runManualExpenseInventoryDeduction(created.id, {
+      supplier: supplierName, date, total, freeNotes: notes || '', lines, expenseNum,
+    })
+      .then((state) => {
+        invalidateReads('הוצאות');
+        invalidateReads('מלאי בסיסי');
+        // לוג מקביל ל-autoAnalyzeExpenseInventory — בלעדיו אין שום עקבות
+        // בלוג להורדה שרצה ברקע (נמצא בפועל בזמן אבחון בדיקה שנכשלה)
+        console.log(`[inventory-ai] הוצאה ידנית ${created.id}: ${state?.status}, ${(state?.results || []).length} שורות`);
+      })
+      .catch((e) => console.error(`[expenses/manual] הורדת מלאי להוצאה ${created.id} נכשלה: ${e.message}`));
 
     if (req.file) {
       try {
@@ -485,14 +516,15 @@ app.post('/api/expenses/manual', authenticate, requireOwner, upload.single('file
         });
       } catch (uploadErr) {
         invalidateReads('הוצאות');
-        invalidateReads('מלאי בסיסי');
-        return res.status(207).json({ ...created, fileError: `ההוצאה נשמרה אך העלאת הקובץ נכשלה: ${uploadErr.message}` });
+        res.status(207).json({ ...created, fileError: `ההוצאה נשמרה אך העלאת הקובץ נכשלה: ${uploadErr.message}` });
+        runDeduction();
+        return;
       }
     }
 
     invalidateReads('הוצאות');
-    invalidateReads('מלאי בסיסי');
     res.status(201).json(created);
+    runDeduction();
   } catch (e) {
     if (e.statusCode === 400) return res.status(400).json({ error: e.message });
     res.status(500).json({ error: e.message });

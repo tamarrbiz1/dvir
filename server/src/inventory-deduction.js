@@ -277,15 +277,17 @@ export class ValidationError extends Error {
 }
 
 /**
- * ולידציה עצמאית בצד השרת (תוספת 2026-10-06, הבהרת תמר) — לא מסתמכת
- * על הלקוח, כי הבקשה יכולה לבוא גם ישירות מה-API ולא רק מהטופס.
- * כל 4 שדות הראש חובה: ספק/תאריך/סכום/קטגוריה. שורת פריט שאינה
- * ריקה-לגמרי (יש בה תיאור ו/או כמות ו/או יחידה) חייבת למלא את כל 3
- * השדות — שורה חלקית = שגיאה. שורה ריקה-לגמרי מתעלמים ממנה בשקט.
+ * ולידציה עצמאית בצד השרת (תוספת 2026-10-06, הבהרת תמר; עודכן סעיף R
+ * 2026-10-07: supplierId במקום טקסט חופשי, ו"יחידה" הוסרה — לא
+ * רלוונטית להפחתת כמות מהמלאי) — לא מסתמכת על הלקוח, כי הבקשה יכולה
+ * לבוא גם ישירות מה-API ולא רק מהטופס. כל 4 שדות הראש חובה:
+ * ספק/תאריך/סכום/קטגוריה. שורת פריט שאינה ריקה-לגמרי (יש בה תיאור
+ * ו/או כמות) חייבת למלא את שני השדות — שורה חלקית = שגיאה. שורה
+ * ריקה-לגמרי מתעלמים ממנה בשקט.
  */
-export function validateManualExpenseInput({ supplier, date, total, category, lines }) {
+export function validateManualExpenseInput({ supplierId, date, total, category, lines }) {
   const missing = [];
-  if (!supplier || !String(supplier).trim()) missing.push('ספק');
+  if (!supplierId || !String(supplierId).trim()) missing.push('ספק');
   if (!date || !String(date).trim()) missing.push('תאריך');
   if (total == null || String(total).trim() === '' || Number.isNaN(Number(total))) missing.push('סכום');
   if (!category || !String(category).trim()) missing.push('קטגוריה');
@@ -294,25 +296,29 @@ export function validateManualExpenseInput({ supplier, date, total, category, li
   (lines || []).forEach((l, i) => {
     const desc = String(l?.description || '').trim();
     const hasQty = l?.quantity !== null && l?.quantity !== undefined && String(l.quantity).trim() !== '';
-    const unit = String(l?.unit || '').trim();
-    if (!desc && !hasQty && !unit) return; // שורה ריקה-לגמרי — מתעלמים, לא שולחים שגיאה
+    if (!desc && !hasQty) return; // שורה ריקה-לגמרי — מתעלמים, לא שולחים שגיאה
     const lineMissing = [];
     if (!desc) lineMissing.push('מה נקנה');
     if (!hasQty || Number.isNaN(Number(l.quantity))) lineMissing.push('כמות');
-    if (!unit) lineMissing.push('יחידה');
     if (lineMissing.length) throw new ValidationError(`שורת פריט ${i + 1}: חסר/ה ${lineMissing.join(', ')}`);
   });
 }
 
 /**
- * יוצר רשומת הוצאה ידנית (ידני?=true) עם שורות מלאי, וכותבת ישירות
- * לאותם שדות -AI שהניתוח האוטומטי כותב אליהם (השם היסטורי, לא משנים
- * אותו). ההורדה מתבצעת מיד עם היצירה. owner בלבד (נאכף ב-route).
+ * יוצר רשומת הוצאה ידנית (ידני?=true) — כתיבה ישירה לאותם שדות -AI
+ * שהניתוח האוטומטי כותב אליהם (השם היסטורי, לא משנים אותו), כולל קישור
+ * אמיתי לרשומת הספק (שדה 'ספקים') ושם הספק לתאימות-לאחור ('ספק-AI').
+ * **מהיר בכוונה** (תיקון-ביצועים, סעיף R 2026-10-07): רק קריאה אחת
+ * ל-Airtable (create) — הורדת המלאי בפועל רצה בנפרד וברקע, ר'
+ * runManualExpenseInventoryDeduction למטה, כדי שהתגובה ללקוח לא תחכה
+ * ל-fetch של כל פריטי המלאי + updateRecord סדרתי לכל שורה. owner
+ * בלבד (נאכף ב-route).
  */
-export async function createManualExpense({ supplier, date, total, category, notes: freeNotes, lines }) {
-  validateManualExpenseInput({ supplier, date, total, category, lines });
+export async function createManualExpense({ supplierId, supplierName, date, total, category, notes: freeNotes, lines }) {
+  validateManualExpenseInput({ supplierId, date, total, category, lines });
   const fields = { 'ידני?': true };
-  if (supplier) fields['ספק-AI'] = supplier;
+  if (supplierId) fields['ספקים'] = [supplierId];
+  if (supplierName) fields['ספק-AI'] = supplierName;
   if (date) fields['תאריך חשבונית-AI'] = date;
   if (total != null) fields['סכום כולל-AI'] = String(total);
   if (category) fields['קטגוריית חשבונית-AI'] = category;
@@ -320,17 +326,26 @@ export async function createManualExpense({ supplier, date, total, category, not
 
   const base = getBase();
   const created = await base(EXPENSES_TABLE).create(fields);
-  const expenseId = created.id;
-  const expenseNum = created.fields['מספר הוצאה'];
+  return { id: created.id, ...created.fields };
+}
 
+/**
+ * מבצע את הורדת-המלאי בפועל לשורות של הוצאה ידנית שכבר נוצרה — רץ
+ * ברקע, **אחרי** שהרשומה כבר נוצרה והתגובה כבר נשלחה ללקוח (ר' route
+ * ב-server.js: נקרא fire-and-forget, בדיוק כמו autoAnalyzeExpenseInventory
+ * להוצאה שהועלתה עם AI). כשל כאן אף פעם לא זורק — נרשם ללוג בלבד,
+ * בדיוק כמו autoAnalyzeExpenseInventory.
+ */
+export async function runManualExpenseInventoryDeduction(expenseId, { supplier, date, total, freeNotes, lines, expenseNum }) {
+  const startNotes = freeNotes || '';
   const cleanLines = (lines || [])
-    .map((l) => ({ description: String(l.description || '').trim(), quantity: l.quantity != null ? Number(l.quantity) : null, unit: l.unit ? String(l.unit).trim() : null, unitPrice: null, lineTotal: null, confidence: 1 }))
+    .map((l) => ({ description: String(l.description || '').trim(), quantity: l.quantity != null ? Number(l.quantity) : null, unitPrice: null, lineTotal: null, confidence: 1 }))
     .filter((l) => l.description);
 
   if (!cleanLines.length) {
     const state = { status: 'done', analyzedAt: new Date().toISOString(), supplier, date, total, results: [], note: 'מסמך ידני בלי שורות מלאי' };
-    await saveState(expenseId, fields['הערות'] || '', state);
-    return { id: expenseId, ...created.fields, inventoryState: state };
+    await saveState(expenseId, startNotes, state);
+    return state;
   }
 
   let inventoryItems;
@@ -338,16 +353,16 @@ export async function createManualExpense({ supplier, date, total, category, not
     inventoryItems = await fetchRecords(INVENTORY_TABLE, {});
   } catch (e) {
     const state = { status: 'failed', analyzedAt: new Date().toISOString(), supplier, date, total, error: `קריאת המלאי נכשלה: ${e.message}`, results: [] };
-    await saveState(expenseId, fields['הערות'] || '', state);
-    return { id: expenseId, ...created.fields, inventoryState: state };
+    await saveState(expenseId, startNotes, state);
+    return state;
   }
 
   const matched = matchLinesToInventory(cleanLines, inventoryItems);
   const { status, results, notes: finalNotes } = await deductMatchedLines(
-    expenseId, fields['הערות'] || '', matched,
+    expenseId, startNotes, matched,
     { supplier, date, total, expenseNum, supplierLabel: supplier || '', dateLabel: date || '' }
   );
-  return { id: expenseId, ...created.fields, inventoryState: { status, analyzedAt: new Date().toISOString(), supplier, date, total, results, notes: finalNotes } };
+  return { status, analyzedAt: new Date().toISOString(), supplier, date, total, results, notes: finalNotes };
 }
 
 /** אישור הורדה ידני לשורה שסומנה "דורש אישור" (lineIndex לפי מיקום ב-results) */
