@@ -1315,9 +1315,20 @@ await test('הוצאה ידנית + קובץ אמיתי: supplierId אמיתי �
   // תקלה שתוקנה בקוד, רק אי-התאמה בין ההערה-מעל לאסרציה-מתחת.
   if ((state.results || []).length !== 0) throw new Error(`תיאור-QA שלא מתאים לשום קטגוריה אמיתית אמור להישמט לגמרי מ-results (מגבלה ידועה ב-matchLinesToInventory), התקבלו ${(state.results || []).length}`);
 
-  // ⚠️ אימות-ליבה של הבדיקה הזו: **שום** פריט מלאי אמיתי לא השתנה
+  // ⚠️ אימות-ליבה של הבדיקה הזו: **שום** פריט מלאי אמיתי לא השתנה.
+  // ⚠️ 7.10.2026 (לילה 3) — תוקן: הייתה משווה *כל* פריט שחוזר עם
+  // includeTest=1, כולל שאריות-QA של ריצות אחרות (מהלילה הזה, ומ-4
+  // סוכני-לילה-מקבילים שעובדים על אותו Base בו-זמנית) — פריטים כאלה
+  // נוצרים/נמחקים כל הזמן באמצע הריצה הזו, בלי שום קשר לבדיקה עצמה,
+  // וגרמו ל-false-positive ("שינתה מלאי" על קטגוריה כמו "QA-<ספרות>"
+  // או "לילה3-...-TC" שבאמת לא נגענו בה — רק נמחקה/נוצרה ע"י תהליך
+  // אחר תוך-כדי ה-20 שניות של polling כאן). משווים רק קטגוריות-אמיתיות
+  // (לא תואמות לדפוס שאריות-בדיקה כלשהו), בדיוק מה שהבדיקה באמת מתכוונת
+  // לאמת ("אסור לגעת בנתונים אמיתיים").
+  const QA_RESIDUE_RE = /^(QA-\d{8,}|לילה\d+-|__PLANT_TEST_|PERF-TEST)/;
   const invAfter = await api('GET', `${enc('מלאי בסיסי')}?raw=1&includeTest=1`);
   const changed = invAfter.filter((a) => {
+    if (QA_RESIDUE_RE.test(String(a['קטגוריה'] || ''))) return false;
     const b = invBefore.find((x) => x.id === a.id);
     return b && Number(b['מלאי נוכחי']) !== Number(a['מלאי נוכחי']);
   });
@@ -2460,11 +2471,17 @@ await test('cascade: מחיקת הוצאה-ידנית *בזמן* שהורדת-ה
   // פולינג קצר: גם אחרי שהמנעול הבטיח סדר-פעולות, עדכוני-Airtable אחרי
   // כתיבה מקבילה-כבדה לא תמיד נקראים-חזרה מיידית (ר' דפוס זהה בבדיקת ה-
   // cascade האמיתית למעלה).
+  // ⚠️ משווים רק את שתי הקטגוריות שהבדיקה הזו בעצמה הורידה מהן
+  // (קרטונים/כובעים), לא את *כל* הקטגוריות שחזרו ב-snapshot — אחרת
+  // שאריות-QA של ריצות/סוכני-לילה אחרים שנוצרות/נמחקות תוך-כדי ה-polling
+  // הזה (בלי שום קשר לבדיקה) היו נספרות בטעות כ"מלאי לא חזר במדויק".
+  const AFFECTED_CATS = new Set(['קרטונים', 'כובעים']);
   let mismatches = [];
   for (let attempt = 0; attempt < 4; attempt++) {
     const afterSnap = await snapshot();
     mismatches = [];
     for (const cat of Object.keys(beforeSnap)) {
+      if (!AFFECTED_CATS.has(cat)) continue;
       const b = beforeSnap[cat], a = afterSnap[cat] || [];
       for (const item of b) {
         const match = a.find((x) => x.id === item.id);
