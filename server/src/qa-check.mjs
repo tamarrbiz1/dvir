@@ -1602,7 +1602,11 @@ await test('סמן המקור: markerOf תואם את תבנית הזיהוי ש
 
 await test('דוח ריסוסים: רשומה עם קובץ אמיתי שכבר נותח בעבר + dry-run בלבד (0 יצירות אמיתיות)', async () => {
   if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
-  const rec = await createWithFile('דוחות ריסוסים', 'דוח ריסוסים', { 'מיקום': MARK });
+  // "מיקום" אינו שדה אמיתי בטבלת "דוחות ריסוסים" (ר' getMeta: רק
+  // מספור-אוטומטי/דוח-ריסוסים/Attachment Summary/העלאה-אחרונה) — זה שם
+  // עמודה בתוך קובץ-הריסוסים שמיובא, לא שדה-Airtable על הרשומה עצמה.
+  // ה-MARK פה רק לזיהוי-לוגי של רשומת-הבדיקה (rec.id), לא לסינון-שדה.
+  const rec = await createWithFile('דוחות ריסוסים', 'דוח ריסוסים', {});
   const dry = await api('POST', `spray-reports/${rec.id}/import?dryRun=1`);
   if (dry.dryRun !== true) throw new Error('התשובה לא מסמנת dryRun:true');
   if (dry.created !== 0) throw new Error(`dry-run "יצר" ${dry.created} — אסור, dry-run לא אמור לכתוב כלום`);
@@ -1754,13 +1758,34 @@ await test('cascade: מחיקה אמיתית של תעודה-QA שהורידה �
   const loginRes = await apiAs(null, 'POST', 'admin-login', { email: owner['מייל'], code: owner['קוד אישי'] });
   await apiAs(loginRes.token, 'POST', `logistics/${enc('תעודות משלוח')}/${rec.id}/analyze-inventory`);
 
-  const afterAnalyze = (await api('GET', `${enc('מלאי בסיסי')}?raw=1`)).find((i) => i['קטגוריה'] === 'קרטונים');
-  if (Number(afterAnalyze['מלאי נוכחי']) !== beforeStock - 15) throw new Error(`הורדה ראשונית שגויה: ${afterAnalyze['מלאי נוכחי']} (צפוי ${beforeStock - 15})`);
+  // ⚠️ "קרטונים"/"נילונים"/"כובעים" הם פריטי-מלאי משותפים שכל תעודה/
+  // חשבונית אמיתית בייצור מורידה מהם במקביל — השוואת ערך-מלאי מוחלט
+  // מול snapshot קודם (beforeStock-15) שברירית תחת עומס-כתיבה מקביל
+  // אמיתי (ראינו בפועל: ערך-אחר לגמרי בין שני ריצות, בעוד שהתגית עצמה
+  // נכתבה ובוטלה נכון בלוג השרת). בודקים לכן דרך התגית הייעודית (אותה
+  // שיטה ש-planLogisticsReversal עצמו משתמש בה), לא דרך ההפרש המוחלט.
+  // קריאת-GET בודדת מיד אחרי כתיבה הראתה בפועל חוסר-עקביות חולף (הפריט
+  // לא הופיע ברשימה בניסיון אחד) — פולינג קצר עד 3 ניסיונות, כמו דפוס
+  // הניקוי-הכפול הקיים למטה בקובץ הזה.
+  const findCardboard = async () => {
+    for (let i = 0; i < 3; i++) {
+      const found = (await api('GET', `${enc('מלאי בסיסי')}?raw=1`)).find((it) => it['קטגוריה'] === 'קרטונים');
+      if (found) return found;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    throw new Error('פריט "קרטונים" לא נמצא ב"מלאי בסיסי" אחרי 3 ניסיונות קריאה');
+  };
+
+  const afterAnalyze = await findCardboard();
+  const tagPrefix = `[מלאי-D:תעודות משלוח:${rec.id}:קרטונים]`;
+  if (!String(afterAnalyze['הערות'] || '').includes(tagPrefix)) throw new Error('לא נמצאה שורת-הורדה מתויגת עבור הקטגוריה "קרטונים" אחרי analyze-inventory');
 
   const preview = await apiAs(loginRes.token, 'GET', `documents/${enc('תעודות משלוח')}/${rec.id}/cascade-preview`);
   if (!preview.inventory.some((r) => r.category === 'קרטונים' && r.quantity === 15)) throw new Error(`preview לא הציג את ההחזרה הצפויה: ${JSON.stringify(preview.inventory)}`);
-  const afterPreview = (await api('GET', `${enc('מלאי בסיסי')}?raw=1`)).find((i) => i['קטגוריה'] === 'קרטונים');
-  if (Number(afterPreview['מלאי נוכחי']) !== beforeStock - 15) throw new Error('cascade-preview לא אמור לשנות כלום (dryRun), אבל המלאי השתנה');
+  const afterPreview = await findCardboard();
+  if (!String(afterPreview['הערות'] || '').includes(tagPrefix) || String(afterPreview['הערות'] || '').split('\n').some((l) => l.startsWith('↩') && l.includes(tagPrefix))) {
+    throw new Error('cascade-preview לא אמור לשנות/לבטל כלום (dryRun), אבל השורה המתויגת כבר בוטלה');
+  }
 
   await apiAs(loginRes.token, 'DELETE', `${enc('תעודות משלוח')}/${rec.id}`);
   // כבר נמחק בכוונה — מסירים מרשימת הניקוי הסופית כדי שלא יידווח כ"נכשל"
