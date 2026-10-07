@@ -105,10 +105,39 @@ const TEST_RECORD_PATTERN = /__PLANT_TEST_\d+__|\bQA-\d{10,}\b|\bPERF-TEST\b/;
 // "נילונים") נעלמו מהמסך הרגיל (בלי includeTest=1) אחרי סבב-בדיקות חי
 // של סעיף P/Q באותו יום. לכן כאן, ורק כאן, בודקים את שדה "קטגוריה"
 // בלבד (מה שבאמת מזהה שהרשומה-עצמה — לא ההיסטוריה שלה — נוצרה כבדיקה).
-function stripTestRecords(records, req, table) {
+// ⚠️ 7.10.2026, ממצא שני מאותה משפחה (נתפס בבדיקת R/T): שדות **מחושבים**
+// (lookup/rollup/formula) שואבים ערכים מרשומות **אחרות** — ולכן רשומה
+// אמיתית-לגמרי "נדבקת" בסמן-QA ברגע שרשומת-בדיקה נקשרת אליה בעקיפין.
+// אומת בפועל: שתי מבנים אמיתיים ("מבנה 1", "מבנה 6") נעלמו מכל המערכת
+// כי השדה "סוג גידול (from תוכניות שתילה)" שלהם הכיל שם של גידול-QA
+// שנקשר לתוכנית-שתילה-QA שמצביעה על אותו מבנה. בדיקת-בדיקה (האם זו
+// רשומת-בדיקה?) חייבת להסתמך רק על השדות של הרשומה **עצמה**, לא על
+// ערכים ששאובים מרשומות אחרות. לכן שדות מחושבים מוחרגים מההשוואה.
+const computedFieldsCache = new Map(); // table -> { at, names:Set }
+async function computedFieldNames(table) {
+  const hit = computedFieldsCache.get(table);
+  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.names;
+  try {
+    const t = (await getMeta()).find((x) => x.name === table);
+    const names = new Set((t?.fields || []).filter((f) => COMPUTED_FIELD_TYPES.has(f.type)).map((f) => f.name));
+    computedFieldsCache.set(table, { at: Date.now(), names });
+    return names;
+  } catch {
+    return new Set(); // המטא לא זמין — נופלים להתנהגות השמרנית (כל השדות)
+  }
+}
+
+function stripTestRecords(records, req, table, computed) {
   if (!Array.isArray(records) || req?.query?.includeTest === '1') return records;
   if (table === 'מלאי בסיסי') {
     return records.filter((r) => !TEST_RECORD_PATTERN.test(String(r['קטגוריה'] || '')));
+  }
+  if (computed?.size) {
+    return records.filter((r) => {
+      const own = {};
+      for (const [k, v] of Object.entries(r)) if (!computed.has(k)) own[k] = v;
+      return !TEST_RECORD_PATTERN.test(JSON.stringify(own));
+    });
   }
   return records.filter((r) => !TEST_RECORD_PATTERN.test(JSON.stringify(r)));
 }
@@ -924,7 +953,7 @@ app.get('/api/:table', authorizeRead, async (req, res) => {
     // השיוך גם אם הלקוח לא ביקש אותו, כדי שהסינון יהיה אפשרי).
     const ownField = ownFilterField(req.auth.role, table);
     if (ownField && opts.fields && !opts.fields.includes(ownField)) opts.fields.push(ownField);
-    let records = stripTestRecords(await fetchRecords(table, opts), req, table);
+    let records = stripTestRecords(await fetchRecords(table, opts), req, table, await computedFieldNames(table));
     if (ownField) {
       records = records.filter((r) => {
         const linked = r[ownField];
