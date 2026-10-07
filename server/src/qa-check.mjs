@@ -26,7 +26,7 @@ import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOL
 import { fixFilenameEncoding } from './filename-utils.js';
 import { weekCodeFromDate, WEEK_CODE_RE } from './weekly-sync.js';
 import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggestions, summarizeSuggestions, AUTO_THRESHOLD } from './supplier-linking.js';
-import { parseSummary, parseDateRange, parseDosage, markerOf } from './spray-report-import.js';
+import { parseSummary, parseDateRange, parseDosage, markerOf, isTestRecord as isSprayTestRecord } from './spray-report-import.js';
 import { cascadeDocumentDelete } from './document-cascade.js';
 import { parseInventoryLedger, resolveExpenseLinks, documentLink } from '../../client/src/utils/inventoryLedger.js';
 import { stripInventoryAiMarker, withPreservedInventoryTags } from '../../client/src/utils/inventoryAi.js';
@@ -125,10 +125,17 @@ if (!qaOwner) { console.error('אין רשומת מנהל ראשי עם קוד �
 const RUN_UPLOAD_TESTS = process.env.RUN_UPLOAD_TESTS === '1';
 const REAL_FIXTURE_PATH = new URL('../fixtures/qa-real-invoice.pdf', import.meta.url);
 const REAL_FIXTURE_NAME = 'qa-real-invoice.pdf';
-const createWithFile = async (table, field, extraFields = {}) => {
+// filename — עקיפה אופציונלית לשם-הקובץ שמועלה. נחוצה לטבלאות שאין בהן
+// שום שדה-טקסט שיכול לשאת את ה-MARK (ר' "דוחות ריסוסים": 4 שדות, 2 מהם
+// מחושבים) — שם-הקובץ נשמר בתוך אובייקט ה-attachment, ו-isTestRecord מריץ
+// את התבנית על JSON.stringify של הרשומה כולה, ולכן MARK בשם-הקובץ מסמן
+// את הרשומה כבדיקה לכל דבר. **המפריד חייב להיות מקף ולא קו-תחתי**:
+// התבנית היא /\bQA-\d{10,}\b/ ו-"_" הוא תו-מילה ב-regex, כך ש-
+// "QA-1234567890123_x.pdf" לא היה נתפס בכלל.
+const createWithFile = async (table, field, extraFields = {}, filename = REAL_FIXTURE_NAME) => {
   const fileBuf = await readFile(REAL_FIXTURE_PATH);
   const fd = new FormData();
-  fd.append('file', new Blob([fileBuf], { type: 'application/pdf' }), REAL_FIXTURE_NAME);
+  fd.append('file', new Blob([fileBuf], { type: 'application/pdf' }), filename);
   fd.append('table', table);
   fd.append('field', field);
   const j = await api('POST', 'upload-document', fd, true);
@@ -1816,10 +1823,17 @@ await test('yearFromWeekValue: קוד-שבוע / תאריך ISO / ריק-וחס�
 // (REAL_FIXTURE_PATH — בדיוק כמו הוצאות/חשבוניות/תעודות משלוח/צ'קים
 // למעלה; לעולם לא תוכן סינתטי), רצה רק מאחורי RUN_UPLOAD_TESTS=1,
 // ומוגבלת ל-dryRun בלבד: בודקת שה-dry-run עצמו מחזיר תוצאה סבירה,
-// בלי ליצור אף "ריסוסים"/"חומר ריסוס" אמיתי. הרשומה מסומנת ב-MARK
-// (תבנית QA-<13 ספרות>) כבר בשדה שנשמר איתה מהרגע הראשון, כך שגם
-// האיסוף האוטומטי (poll/sweep ב-spray-report-import.js, שמדלג על
-// isTestRecord) לא ינסה לייבא אותה בפועל ברקע.
+// בלי ליצור אף "ריסוסים"/"חומר ריסוס" אמיתי.
+//
+// סימון הרשומה כבדיקה (תוקן בלילה 3): לטבלה "דוחות ריסוסים" יש 4 שדות
+// בלבד, ושניים מהם מחושבים (מספור אוטומטי / העלאה אחרונה של הקובץ) —
+// אין בה **שום** שדה-טקסט שיכול לשאת MARK. עד לילה 3 הבדיקה קראה ל-
+// createWithFile עם extraFields ריק, ולכן isTestRecord החזיר false:
+// גם poll (scheduleSprayReportImport, כל 15ש') וגם sweep
+// (startSprayImportSweep, כל 10 דק') ראו את רשומת-ה-QA כרשומה אמיתית,
+// ואם Make היה מנתח את ה-PDF לשורות — היו נוצרים טיפולי "ריסוסים"
+// אמיתיים ביומן של תמר מתוך צילום חשבונית. מאז: ה-MARK נישא בשם-הקובץ
+// של הצרופה (ר' ההערה ב-createWithFile על למה דווקא מקף ולא קו-תחתי).
 
 await test('פענוח Attachment Summary: JSON תקין / עטוף ב-fence / "[]" ריק / עטיפת {rows:[...]} / טקסט לא-JSON', () => {
   if (parseSummary(null).status !== 'pending') throw new Error('null צפוי pending');
@@ -1897,24 +1911,64 @@ await test('סמן המקור: markerOf תואם את תבנית הזיהוי ש
   if (!/^\[מדוח ריסוסים #42\]$/.test(marker)) throw new Error(`תבנית סמן לא צפויה: ${marker}`);
 });
 
+// בדיקה טהורה שנוספה בלילה 3 — שומרת על שתי המלכודות שהתגלו בבאג
+// "דוח ריסוסים dry-run":
+// (1) רשומת "דוחות ריסוסים" אין לה שדה-טקסט ל-MARK, ולכן הסימון היחיד
+//     האפשרי הוא שם-הקובץ של הצרופה. אם זה יישבר — poll/sweep יייבאו
+//     רשומות-בדיקה ליומן הטיפולים האמיתי של תמר.
+// (2) המפריד בין MARK לשם-הקובץ חייב להיות **לא תו-מילה**: ב-regex
+//     /\bQA-\d{10,}\b/ אין גבול-מילה בין ספרה ל-"_", ולכן קו-תחתי שובר
+//     את הזיהוי בשקט מוחלט.
+await test('זיהוי רשומת-בדיקה של "דוחות ריסוסים" לפי שם-הקובץ בצרופה (מקף מזוהה, קו-תחתי לא)', () => {
+  const mk = 'QA-1759800000000';
+  const recOf = (filename) => ({ id: 'recX', 'מספור אוטומטי': 77, 'דוח ריסוסים': [{ url: 'https://x/y.pdf', filename }] });
+  if (!isSprayTestRecord(recOf(`${mk}-qa-real-invoice.pdf`))) {
+    throw new Error('MARK במפריד-מקף בשם-הקובץ לא זוהה כרשומת בדיקה — האיסוף האוטומטי יייבא רשומות QA לייצור');
+  }
+  if (isSprayTestRecord(recOf(`${mk}_qa-real-invoice.pdf`))) {
+    throw new Error('המלכודת התהפכה: קו-תחתי כן מזוהה עכשיו — עדכן את התבנית/הבדיקה יחד');
+  }
+  if (isSprayTestRecord(recOf('qa-real-invoice.pdf'))) throw new Error('שם-קובץ בלי MARK זוהה בטעות כבדיקה');
+  if (isSprayTestRecord(recOf('דוח ריסוסים אוקטובר.pdf'))) throw new Error('דוח אמיתי זוהה בטעות כבדיקה');
+  // התבנית דורשת 10 ספרות ומעלה — MARK קצר מדי לא נתפס (שומר על הכוונה)
+  if (isSprayTestRecord(recOf('QA-123-x.pdf'))) throw new Error('"QA-123" (קצר) לא אמור להיחשב סמן בדיקה');
+  return 'מקף→בדיקה, קו-תחתי→לא, שם רגיל→לא';
+});
+
 await test('דוח ריסוסים: רשומה עם קובץ אמיתי שכבר נותח בעבר + dry-run בלבד (0 יצירות אמיתיות)', async () => {
   if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
   // "מיקום" אינו שדה אמיתי בטבלת "דוחות ריסוסים" (ר' getMeta: רק
   // מספור-אוטומטי/דוח-ריסוסים/Attachment Summary/העלאה-אחרונה) — זה שם
   // עמודה בתוך קובץ-הריסוסים שמיובא, לא שדה-Airtable על הרשומה עצמה.
-  // ה-MARK פה רק לזיהוי-לוגי של רשומת-הבדיקה (rec.id), לא לסינון-שדה.
-  const rec = await createWithFile('דוחות ריסוסים', 'דוח ריסוסים', {});
+  // ולכן גם ה-MARK נישא בשם-הקובץ, ולא בשדה (ר' ההערה למעלה).
+  const rec = await createWithFile('דוחות ריסוסים', 'דוח ריסוסים', {}, `${MARK}-${REAL_FIXTURE_NAME}`);
   const dry = await api('POST', `spray-reports/${rec.id}/import?dryRun=1`);
   if (dry.dryRun !== true) throw new Error('התשובה לא מסמנת dryRun:true');
   if (dry.created !== 0) throw new Error(`dry-run "יצר" ${dry.created} — אסור, dry-run לא אמור לכתוב כלום`);
   if (!['pending', 'no-file', 'empty', 'invalid', 'ready'].includes(dry.status)) throw new Error(`status לא מוכר: ${dry.status}`);
-  const made = await api('GET', `${enc('ריסוסים')}?raw=1&includeTest=1&filterByFormula=${enc(`FIND('${MARK}', {הערות})`)}`);
-  if (made.length) throw new Error(`נמצאו ${made.length} רשומות "ריסוסים" אמיתיות עם הסמן — dry-run לא אמור ליצור אף אחת`);
+
+  // הבדיקה הנכונה היא לפי **סמן המקור של הדוח הזה** ([מדוח ריסוסים #N]),
+  // לא לפי ה-MARK הגלובלי של הריצה: ל-MARK יש כבר רשומות "ריסוסים"
+  // לגיטימיות שנוצרו ע"י בדיקות קודמות באותה ריצה (ר' "טיפול/ריסוס:
+  // יצירה + בוצע + עריכה" ו"טיפול משותף: רב-מבני") והן מתנקות רק בסוף
+  // הקובץ — חיפוש לפי MARK תפס אותן ודיווח בשקר ש"ה-dry-run יצר רשומות".
+  if (dry.number == null) throw new Error('הדוח חזר בלי "מספור אוטומטי" — אין סמן מקור לבדוק מולו');
+  const srcMarker = markerOf(dry.number);
+  const made = await api('GET', `${enc('ריסוסים')}?raw=1&includeTest=1&filterByFormula=${enc(`FIND('${srcMarker}', {הערות})`)}`);
+  if (made.length) throw new Error(`נמצאו ${made.length} רשומות "ריסוסים" עם סמן המקור ${srcMarker} — dry-run לא אמור ליצור אף אחת`);
+
+  // גם חומרי ריסוס: dry-run מחזיר ב-createdMaterials את מה ש"היה נוצר" —
+  // ואסור שרשומה כזו תיווצר באמת (materialResolver מדלג על createRecord)
+  for (const name of dry.createdMaterials || []) {
+    const hits = await api('GET', `${enc('חומרי ריסוס')}?raw=1&includeTest=1&filterByFormula=${enc(`{שם חומר}='${String(name).replace(/'/g, "\\'")}'`)}`);
+    if (hits.length) throw new Error(`dry-run יצר באמת חומר ריסוס "${name}" — אסור`);
+  }
+
   const hist = await api('GET', 'spray-reports/history?includeTest=1');
   if (!hist.some((h) => h.id === rec.id)) throw new Error('הדוח לא מופיע בהיסטוריה (includeTest=1)');
   const histPlain = await api('GET', 'spray-reports/history');
-  if (histPlain.some((h) => h.id === rec.id)) throw new Error('רשומת בדיקה דלפה להיסטוריה הרגילה');
-  return `dry-run: status=${dry.status}, created=0 (כצפוי), ${dry.rows?.length ?? 0} שורות בניתוח`;
+  if (histPlain.some((h) => h.id === rec.id)) throw new Error('רשומת בדיקה דלפה להיסטוריה הרגילה — ה-MARK בשם-הקובץ לא נתפס ע"י isTestRecord, והאיסוף האוטומטי עלול לייבא אותה לייצור');
+  return `dry-run: status=${dry.status}, created=0 (כצפוי), ${dry.rows?.length ?? 0} שורות בניתוח, מסומנת כבדיקה`;
 });
 
 await test('אבטחה: /api/spray-reports — עובד 403 בשניהם, מנהל עבודה 200 היסטוריה / 403 ייבוא', async () => {
