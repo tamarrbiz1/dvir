@@ -1639,6 +1639,45 @@ await test('אבטחה: /api/spray-reports — עובד 403 בשניהם, מנה
   return `${w ? 'עובד 403×2' : 'אין עובד לבדיקה'}, ${manager ? 'מנהל 200/403' : 'אין מנהל עבודה לבדיקה'}, בלי טוקן 401`;
 });
 
+// ============ 3ג. הוספת אפשרות לשדה-בחירה דרך typecast (סעיף G, 7.10.2026) ============
+// השרת מאפשר ?typecast=1 רק למנהל ראשי, רק ל-"מלאי בסיסי"."קטגוריה". הבדיקות
+// שלא משנות סכימה רצות תמיד; יצירת קטגוריה אמיתית (שמשאירה אפשרות חדשה
+// ברשימת הבחירה ב-Airtable — אי-אפשר למחוק אותה ב-API) רק עם RUN_SCHEMA_TESTS=1.
+await test("typecast: טבלה שאינה ברשימה הלבנה → 403", async () => {
+  try { await api("POST", `${enc("הוצאות")}?typecast=1`, { "קטגוריית חשבונית-AI": MARK }); }
+  catch (e) { if (String(e.message).startsWith("403")) return "חסום כנדרש"; throw e; }
+  throw new Error("יצירה עם typecast בטבלה לא מורשית עברה");
+});
+await test("typecast: מנהל עבודה → 403 (מנהל ראשי בלבד)", async () => {
+  const manager = allAdmins.find((a) => a["מייל"] && a["קוד אישי"] && String(a["סוג"] || "").includes("עבודה"));
+  if (!manager) return "אין מנהל עבודה לבדיקה";
+  const mLogin = await apiAs(null, "POST", "admin-login", { email: manager["מייל"], code: manager["קוד אישי"] });
+  if (!mLogin?.token) throw new Error("מנהל העבודה לא קיבל טוקן");
+  try { await apiAs(mLogin.token, "POST", `${enc("מלאי בסיסי")}?typecast=1`, { "קטגוריה": MARK }); }
+  catch (e) { if (String(e.message).startsWith("403")) return "חסום כנדרש"; throw e; }
+  throw new Error("מנהל עבודה יצר קטגוריה חדשה");
+});
+await test("typecast: ערך ריק/ארוך מדי → 403", async () => {
+  try { await api("POST", `${enc("מלאי בסיסי")}?typecast=1`, { "קטגוריה": "x".repeat(61) }); }
+  catch (e) { if (String(e.message).startsWith("403")) return "חסום כנדרש"; throw e; }
+  throw new Error("קטגוריה של 61 תווים עברה");
+});
+await test("typecast: ללא הדגל — ערך שאינו ברשימה נדחה ע\"י Airtable (422), לא נוצרת אפשרות", async () => {
+  try { await api("POST", enc("מלאי בסיסי"), { "קטגוריה": MARK + "-nocast" }); }
+  catch (e) { if (/^4\d\d/.test(String(e.message))) return "נדחה כנדרש"; throw e; }
+  throw new Error("ערך לא-ברשימה נשמר בלי typecast");
+});
+if (process.env.RUN_SCHEMA_TESTS === "1") {
+  await test("typecast: קטגוריה חדשה נוצרת בפועל (RUN_SCHEMA_TESTS)", async () => {
+    const rec = await api("POST", `${enc("מלאי בסיסי")}?typecast=1`, { "קטגוריה": MARK, "מלאי נוכחי": 1, "הערות": MARK });
+    if (rec?.id) cleanup.push({ table: "מלאי בסיסי", id: rec.id });
+    if (rec?.["קטגוריה"] !== MARK) throw new Error("הקטגוריה לא נשמרה");
+    const opts = await api("GET", `select-options/${enc("מלאי בסיסי")}/${enc("קטגוריה")}`);
+    if (!(opts.choices || []).includes(MARK)) throw new Error("האפשרות לא מופיעה ב-select-options");
+    return `נוצרה אפשרות "${MARK}" — להסרה ידנית ב-Airtable (ה-API לא מוחק אפשרויות)`;
+  });
+}
+
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
 // שרדה את הניקוי בריצה קודמת ונשארה בטבלה החיה עד שאותרה ידנית למחרת —

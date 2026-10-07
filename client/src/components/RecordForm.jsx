@@ -1,7 +1,12 @@
 // ============================================================
 // טופס רשומה גנרי — יצירה / עריכה מול Airtable (סעיף 7: CRUD למנהל ראשי)
 //
-// fields: [{ name, label, type: 'text'|'number'|'date'|'select'|'multiselect'|'textarea'|'link', required }]
+// fields: [{ name, label, type: 'text'|'number'|'date'|'select'|'multiselect'|'textarea'|'link', required, allowNew? }]
+//
+// allowNew (סעיף G, 7.10.2026) — רק ל-select: מוסיף לרשימה "➕ <label> חדש/ה…"
+// שפותח שדה טקסט. ערך שאינו ברשימה נשלח עם typecast=1 — Airtable יוצר
+// את האפשרות החדשה בשדה. השרת מאשר זאת רק לטבלאות/שדות ברשימה לבנה
+// (מלאי בסיסי.קטגוריה) ולמנהל ראשי בלבד.
 // אפשרויות ה-select/multiselect נטענות מהמטא של Airtable — לא מקודדות
 // בקוד, כדי שלא ייכתב ערך שאינו ברשימה (כתיבה כזו נדחית).
 //
@@ -34,6 +39,7 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
     return v;
   });
   const [options, setOptions] = useState({});
+  const [newMode, setNewMode] = useState({}); // { [fieldName]: true } כשנבחר "➕ חדש…"
   const [linkOptions, setLinkOptions] = useState({}); // { [fieldName]: [{id, name}] }
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -97,9 +103,11 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
       if (v === '' || v == null) { if (record?.id) body[f.name] = null; continue; }
       body[f.name] = f.type === 'number' ? Number(v) : v;
     }
+    // ערך חדש בשדה allowNew → typecast (יוצר את האפשרות ב-Airtable)
+    const typecast = fields.some((f) => f.type === 'select' && f.allowNew && body[f.name] && !(options[f.name] || []).includes(body[f.name]));
     try {
-      if (record?.id) await api.update(table, record.id, body);
-      else await api.create(table, body);
+      if (record?.id) await api.update(table, record.id, body, { typecast });
+      else await api.create(table, body, { typecast });
       await onSaved();
     } catch (err) {
       setError(`לא ניתן היה להשלים את הפעולה. הנתונים לא עודכנו. (${err.message || err})`);
@@ -138,10 +146,22 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
                     })}
                     {!(options[f.name] || []).length && <span className="muted" style={{ fontSize: 12 }}>טוען אפשרויות...</span>}
                   </div>
+                ) : f.type === 'select' && f.allowNew && newMode[f.name] ? (
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input className="input" style={{ flex: 1 }} autoFocus placeholder={`שם ${f.label} חדש/ה`} maxLength={60}
+                      value={values[f.name]} onChange={(e) => set(f.name, e.target.value)} />
+                    <button type="button" className="btn btn-sm btn-ghost" title="חזרה לרשימה"
+                      onClick={() => { setNewMode((m) => ({ ...m, [f.name]: false })); set(f.name, ''); }}>↩</button>
+                  </div>
                 ) : f.type === 'select' ? (
-                  <select className="select" style={{ width: '100%' }} value={values[f.name]} onChange={(e) => set(f.name, e.target.value)}>
+                  <select className="select" style={{ width: '100%' }} value={values[f.name]}
+                    onChange={(e) => {
+                      if (e.target.value === '__new__') { setNewMode((m) => ({ ...m, [f.name]: true })); set(f.name, ''); return; }
+                      set(f.name, e.target.value);
+                    }}>
                     <option value="">בחר...</option>
                     {(options[f.name] || (values[f.name] ? [values[f.name]] : [])).map((c) => <option key={c} value={c}>{c}</option>)}
+                    {f.allowNew && <option value="__new__">➕ {f.label} חדש/ה…</option>}
                   </select>
                 ) : f.type === 'link' ? (
                   <LinkField
