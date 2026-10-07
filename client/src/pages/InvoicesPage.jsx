@@ -23,7 +23,7 @@ import RecordForm from '../components/RecordForm.jsx';
 import InvoiceDrawer, { ObjChip, StatusBadge, CheckBadgeValue } from '../components/InvoiceDrawer.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
-import { exportCsv, fileStamp, paginate, pagerSummary, sortRows, dateValue } from '../utils/table.js';
+import { paginate, pagerSummary, sortRows, dateValue } from '../utils/table.js';
 import { periodRange, inPeriod, periodCaption } from '../utils/period.js';
 import PeriodSelect from '../components/PeriodSelect.jsx';
 import { authFetch } from '../utils/authFetch.js';
@@ -242,31 +242,6 @@ export default function InvoicesPage() {
   useEffect(() => { setPage(1); }, [search, marketerF, weekF, statusF, checkF, preset, from, to, pageSize]);
 
   const round2 = (v) => (v === null ? '' : Math.round(v * 100) / 100);
-  const doExport = () => exportCsv(`חשבוניות-${fileStamp()}`, [
-    { label: 'חשבונית', get: (i) => invLabel(i) },
-    { label: 'כותרת', get: (i) => invTitle(i) || '' },
-    { label: 'משווק', get: (i) => invMarketer(i)?.name || '' },
-    { label: 'תאריך', get: (i) => (invDate(i) ? formatDate(invDate(i)) : '') },
-    { label: 'קוד שבוע', get: (i) => invWeekCode(i) || '' },
-    { label: 'סטטוס תשלום', get: (i) => invStatus(i) || '' },
-    { label: 'ברוטו (₪)', get: (i) => round2(invGross(i)) },
-    { label: 'נטו (₪)', get: (i) => round2(invNet(i)) },
-    { label: 'משקל (ק"ג)', get: (i) => round2(invWeight(i)) },
-    { label: 'מחיר נטו לק"ג', get: (i) => round2(invNetPerKg(i)) },
-    { label: 'מחיר ברוטו לק"ג', get: (i) => round2(invGrossPerKg(i)) },
-    { label: 'קרטונים', get: (i) => invCartons(i) ?? '' },
-    { label: 'משקל ממוצע לקרטון', get: (i) => round2(invAvgCarton(i)) },
-    { label: 'ניכוי משווק (₪)', get: (i) => round2(invDeduction(i)) },
-    { label: 'אחוז ניכוי (%)', get: (i) => (invDeductionPct(i) === null ? '' : Math.round(invDeductionPct(i) * 1000) / 10) },
-    { label: 'סטיית ניכוי (₪)', get: (i) => round2(invDeductionDev(i)) },
-    { label: 'בדיקת ניכוי', get: (i) => invDeductionCheck(i) || '' },
-    { label: 'עלות הובלה (₪)', get: (i) => round2(invTransport(i)) },
-    { label: 'משטחים', get: (i) => invPallets(i) ?? '' },
-    { label: 'הובלה למשטח (₪)', get: (i) => round2(invTransportPerPallet(i)) },
-    { label: 'בדיקת הובלה', get: (i) => invTransportCheck(i) || '' },
-    { label: 'מסמך', get: (i) => invDocument(i)?.filename || '' },
-  ], sorted);
-
   const openObject = (inv, initial) => setDrawer({ inv, initial });
 
   // עריכה: כל השדות, או רק החסרים ("+ הוספת פרטים" — קודם כל השדות החסרים)
@@ -306,7 +281,6 @@ export default function InvoicesPage() {
     <div className="invoices-page">
       <PageHeader icon="🧾" title="חשבוניות">
         <button type="button" className="btn btn-ghost no-print" onClick={() => window.print()} aria-label="הדפסת הרשימה המוצגת">🖨️ הדפסה</button>
-        <button type="button" className="btn btn-ghost no-print" onClick={doExport} disabled={!sorted.length} aria-label="ייצוא הרשימה המוצגת לקובץ CSV">⬇️ ייצוא</button>
         <button type="button" className="btn btn-primary no-print" onClick={() => navigate('/upload', { state: { docType: 'חשבונית הכנסה' } })}>⬆️ העלאת חשבונית</button>
       </PageHeader>
 

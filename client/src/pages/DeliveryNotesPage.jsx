@@ -21,7 +21,7 @@ import PageHeader from '../components/PageHeader.jsx';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import DeliveryNoteDrawer, { ObjChip, CheckBadge } from '../components/DeliveryNoteDrawer.jsx';
 import { activatable } from '../utils/a11y.js';
-import { exportCsv, fileStamp, paginate, pagerSummary, sortRows, dateValue } from '../utils/table.js';
+import { paginate, pagerSummary, sortRows, dateValue } from '../utils/table.js';
 import { periodRange, inPeriod, periodCaption } from '../utils/period.js';
 import PeriodSelect from '../components/PeriodSelect.jsx';
 import {
@@ -208,20 +208,6 @@ export default function DeliveryNotesPage() {
   };
   useEffect(() => { setPage(1); }, [search, marketerF, structureF, weekF, checkF, preset, from, to, pageSize]);
 
-  const doExport = () => exportCsv(`תעודות-משלוח-${fileStamp()}`, [
-    { label: 'מספר תעודה', get: (n) => noteNumber(n) ?? '' },
-    { label: 'תאריך', get: (n) => (noteDate(n) ? formatDate(noteDate(n)) : '') },
-    { label: 'משווק', get: (n) => noteMarketer(n)?.name || '' },
-    { label: 'מבנה', get: (n) => noteStructure(n)?.name || '' },
-    { label: 'קוד שבוע', get: (n) => noteWeekCode(n) || '' },
-    { label: 'קרטונים', get: (n) => noteCartons(n) ?? '' },
-    { label: 'משקל (ק"ג)', get: (n) => noteWeight(n) ?? '' },
-    { label: 'ק"ג לקרטון', get: (n) => (noteAvg(n) === null ? '' : Math.round(noteAvg(n) * 100) / 100) },
-    { label: 'סטיית משקל (%)', get: (n) => (noteDeviation(n) === null ? '' : Math.round(noteDeviation(n) * 1000) / 10) },
-    { label: 'בדיקת משקל', get: (n) => noteCheck(n) || '' },
-    { label: 'מסמך', get: (n) => noteDocument(n)?.filename || '' },
-  ], sorted);
-
   const openObject = (note, initial) => setDrawer({ note, initial });
 
   const Th = ({ k, children, numeric }) => {
@@ -243,7 +229,6 @@ export default function DeliveryNotesPage() {
     <div className="delivery-page">
       <PageHeader icon="📄" title="תעודות משלוח">
         <button type="button" className="btn btn-ghost no-print" onClick={() => window.print()} aria-label="הדפסת הרשימה המוצגת">🖨️ הדפסה</button>
-        <button type="button" className="btn btn-ghost no-print" onClick={doExport} disabled={!sorted.length} aria-label="ייצוא הרשימה המוצגת לקובץ CSV">⬇️ ייצוא</button>
         <button type="button" className="btn btn-primary no-print" onClick={() => navigate('/upload', { state: { docType: 'תעודת משלוח' } })}>⬆️ העלאת תעודה</button>
       </PageHeader>
 

@@ -16,7 +16,7 @@ import { removeRecord } from '../components/RecordForm.jsx';
 import { toast } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
-import { exportCsv, fileStamp } from '../utils/table.js';
+
 import { periodRange, inPeriod, periodCaption } from '../utils/period.js';
 import PeriodSelect from './PeriodSelect.jsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
@@ -107,15 +107,6 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
 
   const hasFilters = search || fSupplier || fCategory || preset !== 'month' || from || to;
 
-  const doExport = () => exportCsv(`הוצאות-${fileStamp()}`, [
-    { label: 'תאריך', get: (e) => (expDate(e) ? formatDate(expDate(e)) : '') },
-    { label: 'ספק', get: supplierName },
-    { label: 'קטגוריה', get: (e) => expCategory(e) || '' },
-    { label: 'אמצעי תשלום', get: (e) => e['אמצעי תשלום'] || '' },
-    { label: 'סכום (₪)', get: (e) => expAmount(e) || '' },
-    { label: 'הערות', get: (e) => e['הערות'] || '' },
-  ], filtered);
-
   return (
     <div>
       {/* KPI (סעיף 25) */}
@@ -140,7 +131,6 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged }) {
         {hasFilters && <button className="btn btn-ghost" onClick={() => { setSearch(''); setFSupplier(''); setFCategory(''); setPreset('month'); setFrom(''); setTo(''); }}>נקה פילטרים</button>}
         <span style={{ marginInlineStart: 'auto', display: 'flex', gap: 8 }}>
           <button type="button" className="btn btn-ghost" onClick={() => window.print()}>🖨️ הדפסה</button>
-          <button type="button" className="btn btn-ghost" onClick={doExport} disabled={!filtered.length}>⬇️ ייצוא</button>
           <button type="button" className="btn btn-primary" onClick={() => navigate('/upload', { state: { docType: 'חשבונית הוצאה' } })}>⬆️ העלאת חשבונית הוצאה</button>
           {canEdit && <button type="button" className="btn btn-ghost" onClick={() => setManualOpen(true)}>➕ הוצאה ידנית</button>}
         </span>

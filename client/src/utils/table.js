@@ -1,9 +1,7 @@
-import { buildXlsx } from './xlsx.js';
-
 // ============================================================
-// עזרי טבלה ראשית (סעיף 47): מיון, עימוד, ייצוא והדפסה
+// עזרי טבלה ראשית (סעיף 47): מיון, עימוד והדפסה
 // ------------------------------------------------------------
-// הייצוא וההדפסה פועלים על "הנתונים המוצגים כרגע" — כלומר אחרי
+// ההדפסה פועלת על "הנתונים המוצגים כרגע" — כלומר אחרי
 // חיפוש, פילטרים ומיון — כפי שהאיפיון דורש.
 // ============================================================
 
@@ -46,40 +44,6 @@ export function inDateRange(v, from, to) {
   if (from && t < new Date(`${from}T00:00:00`).getTime()) return false;
   if (to && t > new Date(`${to}T23:59:59`).getTime()) return false;
   return true;
-}
-
-// ייצוא CSV (UTF-8 עם BOM כדי שאקסל יציג עברית נכון)
-// columns: [{ label, get(row) }]
-export function exportCsv(filename, columns, rows) {
-  // קובץ אקסל אמיתי (.xlsx) במקום CSV: CSV נפתח לפי הגדרות האזור של המחשב
-  // (מפריד נקודה-פסיק → כל השורה בתא אחד, ולעיתים עברית משובשת) — xlsx נפתח
-  // זהה בכל מחשב. שם הפונקציה נשמר — 8 מסכים קוראים לה.
-  // ערך מספרי נשמר כמספר (ניתן לסכום באקסל); כל השאר כטקסט כפי שמוצג במסך.
-  const val = (v) => {
-    if (v === null || v === undefined) return '';
-    if (typeof v === 'number') return v;
-    if (typeof v === 'string' && v.trim() !== '' && /^-?d+(.d+)?$/.test(v.trim())) return Number(v);
-    return String(v);
-  };
-  const header = columns.map((c) => c.label);
-  const data = rows.map((r) => columns.map((c) => val(c.get(r))));
-  const base = filename.replace(/.(csv|xlsx)$/i, '');
-  const sheetName = (base.replace(/-d{4}-d{2}-d{2}$/, '') || 'גיליון1').slice(0, 31);
-  const bytes = buildXlsx({ sheetName, header, rows: data });
-  const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${base}.xlsx`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-// חותמת תאריך לשם קובץ: 2026-08-31
-export function fileStamp(d = new Date()) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 // חלוקה לעמודים

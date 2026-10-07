@@ -5,7 +5,7 @@ import { authFetch } from '../utils/authFetch.js';
 import { sortStructures } from '../utils/structures.js';
 import { useAutoRefresh } from '../utils/live.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
-import { exportCsv, fileStamp } from '../utils/table.js';
+
 import { formatMoney } from '../utils/format.js';
 import { formatDate, formatNumber, kpiValueClass } from '../utils/format.js';
 import { pick } from '../utils/field.js';
@@ -276,19 +276,6 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
   const rangeLabel = (e) => (e.start.getTime() === e.end.getTime()
     ? formatDate(e.start) : `${formatDate(e.start)} – ${formatDate(e.end)}`);
 
-  const exportList = () => exportCsv(`ריסוסים-${fileStamp()}`, [
-    { label: 'תאריך', get: rangeLabel },
-    { label: 'מבנה', get: (e) => e.structNames.join(', ') },
-    { label: 'חומר', get: (e) => e.material },
-    { label: 'גידול', get: (e) => (e.crop === 'לא זמין' ? '' : e.crop) },
-    { label: 'זן', get: (e) => e.variety },
-    { label: 'מינון', get: (e) => e.dosage ?? '' },
-    { label: 'בסיס מינון', get: (e) => e.basis },
-    { label: 'סטטוס', get: (e) => e.status },
-    { label: 'בוצע', get: (e) => (e.done ? 'כן' : 'לא') },
-    { label: 'הערות', get: (e) => e.notes },
-  ], listRows);
-
   // ---------- KPI (סעיף 25) ----------
   const kpi = useMemo(() => {
     const today = startOfToday();
@@ -409,7 +396,6 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
     <div>
       <PageHeader icon="🧴" title="ריסוסים וטיפולים">
         {tab === 'calendar' && <button type="button" className="btn btn-ghost no-print" onClick={() => window.print()}>🖨️ הדפסה</button>}
-        {tab === 'calendar' && <button type="button" className="btn btn-ghost no-print" onClick={exportList} disabled={!listRows.length}>⬇️ ייצוא</button>}
         {tab === 'reports' && <button className="btn btn-primary no-print" onClick={() => navigate('/upload', { state: { docType: 'דוח ריסוסים' } })}>⬆️ העלאת דוח</button>}
         {tab === 'materials' && canEdit && <button className="btn btn-primary no-print" onClick={() => setMaterialForm({})}>+ חומר חדש</button>}
         {tab === 'calendar' && canEdit && <button className="btn btn-primary no-print" onClick={() => openForm(null)}>+ טיפול חדש</button>}

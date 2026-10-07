@@ -19,7 +19,7 @@ import PageHeader from '../components/PageHeader.jsx';
 import HebrewNote from '../components/HebrewNote.jsx';
 import { PERIOD_PRESETS, periodRange, inPeriod, periodDisclosure } from '../utils/period.js';
 import { toast } from '../utils/ui.js';
-import { exportCsv, fileStamp } from '../utils/table.js';
+
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
@@ -293,20 +293,6 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
     setBusyId(null);
   };
 
-  const doExport = () => exportCsv(`עבודות-עובדים-${fileStamp()}`, [
-    { label: 'תאריך', get: (r) => formatDate(r['תאריך']) },
-    { label: 'עובד', get: workerName },
-    { label: 'מבנה', get: structName },
-    { label: 'סוג עבודה', get: workType },
-    { label: 'זן', get: (r) => translateVariety(r['זן (from תמחור עבודות)']) || '' },
-    { label: 'כמות', get: (r) => r['כמות'] ?? '' },
-    { label: 'יחידת תמחור', get: (r) => unit(r) || '' },
-    { label: 'שעות', get: (r) => r['סכום שעות'] ?? '' },
-    { label: 'מחיר', get: (r) => r['מחיר (from תמחור עבודות)'] ?? '' },
-    { label: 'סכום לתשלום (₪)', get: (r) => r['סכום לתשלום'] ?? '' },
-    { label: 'הערות', get: (r) => r['הערות'] || '' },
-  ], filtered);
-
   return (
     <div>
       {/* KPI קטן על המסונן */}
@@ -334,7 +320,6 @@ function JobsTab({ app, works, workers, canEdit, onChanged, openNew, clearNew })
         {hasFilters && <button className="btn btn-ghost" onClick={() => { setSearch(''); setFWorker(''); setPreset('month'); setFrom(''); setTo(''); }}>{t('c_clearFilters')}</button>}
         <span style={{ marginInlineStart: 'auto', display: 'flex', gap: 8 }}>
           <button type="button" className="btn btn-ghost" onClick={() => window.print()}>🖨️ {t('c_print')}</button>
-          <button type="button" className="btn btn-ghost" onClick={doExport} disabled={!filtered.length}>⬇️ {t('c_export')}</button>
           {canEdit && <button className="btn btn-primary" onClick={() => setForm({})}>{t('m_newJob')}</button>}
         </span>
       </div>

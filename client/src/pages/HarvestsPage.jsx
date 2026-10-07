@@ -19,7 +19,7 @@ import { toast } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useAutoRefresh } from '../utils/live.js';
-import { exportCsv, fileStamp } from '../utils/table.js';
+
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from 'recharts';
@@ -94,23 +94,10 @@ export default function HarvestsPage() {
 
   const hasFilters = search || fStructure || fType || preset !== 'month' || from || to;
 
-  const doExport = () => exportCsv(`קטיפים-${fileStamp()}`, [
-    { label: 'תאריך', get: (h) => formatDate(h['תאריך']) },
-    { label: 'מבנה', get: (h) => structName(h) },
-    { label: 'סוג קטיף', get: (h) => h['סוג קטיף'] || '' },
-    { label: 'כמות ק"ג', get: (h) => h['כמות ק"ג'] ?? '' },
-    { label: 'קרטונים', get: (h) => h['מספר קרטונים'] ?? '' },
-    { label: 'שקיות', get: (h) => h['מספר שקיות'] ?? '' },
-    { label: 'משטחים', get: (h) => h['מספר משטחים'] ?? '' },
-    { label: 'משקל ממוצע לקרטון', get: (h) => h['משקל ממוצע לקרטון'] ?? '' },
-    { label: 'הערות', get: (h) => h['הערות'] || '' },
-  ], filtered);
-
   return (
     <div>
       <PageHeader icon="🧺" title="קטיפים">
         <button type="button" className="btn btn-ghost no-print" onClick={() => window.print()}>🖨️ הדפסה</button>
-        <button type="button" className="btn btn-ghost no-print" onClick={doExport} disabled={!filtered.length}>⬇️ ייצוא</button>
         {canEdit && <button className="btn btn-primary no-print" onClick={() => setForm({})}>+ קטיף חדש</button>}
       </PageHeader>
 

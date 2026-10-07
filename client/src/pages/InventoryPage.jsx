@@ -18,7 +18,7 @@ import { toast, confirmDialog } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useAutoRefresh } from '../utils/live.js';
-import { exportCsv, fileStamp } from '../utils/table.js';
+
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 
@@ -139,22 +139,11 @@ export default function InventoryPage() {
     return null;
   };
 
-  const doExport = () => exportCsv(`מלאי-${fileStamp()}`, [
-    { label: 'קטגוריה', get: (i) => i['קטגוריה'] || '' },
-    { label: 'מלאי נוכחי', get: (i) => i['מלאי נוכחי'] ?? '' },
-    { label: 'מלאי מינימום', get: (i) => i['מלאי מינימום'] ?? '' },
-    { label: 'סטטוס', get: (i) => itemStatus(i).label },
-    { label: 'תאריך עדכון', get: (i) => (i['תאריך עדכון'] ? formatDate(i['תאריך עדכון']) : '') },
-    { label: 'ספקים', get: (i) => displayName(i['ספקים'], '') },
-    { label: 'הערות', get: (i) => i['הערות'] || '' },
-  ], filtered);
-
   return (
     <div>
       <PageHeader icon="📦" title="מלאי">
         <input className="input no-print" aria-label="חיפוש פריט מלאי" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
         <button type="button" className="btn btn-ghost no-print" onClick={() => window.print()}>🖨️ הדפסה</button>
-        <button type="button" className="btn btn-ghost no-print" onClick={doExport} disabled={!filtered.length}>⬇️ ייצוא</button>
         {canEdit && <button className="btn btn-primary no-print" onClick={() => setForm({})}>+ פריט מלאי</button>}
       </PageHeader>
 

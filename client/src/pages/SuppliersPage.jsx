@@ -14,7 +14,7 @@ import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useAutoRefresh } from '../utils/live.js';
-import { exportCsv, fileStamp } from '../utils/table.js';
+
 import { authFetch } from '../utils/authFetch.js';
 import { toast } from '../utils/ui.js';
 import { CHECKS_TABLE, CHECK_FIELDS, checkBelongsToSupplier, checkNumber, checkPayee, sortByDue } from '../utils/checks.js';
@@ -104,16 +104,6 @@ export default function SuppliersPage() {
     return false;
   });
 
-  const doExport = () => exportCsv(`ספקים-${fileStamp()}`, [
-    { label: 'שם ספק', get: (s) => s['שם ספק'] || '' },
-    { label: 'איש קשר', get: (s) => s['איש קשר'] || '' },
-    { label: 'טלפון', get: (s) => s['טלפון'] || '' },
-    { label: 'אימייל', get: (s) => s['אימייל'] || '' },
-    { label: 'כתובת', get: (s) => s['כתובת'] || '' },
-    { label: 'תחום אספקה', get: (s) => (Array.isArray(s['תחום אספקה']) ? s['תחום אספקה'].join(' · ') : s['תחום אספקה']) || '' },
-    { label: 'תנאי תשלום', get: (s) => s['תנאי תשלום'] || '' },
-  ], filtered);
-
   // "+ הוספת פרטים": טופס עם השדות החסרים בלבד (ברירת המחדל באיפיון)
   const openAddDetails = (s) => {
     const missing = SUPPLIER_FIELDS.filter((f) => !f.required && (s[f.name] == null || s[f.name] === ''));
@@ -125,7 +115,6 @@ export default function SuppliersPage() {
     <div>
       <PageHeader icon="🚚" title="ספקים">
         <input className="input no-print" aria-label="חיפוש ספק" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
-        <button type="button" className="btn btn-ghost no-print" onClick={doExport} disabled={!filtered.length}>⬇️ ייצוא</button>
         {canEdit && <button className="btn btn-ghost no-print" onClick={() => setAutoLink(true)}>🔗 קישור אוטומטי</button>}
         {canEdit && <button className="btn btn-primary no-print" onClick={() => setForm({ record: null, fields: SUPPLIER_FIELDS, title: 'ספק חדש' })}>+ ספק חדש</button>}
       </PageHeader>
