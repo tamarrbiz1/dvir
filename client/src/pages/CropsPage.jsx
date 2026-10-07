@@ -14,6 +14,7 @@ import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { formatNumber, formatMoney, formatDate, safeValue } from '../utils/format.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import { yearFromWeekValue } from '../utils/weekYear.js';
+import { useOptionGuard } from '../utils/selectGuard.js';
 import { toast } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
@@ -349,6 +350,10 @@ function PricesTab({ prices, crops, api, canEdit, onChanged }) {
   const [form, setForm] = useState(null);
   const cropList = useMemo(() => [...new Set(prices.map((p) => displayName(p['גידול'], '') || p['גידול']).filter(Boolean))], [prices]);
   const yearList = useMemo(() => [...new Set(prices.map((p) => p['שנה']).filter(Boolean))], [prices]);
+  // ר' utils/selectGuard.js — מחיקת המחיר האחרון לשנה הנבחרת הותירה את
+  // הבורר על ערך בלי <option> תואם (מוצג ריק, הטבלה ריקה לנצח)
+  useOptionGuard(year, yearList, setYear);
+  useOptionGuard(crop, cropList, setCrop);
 
   const cropName = (p) => displayName(p['גידול'], '') || p['גידול'] || '';
   const filtered = prices.filter((p) =>
@@ -636,11 +641,18 @@ function ForecastTab({ rows: allRows, api, canEdit, onChanged }) {
   // הנוכחית אם יש לה שורות, אחרת "כל השנים" (אין שום הנחה שהנתונים
   // חייבים לכלול את השנה הנוכחית — ר' הסבר בדוח הסיום על תאריכים).
   const yearList = useMemo(() => [...new Set(rows.map((r) => yearFromWeekValue(r.start)).filter(Boolean))].sort((a, b) => b - a), [rows]);
+  // הערך ההתחלתי נגזר מ-`rows` (אחרי הסתרת שורות-ריקות) ולא מ-`allRows`
+  // — אותו מערך שבונה את yearList. באג שנמצא בלילה 3: כשלשנה הנוכחית יש
+  // רק שורות-ריקות (מוסתרות), fYear נקבע לשנה הנוכחית אך לא הופיע
+  // ב-yearList — בורר מבוקר בלי <option> תואם, ר' utils/selectGuard.js.
   const [fYear, setFYear] = useState(() => {
     const currentYear = new Date().getFullYear();
-    const initialYears = [...new Set(allRows.map((r) => yearFromWeekValue(r.start)).filter(Boolean))];
-    return initialYears.includes(currentYear) ? String(currentYear) : '';
+    return rows.some((r) => yearFromWeekValue(r.start) === currentYear) ? String(currentYear) : '';
   });
+  // רשת-ביטחון נוספת לאותו מצב אחרי רענון-נתונים (השנה הנבחרת נעלמה)
+  useOptionGuard(fYear, yearList, setFYear);
+  useOptionGuard(fCrop, cropList, setFCrop);
+  useOptionGuard(fStructure, structList, setFStructure);
 
   const filtered = rows.filter((r) => {
     if (fCrop && r.crop !== fCrop) return false;

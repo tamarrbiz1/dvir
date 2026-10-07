@@ -31,6 +31,7 @@ import { cascadeDocumentDelete } from './document-cascade.js';
 import { parseInventoryLedger, resolveExpenseLinks, documentLink } from '../../client/src/utils/inventoryLedger.js';
 import { stripInventoryAiMarker, withPreservedInventoryTags } from '../../client/src/utils/inventoryAi.js';
 import { yearFromWeekValue, dateFromWeekValue, invoiceDate } from '../../client/src/utils/weekYear.js';
+import { shouldResetOption } from '../../client/src/utils/selectGuard.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
@@ -1837,6 +1838,31 @@ await test('invoiceDate: סדר העדיפות "תאריך-AI" > "קוד שבו�
   // המלכודת שהפילה את הפיצ'ר: השדה שהקוד קרא ("תאריך") פשוט לא קיים
   if (invoiceDate({ 'תאריך': '2026-05-05' }) !== null) throw new Error('"תאריך" אינו שדה בטבלת "חשבוניות" — אסור שייחשב מקור-תאריך');
   return 'תאריך-AI > קוד שבוע > העלאה; חסר → null';
+});
+
+// ============================================================
+// חלק C6 (לילה 3) — shouldResetOption (client/src/utils/selectGuard.js)
+// ------------------------------------------------------------
+// בורר-שנה/גידול/מבנה מבוקר שהערך הנבחר שלו נעלם מרשימת האפשרויות
+// (שורות נמחקו/סוננו, או ערך-התחלתי שחושב ממערך-נתונים אחר מזה שבונה
+// את האפשרויות) נשאר על value בלי <option> תואם — הדפדפן מעמיד
+// selectedIndex=-1 ומציג את הבורר ריק, ובחירה-מחדש של האפשרות הראשונה
+// לא מפעילה onChange (הדפדפן לא משדר change על בחירה שלא שינתה את ה-
+// value המוצג) — מבוי סתום עד רענון-דף. ר' ההסבר המלא בראש הקובץ.
+// ============================================================
+await test('shouldResetOption: מאפס רק כשיש אפשרויות וה-value הנבחר לא ביניהן', () => {
+  // עוד בטעינה (אין אפשרויות בכלל) — לא מאפסים בחירה לגיטימית מוקדם מדי
+  if (shouldResetOption('2026', [], '') !== false) throw new Error('בלי אפשרויות בכלל אסור לאפס');
+  if (shouldResetOption('2026', null, '') !== false) throw new Error('options=null אסור לקרוס/לאפס');
+  // הערך כבר ה-fallback — תמיד תקין, אין מה לאפס
+  if (shouldResetOption('', ['2026', '2027'], '') !== false) throw new Error('fallback עצמו לעולם לא מאופס');
+  // הערך קיים באפשרויות (כולל השוואת-מחרוזת/מספר, כי <option value> תמיד מחרוזת)
+  if (shouldResetOption('2026', ['2026', '2027'], '') !== false) throw new Error('ערך קיים ברשימה — אסור לאפס');
+  if (shouldResetOption(2026, ['2026', '2027'], '') !== false) throw new Error('2026 (מספר) מול "2026" (מחרוזת) — אמורים להיחשב שווים');
+  // המקרה שהתגלה בפועל: הערך הנבחר נעלם מהרשימה
+  if (shouldResetOption('2025', ['2026', '2027'], '') !== true) throw new Error('ערך שנעלם מהרשימה חייב להתאפס');
+  if (shouldResetOption('2025', ['2026', '2027']) !== true) throw new Error('fallback ברירת-מחדל ("") אמור לעבוד בלי פרמטר רביעי');
+  return 'בטעינה/ללא-אפשרויות/fallback/קיים → אין איפוס; נעלם מהרשימה → איפוס';
 });
 
 // בדיקה חיה (קריאה בלבד) שסוגרת את הבאג מקצה-לקצה: כל חשבונית אמיתית
