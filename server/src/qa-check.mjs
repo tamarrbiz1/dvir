@@ -29,6 +29,7 @@ import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggest
 import { parseSummary, parseDateRange, parseDosage, markerOf } from './spray-report-import.js';
 import { cascadeDocumentDelete } from './document-cascade.js';
 import { parseInventoryLedger, resolveExpenseLinks, documentLink } from '../../client/src/utils/inventoryLedger.js';
+import { stripInventoryAiMarker, withPreservedInventoryTags } from '../../client/src/utils/inventoryAi.js';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
 const MARK = 'QA-' + Date.now();
@@ -1024,20 +1025,34 @@ await test('הורדת מלאי: ביטול הורדה במחיקת הוצאה (
 await test('הוצאה ידנית: שדה חובה חסר (API ישיר) → 400, אין רשומה נוצרת', async () => {
   let threw = null;
   try {
-    // חסרים: תאריך, סכום, קטגוריה
-    await api('POST', 'expenses/manual', { supplier: MARK });
+    // חסרים: supplierId, תאריך, סכום, קטגוריה
+    await api('POST', 'expenses/manual', {});
   } catch (e) { threw = e; }
   if (!threw) throw new Error('היה צפוי 400 — הבקשה לא נדחתה');
   if (!/^400:/.test(threw.message)) throw threw;
   if (!/חסר שדה חובה/.test(threw.message)) throw new Error(`הודעת השגיאה לא כללה "חסר שדה חובה": ${threw.message}`);
 });
 
-await test('הוצאה ידנית: שורת פריט חלקית (רק "מה נקנה", בלי כמות/יחידה) → 400, אין רשומה', async () => {
+// סעיף R (2026-10-07): "ספק" חובה הוא עכשיו supplierId (קישור לרשומת
+// ספק קיימת), לא טקסט חופשי — חסר/ריק צריך עדיין 400 נקי בעברית,
+// לא 500 ולא כשל שקט. בדיקה זו לא יוצרת שום רשומה (נדחית בוולידציה
+// לפני כל כתיבה ל-Airtable) — בטוחה להרצה תמיד, בלי RUN_UPLOAD_TESTS.
+await test('הוצאה ידנית: בלי supplierId בכלל → 400 נקי בעברית (לא 500)', async () => {
+  let threw = null;
+  try {
+    await api('POST', 'expenses/manual', { date: today, total: 10, category: MARK });
+  } catch (e) { threw = e; }
+  if (!threw) throw new Error('היה צפוי 400 — הבקשה לא נדחתה');
+  if (!/^400:/.test(threw.message)) throw new Error(`צפוי 400, התקבל: ${threw.message}`);
+  if (!/ספק/.test(threw.message)) throw new Error(`הודעת השגיאה לא כללה "ספק": ${threw.message}`);
+});
+
+await test('הוצאה ידנית: שורת פריט חלקית (רק "מה נקנה", בלי כמות) → 400, אין רשומה', async () => {
   let threw = null;
   try {
     await api('POST', 'expenses/manual', {
-      supplier: MARK, date: today, total: 10, category: MARK,
-      lines: [{ description: 'שקיות ניילון' }], // חסרה כמות ויחידה
+      supplierId: 'recNonExistent000000', date: today, total: 10, category: MARK,
+      lines: [{ description: 'שקיות ניילון' }], // חסרה כמות
     });
   } catch (e) { threw = e; }
   if (!threw) throw new Error('היה צפוי 400 — הבקשה לא נדחתה');
@@ -1045,44 +1060,133 @@ await test('הוצאה ידנית: שורת פריט חלקית (רק "מה נק
   if (!/שורת פריט/.test(threw.message)) throw new Error(`הודעת השגיאה לא כללה "שורת פריט": ${threw.message}`);
 });
 
-await test('הוצאה ידנית + קובץ אמיתי: נוצרת, הקובץ מצורף, ידני?=true, שורת פריט מורידה מלאי, מחיקה מחזירה אותו', async () => {
+// עודכן סעיף R (2026-10-07): "ספק" הוא עכשיו supplierId (קישור לרשומת
+// ספק קיימת, לא טקסט חופשי) — נוצרת כאן רשומת ספק-בדיקה אמיתית ונבדק
+// שגם הקישור ('ספקים') וגם שדה-התאימות-לאחור ('ספק-AI', שם הספק) נכתבים
+// נכון. גם שדה "יחידה" הוסר משורות-הפריט (לא נשלח כלל — בדיוק התרחיש
+// שהתבקש: "בלי unit בפלט" עדיין 201 + הורדת-מלאי תקינה).
+//
+// הורדת-המלאי הפכה fire-and-forget (סעיף R, תיקון-ביצועים) — אז בניגוד
+// לגרסה הקודמת של הבדיקה הזו, הירידה במלאי לא מובטחת מיד אחרי שה-POST
+// חוזר; ממתינים לה ב-polling (אותה תבנית בדיוק כמו הבדיקות למעלה,
+// "הורדת מלאי: החלמה מכשל-באמצע"/"ביטול הורדה במחיקת הוצאה").
+//
+// ⚠️ timing: נמדד כאן זמן התגובה **עם קובץ מצורף** (חייב תמיד קובץ
+// אמיתי בטבלה הזו — ר' הערת הכותרת של הקובץ) — לא ניתן לאמת כאן באופן
+// בטוח את יעד "<2.5 שניות בלי קובץ" מהמשימה, כי זה ידרוש ליצור רשומת
+// הוצאה **בלי שום קובץ** בטבלה החיה המנוטרת ע"י Make, בדיוק התבנית
+// שההערה למעלה (סביב השורה ~945, "לא בדקתי את createManualExpense
+// מקצה-לקצה... בלי קובץ מצורף") כבר סימנה כדורשת אישור מפורש של תמר
+// שעדיין לא ניתן. נשמר כאן רק יעד סביר יותר לנתיב-עם-קובץ (כולל זמן
+// העלאת הקובץ עצמו ל-Airtable, שהוא הרכיב האיטי מבין השניים).
+// הערה חשובה (נמצא בפועל תוך הרצת הבדיקה הזו): matchLinesToInventory
+// מזהה קטגוריה רק דרך מילון-כינויים קבוע של 4 שמות (ר' CATEGORY_ALIASES
+// ב-inventory-matching.js: נילונים/קרטונים/משטחי עץ/כובעים) — לא כל
+// "קטגוריה פנויה" שרירותית. freeInventoryCategory() (המשמש בבדיקות
+// אחרות למעלה שלא עוברות דרך ההתאמה האמיתית, רק מזריקות state מדומה)
+// כבר לא יכול להחזיר אחת מה-4 האלה בפועל (כולן תפוסות ע"י פריטים
+// אמיתיים + עשרות קטגוריות-QA שיוריות מהרצות קודמות) — פריט כזה
+// לעולם לא יתאים לשום שורה, וה-polling למטה היה נתקע ל-20 שניות על
+// "אי-התאמה", לא על עיכוב אמיתי. לכן כאן, כדי לבדוק בפועל את צינור
+// ההתאמה/הורדה האמיתי (לא רק הזרקת state), נעשה שימוש בפריט אמיתי
+// וקיים באחת מ-4 הקטגוריות המוכרות — הפחתה זעירה (2 יחידות) ומוחזרת
+// במדויק ע"י reverseInventoryDeduction במחיקת ההוצאה (אותו מנגנון
+// הפיך שנבדק ואומת בבדיקות אחרות למעלה).
+async function matchableInventoryItem() {
+  const KNOWN = new Set(['נילונים', 'קרטונים', 'משטחי עץ', 'כובעים']);
+  const items = await api('GET', `${enc('מלאי בסיסי')}?raw=1`);
+  const candidates = items.filter((i) => KNOWN.has(String(i['קטגוריה'] || '').trim()) && Number(i['מלאי נוכחי']) >= 10);
+  if (!candidates.length) throw new Error('אין פריט מלאי קיים באחת מ-4 הקטגוריות המוכרות עם מלאי מספיק לבדיקה בטוחה');
+  return candidates.sort((a, b) => Number(b['מלאי נוכחי']) - Number(a['מלאי נוכחי']))[0];
+}
+
+await test('הוצאה ידנית + קובץ אמיתי: supplierId אמיתי מקושר נכון, בלי "יחידה" בפלט, שורת פריט מורידה מלאי (ברקע), מחיקה מחזירה אותו', async () => {
   if (!RUN_UPLOAD_TESTS) return 'דולג — נמנע משריפת קרדיטי Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
-  const item = await create('מלאי בסיסי', { 'קטגוריה': await freeInventoryCategory(), 'מלאי נוכחי': 50, 'הערות': MARK });
+  const supplier = await create('ספקים', { 'שם ספק': MARK });
+  const item = await matchableInventoryItem();
   const before = Number(item['מלאי נוכחי']);
 
   const fileBuf = await readFile(REAL_FIXTURE_PATH);
   const fd = new FormData();
   fd.append('file', new Blob([fileBuf], { type: 'application/pdf' }), REAL_FIXTURE_NAME);
-  fd.append('supplier', MARK);
+  fd.append('supplierId', supplier.id);
   fd.append('date', today);
   fd.append('total', '123');
   fd.append('category', MARK);
   fd.append('lines', JSON.stringify([
-    { description: item['קטגוריה'], quantity: 3, unit: 'יחידות' },
+    { description: item['קטגוריה'], quantity: 2 }, // בלי unit בכלל; כמות קטנה-בכוונה (פריט אמיתי, לא QA)
     { description: '', quantity: '' }, // שורה ריקה-לגמרי — צפוי להתעלם, לא שגיאה
   ]));
+  const t0 = Date.now();
   const rec = await api('POST', 'expenses/manual', fd, true);
+  const requestMs = Date.now() - t0;
   if (!rec?.id) throw new Error('לא נוצרה רשומת הוצאה');
   cleanup.push({ table: 'הוצאות', id: rec.id });
 
   if (rec['ידני?'] !== true) throw new Error('"ידני?" לא סומן true');
-  if (rec['ספק-AI'] !== MARK) throw new Error(`שדה ספק-AI לא נכתב כצפוי מהערך שהוזן ידנית (${rec['ספק-AI']})`);
+  if (!Array.isArray(rec['ספקים']) || rec['ספקים'][0] !== supplier.id) throw new Error(`שדה "ספקים" לא מקושר ל-supplierId שנשלח (${JSON.stringify(rec['ספקים'])})`);
+  if (rec['ספק-AI'] !== MARK) throw new Error(`שדה ספק-AI (תאימות-לאחור) לא נכתב משם הספק האמיתי (${rec['ספק-AI']})`);
+  if (requestMs > 8000) throw new Error(`התגובה (עם קובץ מצורף) ארכה ${requestMs}ms — חריגה גם מהיעד המקל של הנתיב-עם-קובץ`);
 
   const full = await api('GET', `${enc('הוצאות')}/${rec.id}?raw=1`);
   if (!Array.isArray(full['חשבונית']) || !full['חשבונית'].length) throw new Error('הקובץ לא מצורף לשדה "חשבונית"');
 
-  const afterRec = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
-  const after = Number(afterRec['מלאי נוכחי']);
-  if (before - after !== 3) throw new Error(`ירידת מלאי ${before - after}, צפוי בדיוק 3 (לא כולל השורה הריקה)`);
+  // הורדת-המלאי רצה ברקע (fire-and-forget) — ממתינים לה ב-polling
+  let after = before;
+  let settled = false;
+  for (let i = 0; i < 20 && !settled; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const cur = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
+    after = Number(cur['מלאי נוכחי']);
+    if (after !== before) settled = true;
+  }
+  if (!settled) throw new Error('הורדת-המלאי ברקע לא הסתיימה תוך 20 שניות');
+  if (before - after !== 2) throw new Error(`ירידת מלאי ${before - after}, צפוי בדיוק 2 (לא כולל השורה הריקה)`);
 
   await del('הוצאות', rec.id); // מפעיל reverseInventoryDeduction בצד השרת (ר' server.js, מחיקת "הוצאות")
   const idx = cleanup.findIndex((c) => c.table === 'הוצאות' && c.id === rec.id);
   if (idx >= 0) cleanup.splice(idx, 1);
 
   const afterDelete = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
-  if (Number(afterDelete['מלאי נוכחי']) !== before) throw new Error(`מחיקה לא החזירה מלאי ל-${before}, התקבל ${afterDelete['מלאי נוכחי']}`);
+  if (Number(afterDelete['מלאי נוכחי']) !== before) throw new Error(`מחיקה לא החזירה מלאי ל-${before} (פריט אמיתי "${item['קטגוריה']}"), התקבל ${afterDelete['מלאי נוכחי']}`);
 
-  return `נוצרה עם קובץ, ירידת מלאי 3 (לא 4 — השורה הריקה דולגה), מחיקה החזירה מלאי ל-${before}`;
+  return `תגובת ה-POST (עם קובץ): ${requestMs}ms · supplierId מקושר + ספק-AI תקין · ירידת מלאי 2 ברקע מפריט אמיתי "${item['קטגוריה']}" (לא 3) · מחיקה החזירה מלאי ל-${before}`;
+});
+
+// ============================================================
+// סעיף R (2026-10-07) — stripInventoryAiMarker/withPreservedInventoryTags
+// (client/src/utils/inventoryAi.js): בדיקות טהורות (sync, בלי רשת/
+// Airtable) — מוודאות שהסמן הפנימי [מלאי-AI]{...} וגם תגית [מלאי-D:...]
+// מוסתרים מתצוגה, אבל נשמרים במדויק כשחוזרים לשמור (round-trip).
+// ============================================================
+await test('stripInventoryAiMarker: ערך שהוא רק סמן/תגית → מחזיר מחרוזת ריקה', () => {
+  const onlyMarker = `[מלאי-AI]${JSON.stringify({ status: 'done', results: [] })}`;
+  if (stripInventoryAiMarker(onlyMarker) !== '') throw new Error(`צפוי מחרוזת ריקה, התקבל: ${JSON.stringify(stripInventoryAiMarker(onlyMarker))}`);
+  const onlyTag = '[מלאי-D:תעודות משלוח:recXXX:קרטונים]';
+  if (stripInventoryAiMarker(onlyTag) !== '') throw new Error(`צפוי מחרוזת ריקה (תגית D), התקבל: ${JSON.stringify(stripInventoryAiMarker(onlyTag))}`);
+});
+
+await test('stripInventoryAiMarker: טקסט חופשי + סמן → מחזיר רק את הטקסט החופשי', () => {
+  const notes = `הערה חופשית של תמר\n[מלאי-AI]${JSON.stringify({ status: 'done', results: [] })}`;
+  const out = stripInventoryAiMarker(notes);
+  if (out !== 'הערה חופשית של תמר') throw new Error(`צפוי רק הטקסט החופשי, התקבל: ${JSON.stringify(out)}`);
+});
+
+await test('stripInventoryAiMarker: בלי שום סמן → לא משתנה', () => {
+  const notes = 'הערה רגילה בלי שום דבר פנימי';
+  if (stripInventoryAiMarker(notes) !== notes) throw new Error(`הטקסט היה אמור להישאר ללא שינוי, התקבל: ${JSON.stringify(stripInventoryAiMarker(notes))}`);
+});
+
+await test('withPreservedInventoryTags: עריכת טקסט חופשי שומרת את הסמן בדיוק כפי שהיה (round-trip)', () => {
+  const state = { status: 'done', analyzedAt: '2026-10-07T00:00:00.000Z', results: [] };
+  const original = `הערה ישנה\n[מלאי-AI]${JSON.stringify(state)}`;
+  // אם לא נגעו בטקסט החופשי בכלל — התוצאה המלאה אמורה לחזור זהה למקור
+  const unchanged = withPreservedInventoryTags(original, stripInventoryAiMarker(original));
+  if (unchanged !== original) throw new Error(`round-trip בלי שינוי לא חזר זהה: ${JSON.stringify(unchanged)} !== ${JSON.stringify(original)}`);
+  // עריכה בפועל של הטקסט החופשי — הסמן נשאר בדיוק אותו דבר, רק הטקסט מוחלף
+  const edited = withPreservedInventoryTags(original, 'הערה חדשה שתמר הקלידה');
+  if (!edited.includes(`[מלאי-AI]${JSON.stringify(state)}`)) throw new Error(`הסמן לא נשמר בדיוק כפי שהיה: ${edited}`);
+  if (!edited.startsWith('הערה חדשה שתמר הקלידה')) throw new Error(`הטקסט החדש לא מופיע בתחילת הערך: ${edited}`);
 });
 
 // ============================================================

@@ -11,6 +11,51 @@ export function readInventoryAiState(notes) {
   try { return JSON.parse(m[1]); } catch { return null; }
 }
 
+// ============================================================
+// הסתרת הסמן הפנימי מהצגה למשתמש (סעיף R, 2026-10-07) — שדה "הערות"
+// של הוצאה יכול להכיל שורת-JSON גולמית [מלאי-AI]{...} (ר' MARKER_RE
+// למעלה) ו/או תגית [מלאי-D:<table>:<id>:<קטגוריה>] (ר' logistics-
+// deduction.js, בשימוש על הערות של פריט-מלאי — נתמך כאן גם-כן ליתר
+// ביטחון). הפונקציה מסירה אותן **לתצוגה בלבד** — לעולם אין להשתמש בה
+// לפני כתיבה חזרה ל-Airtable (ר' withPreservedInventoryTags למטה,
+// ששומרת את התגיות בדיוק כפי שהיו כשעורכים את הטקסט החופשי).
+// ============================================================
+const AI_MARKER_LINE_RE = /^\[מלאי-AI\]\{.*\}$/;
+const D_TAG_LINE_RE = /^\[מלאי-D:[^\]]+\]$/;
+
+/** מסיר שורות-סמן פנימיות מתוך "הערות" — לתצוגה בלבד, לעולם לא לפני שמירה */
+export function stripInventoryAiMarker(notes) {
+  const text = String(notes || '');
+  if (!text) return '';
+  const kept = text.split('\n').filter((line) => {
+    const t = line.trim();
+    if (!t) return true;
+    if (AI_MARKER_LINE_RE.test(t)) return false;
+    if (D_TAG_LINE_RE.test(t)) return false;
+    return true;
+  });
+  // הסרה בטוחה גם אם התגית מוטמעת בתוך שורה (לא אמור לקרות בפורמט
+  // הנוכחי, אבל לא מזיק כרשת-ביטחון)
+  return kept.join('\n').replace(MARKER_RE, '').trim();
+}
+
+/**
+ * בונה מחדש את ערך "הערות" המלא לשמירה: משמר את שורות-הסמן בדיוק כפי
+ * שהיו (לא נוגע בהן), ומחליף רק את החלק החופשי בטקסט שהמשתמש ערך.
+ * משמש כשיש עריכה של הטקסט החופשי בלבד (למשל טופס עריכת הערות) —
+ * לעולם אין לאבד את התגיות, גם אם המשתמש מחק את כל הטקסט החופשי.
+ */
+export function withPreservedInventoryTags(originalNotes, newFreeText) {
+  const text = String(originalNotes || '');
+  const tagLines = text.split('\n').filter((line) => {
+    const t = line.trim();
+    return AI_MARKER_LINE_RE.test(t) || D_TAG_LINE_RE.test(t);
+  });
+  const free = String(newFreeText || '').trim();
+  if (!tagLines.length) return free;
+  return free ? `${free}\n${tagLines.join('\n')}` : tagLines.join('\n');
+}
+
 /** תיאור קצר למצב (לתג קומפקטי בטבלה) */
 export function inventoryAiSummary(state) {
   if (!state) return null;

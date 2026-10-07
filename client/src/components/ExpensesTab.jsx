@@ -22,7 +22,7 @@ import PeriodSelect from './PeriodSelect.jsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { authFetch } from '../utils/authFetch.js';
-import { readInventoryAiState, inventoryAiSummary } from '../utils/inventoryAi.js';
+import { readInventoryAiState, inventoryAiSummary, stripInventoryAiMarker, withPreservedInventoryTags } from '../utils/inventoryAi.js';
 
 const TABLE = 'הוצאות';
 
@@ -40,11 +40,14 @@ function supplierName(e) {
   return expSupplierAI(e) || '';
 }
 
+// שדה "הערות" הוסר מכאן בכוונה (סעיף R, 2026-10-07): RecordForm הגנרי
+// עורך/שומר את הערך הגולמי כמו שהוא, מה שהיה מוחק את סמן [מלאי-AI]
+// בלי משים ברגע שנשמר עריכה. עריכת הערות להוצאה נעשית במקום זאת דרך
+// NotesRow למטה, ששומרת את התגיות הפנימיות בדיוק כפי שהיו.
 const EDIT_FIELDS = [
   { name: 'אמצעי תשלום', label: 'אמצעי תשלום', type: 'select' },
   { name: 'תאריך העלאת החשבונית', label: 'תאריך העלאה', type: 'date' },
   { name: 'ידני?', label: 'הוזן ידנית? (כן/ריק)', type: 'text' },
-  { name: 'הערות', label: 'הערות', type: 'textarea' },
 ];
 
 export default function ExpensesTab({ app, expenses, suppliers, onChanged, openId, onOpened }) {
@@ -250,6 +253,7 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged, openI
         <ExpenseDrawer
           expense={expenses.find((x) => x.id === drawer.id) || drawer}
           canEdit={canEdit}
+          api={app.api}
           onClose={() => setDrawer(null)}
           onLink={() => setLinkFor(expenses.find((x) => x.id === drawer.id) || drawer)}
           onEdit={() => setForm(expenses.find((x) => x.id === drawer.id) || drawer)}
@@ -282,8 +286,12 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged, openI
       {manualOpen && (
         <ManualExpenseModal
           categories={categories}
+          suppliers={suppliers}
           onClose={() => setManualOpen(false)}
-          onSaved={async () => { setManualOpen(false); await onChanged(); toast('ההוצאה הידנית נשמרה'); }}
+          // תיקון-ביצועים (סעיף R, 2026-10-07): לא ממתינים ל-onChanged —
+          // החלון נסגר מיד, הרשימה מתרעננת ברקע (ר' גם server.js: הורדת
+          // המלאי עצמה הפכה fire-and-forget, אז אין סיבה שהלקוח יחסום כאן)
+          onSaved={() => { setManualOpen(false); toast('ההוצאה הידנית נשמרה'); onChanged(); }}
         />
       )}
     </div>
@@ -301,7 +309,7 @@ function Kpi({ icon, soft, color, label, value, sub }) {
 }
 
 // כרטיס הוצאה — פרטים מלאים ללא שורות ריקות + פעולות
-function ExpenseDrawer({ expense, canEdit, onClose, onLink, onEdit, onOpenSupplier, onChanged }) {
+function ExpenseDrawer({ expense, canEdit, api, onClose, onLink, onEdit, onOpenSupplier, onChanged }) {
   useEscapeClose(onClose);
   const link = expSupplierLink(expense);
   const doc = expDoc(expense);
@@ -311,7 +319,6 @@ function ExpenseDrawer({ expense, canEdit, onClose, onLink, onEdit, onOpenSuppli
     ['סכום', expAmount(expense) ? formatMoney(expAmount(expense)) : null],
     ['אמצעי תשלום', expense['אמצעי תשלום']],
     ['הוזן ידנית', expense['ידני?'] ? 'כן' : null],
-    ['הערות', expense['הערות']],
   ].filter(([, v]) => v != null && v !== '');
 
   return (
@@ -343,6 +350,7 @@ function ExpenseDrawer({ expense, canEdit, onClose, onLink, onEdit, onOpenSuppli
             {rows.map(([l, v]) => (
               <div key={l} className="obj-row"><span className="obj-row-label">{l}</span><span className="obj-row-value">{v}</span></div>
             ))}
+            <NotesRow api={api} expense={expense} canEdit={canEdit} onChanged={onChanged} />
             {canEdit && (
               <div style={{ marginTop: 14 }}>
                 <button className="btn btn-ghost" onClick={onEdit}>✎ עריכה</button>
@@ -362,6 +370,63 @@ function ExpenseDrawer({ expense, canEdit, onClose, onLink, onEdit, onOpenSuppli
 
           {canEdit && <InventoryAiSection expense={expense} onChanged={onChanged} />}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// שורת "הערות" בכרטיס הוצאה (סעיף R, 2026-10-07) — מציגה את ההערות
+// עם הסמן הפנימי [מלאי-AI]{...} מוסתר (ר' stripInventoryAiMarker),
+// ומאפשרת עריכה ישירה (בלי לעבור דרך RecordForm הגנרי, כדי לא לאבד
+// את הסמן בשמירה — ר' withPreservedInventoryTags: רק הטקסט החופשי
+// מוחלף, התגיות הפנימיות נשמרות בדיוק כפי שהיו).
+// ============================================================
+function NotesRow({ api, expense, canEdit, onChanged }) {
+  const raw = expense['הערות'];
+  const display = stripInventoryAiMarker(raw);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(display);
+  const [saving, setSaving] = useState(false);
+
+  if (!editing && !display && !canEdit) return null;
+
+  if (!editing) {
+    return (
+      <div className="obj-row">
+        <span className="obj-row-label">הערות</span>
+        <span className="obj-row-value" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {display || <span className="muted">—</span>}
+          {canEdit && (
+            <button type="button" className="btn btn-sm btn-ghost" title="עריכת הערות"
+              onClick={() => { setDraft(display); setEditing(true); }}>✎</button>
+          )}
+        </span>
+      </div>
+    );
+  }
+
+  const save = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const next = withPreservedInventoryTags(raw, draft);
+      await api.update(TABLE, expense.id, { 'הערות': next || null });
+      setEditing(false);
+      await onChanged?.();
+    } catch (e) {
+      toast(`שמירת ההערות נכשלה: ${e.message || e}`, 'error');
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="obj-row" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+      <span className="obj-row-label">הערות</span>
+      <textarea className="input" rows={2} value={draft} disabled={saving} onChange={(e) => setDraft(e.target.value)} />
+      <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+        <button type="button" className="btn btn-sm btn-ghost" disabled={saving} onClick={() => setEditing(false)}>ביטול</button>
+        <button type="button" className="btn btn-sm btn-primary" disabled={saving} onClick={save}>{saving ? 'שומר...' : 'שמירה'}</button>
       </div>
     </div>
   );
@@ -448,8 +513,6 @@ function InventoryAiSection({ expense, onChanged }) {
   );
 }
 
-// יחידות מידה שכיחות למלאי + "אחר" לטקסט חופשי
-const UNIT_OPTIONS = ['יחידות', 'קרטונים', 'ק"ג', 'ליטר', 'שקיות', 'משטחים', 'אחר'];
 const MANUAL_FILE_MAX_MB = 15;
 
 // תמונות גדולות מוקטנות בצד הלקוח לפני השליחה (בדיוק כמו ב-UploadDocumentPage) —
@@ -469,18 +532,23 @@ async function shrinkManualExpenseImage(f, maxDim = 2000, quality = 0.85) {
   } catch { return f; }
 }
 
-const emptyLine = () => ({ description: '', quantity: '', unit: 'יחידות', unitOther: '' });
+// שדות "יחידה"/"unitOther" הוסרו בכוונה (סעיף R, 2026-10-07): לא
+// רלוונטיים להפחתת כמות מהמלאי (ר' matchLinesToInventory — מתעלם
+// מיחידת-מידה כשאינה מוגדרת, ועדיין מוריד לפי כמות גרידא).
+const emptyLine = () => ({ description: '', quantity: '' });
 
 // ============================================================
-// הוצאה ידנית (תוספת 2026-10-06; עודכן סעיף J) — טופס להזנת הוצאה
-// עם או בלי קובץ מצורף, שנשמרת בדיוק כמו הוצאה שהועלתה ונותחה
-// אוטומטית (ידני?=true, אותם שדות -AI, אותה הורדת מלאי ואותה
-// לוגיקת ביטול במחיקה). כל 4 שדות הראש (ספק/תאריך/סכום/קטגוריה)
-// חובה, ושורת פריט שאינה ריקה-לגמרי חייבת למלא את שלושת שדותיה —
-// הוולידציה חוזרת גם בשרת (ר' validateManualExpenseInput), לא רק כאן.
+// הוצאה ידנית (תוספת 2026-10-06; עודכן סעיף J; עודכן סעיף R —
+// ספק מרשימה קיימת בלבד, בלי שדה "יחידה") — טופס להזנת הוצאה עם או
+// בלי קובץ מצורף, שנשמרת בדיוק כמו הוצאה שהועלתה ונותחה אוטומטית
+// (ידני?=true, אותם שדות -AI, אותה הורדת מלאי ואותה לוגיקת ביטול
+// במחיקה). כל 4 שדות הראש (ספק/תאריך/סכום/קטגוריה) חובה, ושורת פריט
+// שאינה ריקה-לגמרי חייבת למלא את שני שדותיה — הוולידציה חוזרת גם
+// בשרת (ר' validateManualExpenseInput), לא רק כאן.
 // ============================================================
-function ManualExpenseModal({ categories, onClose, onSaved }) {
-  const [supplier, setSupplier] = useState('');
+function ManualExpenseModal({ categories, suppliers, onClose, onSaved }) {
+  const navigate = useNavigate();
+  const [supplierId, setSupplierId] = useState('');
   const [date, setDate] = useState('');
   const [total, setTotal] = useState('');
   const [category, setCategory] = useState('');
@@ -525,7 +593,7 @@ function ManualExpenseModal({ categories, onClose, onSaved }) {
   // לבדיקת השרת, רק כדי להציג הודעה ליד השדה בלי סיבוב-שרת מיותר)
   const validate = () => {
     const fe = {
-      supplier: !supplier.trim(),
+      supplier: !supplierId,
       date: !date,
       total: total === '' || total == null || Number.isNaN(Number(total)),
       category: !category.trim(),
@@ -534,12 +602,10 @@ function ManualExpenseModal({ categories, onClose, onSaved }) {
     lines.forEach((l, i) => {
       const desc = l.description.trim();
       const hasQty = l.quantity !== '';
-      const unitVal = l.unit === 'אחר' ? l.unitOther.trim() : l.unit;
       if (!desc && !hasQty) return; // שורה ריקה-לגמרי — מתעלמים
       const missing = [];
       if (!desc) missing.push('מה נקנה');
       if (!hasQty || Number.isNaN(Number(l.quantity))) missing.push('כמות');
-      if (!unitVal) missing.push('יחידה');
       if (missing.length) le[i] = `שורה ${i + 1}: חסר/ה ${missing.join(', ')}`;
     });
     const ok = !Object.values(fe).some(Boolean) && !Object.keys(le).length;
@@ -558,14 +624,13 @@ function ManualExpenseModal({ categories, onClose, onSaved }) {
         .map((l) => ({
           description: l.description.trim(),
           quantity: l.quantity === '' ? null : Number(l.quantity),
-          unit: (l.unit === 'אחר' ? l.unitOther.trim() : l.unit) || null,
         }));
 
       let r;
       if (file) {
         const fd = new FormData();
         fd.append('file', file);
-        fd.append('supplier', supplier.trim());
+        fd.append('supplierId', supplierId);
         fd.append('date', date);
         fd.append('total', total);
         fd.append('category', category.trim());
@@ -575,14 +640,16 @@ function ManualExpenseModal({ categories, onClose, onSaved }) {
       } else {
         r = await authFetch('/api/expenses/manual', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ supplier: supplier.trim(), date, total: Number(total), category: category.trim(), notes: notes.trim() || null, lines: cleanLines }),
+          body: JSON.stringify({ supplierId, date, total: Number(total), category: category.trim(), notes: notes.trim() || null, lines: cleanLines }),
         });
       }
       const data = await r.json().catch(() => ({}));
       if (data.invalidFile) { setError(data.error || 'הקובץ אינו תקין.'); setSaving(false); return; }
       if (!r.ok) throw new Error(data.error || 'שגיאה');
       if (data.fileError) toast(data.fileError, 'error');
-      await onSaved();
+      // תיקון-ביצועים (סעיף R): לא ממתינים יותר ל-onSaved (שעלול לכלול
+      // רענון-רשימה) לפני שהחלון נסגר — ר' onSaved שהועבר מההורה.
+      onSaved();
     } catch (e) {
       setError(`השמירה נכשלה: ${e.message || e}`);
       setSaving(false);
@@ -603,7 +670,17 @@ function ManualExpenseModal({ categories, onClose, onSaved }) {
         <div className="form-grid-2" style={{ gap: '0 12px' }}>
           <div className="form-group">
             <label>ספק<span className="required" /></label>
-            <input className="input" value={supplier} onChange={(e) => setSupplier(e.target.value)} />
+            {suppliers.length === 0 ? (
+              <div className="muted" style={{ fontSize: 13 }}>
+                אין ספקים —{' '}
+                <a href="/suppliers" onClick={(e) => { e.preventDefault(); onClose(); navigate('/suppliers'); }}>הוסיפי במסך ספקים</a>
+              </div>
+            ) : (
+              <select className="select" value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+                <option value="">בחר ספק...</option>
+                {suppliers.map((s) => <option key={s.id} value={s.id}>{s['שם ספק'] || 'ספק ללא שם'}</option>)}
+              </select>
+            )}
             {fieldErrors.supplier && errText('שדה חובה')}
           </div>
           <div className="form-group">
@@ -627,7 +704,7 @@ function ManualExpenseModal({ categories, onClose, onSaved }) {
 
         <div className="section-title" style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 6 }}>
           פריטים שיורדים מהמלאי (לא חובה)
-          <span className="muted" style={{ fontSize: 13, cursor: 'help' }} title={'כמות ויחידה שהוזנו כאן נחשבות סופיות — יורדות מהמלאי אוטומטית (ללא "דורש אישור"), בכפוף להתאמת קטגוריה קיימת.'}>ⓘ</span>
+          <span className="muted" style={{ fontSize: 13, cursor: 'help' }} title={'כמות שהוזנה כאן נחשבת סופית — יורדת מהמלאי אוטומטית (ללא "דורש אישור"), בכפוף להתאמת קטגוריה קיימת.'}>ⓘ</span>
         </div>
         <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
           רשמי מה נקנה במסמך הזה. כל שורה תוריד את הכמות מהמלאי לפי הקטגוריה המתאימה.
@@ -636,13 +713,11 @@ function ManualExpenseModal({ categories, onClose, onSaved }) {
         <div style={{ display: 'flex', gap: 6, marginBottom: 2, fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
           <span style={{ flex: 2 }}>מה נקנה</span>
           <span style={{ flex: 1 }}>כמות</span>
-          <span style={{ flex: 1 }}>יחידה</span>
           <span style={{ width: 30 }} />
         </div>
         <div style={{ display: 'flex', gap: 6, marginBottom: 8, color: 'var(--text-muted)', fontSize: 13, fontStyle: 'italic' }}>
           <span style={{ flex: 2 }}>לדוגמה: שקיות ניילון</span>
           <span style={{ flex: 1 }}>500</span>
-          <span style={{ flex: 1 }}>יחידות</span>
           <span style={{ width: 30 }} />
         </div>
 
@@ -653,15 +728,8 @@ function ManualExpenseModal({ categories, onClose, onSaved }) {
                 value={l.description} onChange={(e) => setLine(i, { description: e.target.value })} />
               <input type="number" className="input" style={{ flex: 1 }} aria-label="כמות"
                 value={l.quantity} onChange={(e) => setLine(i, { quantity: e.target.value })} />
-              <select className="select" style={{ flex: 1 }} aria-label="יחידה"
-                value={l.unit} onChange={(e) => setLine(i, { unit: e.target.value })}>
-                {UNIT_OPTIONS.map((u) => <option key={u} value={u}>{u}</option>)}
-              </select>
               <button type="button" className="btn btn-sm btn-ghost" aria-label="הסרת שורה" onClick={() => removeLine(i)} disabled={lines.length === 1}>✕</button>
             </div>
-            {l.unit === 'אחר' && (
-              <input className="input" style={{ marginTop: 6 }} placeholder="יחידה אחרת..." value={l.unitOther} onChange={(e) => setLine(i, { unitOther: e.target.value })} />
-            )}
             {lineErrs[i] && errText(lineErrs[i])}
           </div>
         ))}
