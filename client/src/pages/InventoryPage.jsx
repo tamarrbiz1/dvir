@@ -150,14 +150,15 @@ export default function InventoryPage() {
       </PageHeader>
 
       {duplicateGroups.length > 0 && (
-        <div className="badge badge-warn" style={{ width: '100%', display: 'block', padding: 12, marginBottom: 12 }}>
+        <div className="notice notice-warn" role="status">
           ⚠️ נמצאו קטגוריות עם יותר מפריט מלאי אחד — יש למזג/למחוק ידנית (לא נעשה אוטומטית):
           {duplicateGroups.map(([cat, arr]) => (
             <div key={cat} style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <b>{cat}:</b>
               {arr.map((it) => (
-                <span key={it.id} className="obj-chip" role="button" tabIndex={0}
-                  onClick={() => setDrawer(it)} onKeyDown={(e) => { if (e.key === 'Enter') setDrawer(it); }}>
+                <span key={it.id} className="obj-chip"
+                  title={it['תאריך עדכון'] ? `עודכן ${formatDate(it['תאריך עדכון'])}` : 'אין תאריך עדכון'}
+                  {...activatable(() => setDrawer(it), `פתיחת פריט ${cat} — ${formatNumber(it['מלאי נוכחי'] ?? 0)} יח'`)}>
                   {formatNumber(it['מלאי נוכחי'] ?? 0)} יח'
                 </span>
               ))}
@@ -282,6 +283,9 @@ export default function InventoryPage() {
           onAdd={() => setEditItem({ item: drawer, mode: 'add' })}
           onEdit={() => setForm(drawer)}
           onOpenLedger={() => setLedgerItem(items.find((x) => x.id === drawer.id) || drawer)}
+          // Escape כשיומן-הירידות פתוח צריך לסגור רק אותו, לא את שני הדרוארים
+          // (useEscapeClose מאזין על document; stopPropagation לא עוצר listener שני)
+          escapeActive={!ledgerItem}
         />
       )}
 
@@ -405,8 +409,8 @@ function StockModal({ api, item, mode, defaultAmount, onClose, onSaved }) {
 // ============================================================
 // כרטיס פריט — פרטים מלאים (רק שדות שיש בהם מידע) + פעולות
 // ============================================================
-function ItemDrawer({ item, canEdit, onClose, onAdd, onEdit, onOpenLedger }) {
-  useEscapeClose(onClose);
+function ItemDrawer({ item, canEdit, onClose, onAdd, onEdit, onOpenLedger, escapeActive = true }) {
+  useEscapeClose(onClose, escapeActive);
   const st = itemStatus(item);
   // שורות-תנועה (↓/↩/⚠) נכתבות אוטומטית ע"י ניתוח-המלאי (logistics-deduction.js/
   // inventory-deduction.js) — מוצגות בנפרד ב"היסטוריית ירידות" (סעיף P2), לא
@@ -502,23 +506,28 @@ function LedgerDrawer({ item, onClose }) {
                   <tbody>
                     {movements.map((m, i) => (
                       <tr key={i}>
-                        <td>{m.date ? formatDate(m.date) : <span className="muted">—</span>}</td>
+                        {/* תאריך: שורות-הוצאה אינן נושאות תאריך-שורה (ר' LEADING_DATE_RE
+                            ב-inventoryLedger.js) אבל כן את תאריך-המסמך — עדיף אותו על "—" */}
+                        <td>{(m.date || m.docDate) ? formatDate(m.date || m.docDate) : <span className="muted">—</span>}</td>
                         <td>
                           {m.link ? (
-                            <span className="obj-chip" role="button" tabIndex={0}
-                              onClick={() => navigate(m.link)}
-                              onKeyDown={(e) => { if (e.key === 'Enter') navigate(m.link); }}>
+                            <span className="obj-chip" {...activatable(() => navigate(m.link), `פתיחת ${m.sourceLabel || 'המסמך'}`)}>
                               {m.sourceLabel}
                             </span>
                           ) : (m.sourceLabel || <span className="muted">לא זמין</span>)}
                         </td>
+                        {/* dir="ltr" כדי שסימן ה-+/− יישאר צמוד למספר ולא "ייזרק" לקצה
+                            השני של התא בהקשר RTL — הסימן הוא ההבדל בין החזרה לירידה */}
                         <td style={{ color: m.kind === 'reversal' ? 'var(--ok)' : undefined, fontWeight: 600 }}>
-                          {m.kind === 'reversal' ? '+' : '−'}{formatNumber(m.quantity)}
+                          <span dir="ltr">{m.kind === 'reversal' ? '+' : '−'}{formatNumber(m.quantity)}</span>
                         </td>
                         <td>{m.derivedFrom || <span className="muted">—</span>}</td>
+                        {/* ביטול-הורדה הוא תוצאה תקינה (מלאי הוחזר), לא אזהרה — badge-warn
+                            כתום נשמר רק לאי-התאמה/דורש-אישור אמיתיים */}
                         <td>
-                          {m.warning ? <span className="badge badge-warn" style={{ fontSize: 12 }}>{m.warning}</span>
-                            : (m.kind === 'reversal' ? <span className="muted">בוטל במחיקת מסמך</span> : <span className="muted">—</span>)}
+                          {m.kind === 'reversal' ? <span className="muted">{m.warning || 'בוטל במחיקת מסמך'}</span>
+                            : m.warning ? <span className="badge badge-warn">{m.warning}</span>
+                              : <span className="muted">—</span>}
                         </td>
                       </tr>
                     ))}

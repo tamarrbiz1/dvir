@@ -19,7 +19,7 @@ import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useAutoRefresh } from '../utils/live.js';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
-import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
+import { CHART_MARGIN_ROTATED, GRID_PROPS, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 
 const TABS = ['גידולים', 'מחירי גידול', 'תפוקה רבעונית', 'תחזית שתילה'];
 const FORECAST_TABLE = 'תחזית שתילה שבועית';
@@ -211,9 +211,11 @@ const DRAWER_QUARTERLY_FIELDS = [
 
 // כרטיס גידול — טאבים לפי סעיף 37
 function CropDrawer({ crop, plans, prices, quarterly, forecastRows, api, canEdit, onChanged, onClose }) {
-  useEscapeClose(onClose);
   const [tab, setTab] = useState('תוכניות שתילה');
   const [quarterlyForm, setQuarterlyForm] = useState(null);
+  // Escape כשטופס התפוקה פתוח צריך לסגור רק אותו, לא גם את כרטיס הגידול
+  // (useEscapeClose מאזין על document; stopPropagation לא עוצר listener שני)
+  useEscapeClose(onClose, quarterlyForm === null);
   const name = crop['שם גידול'] || 'גידול';
   const matches = (v) => String(displayName(v, '') || v || '').includes(name);
 
@@ -225,6 +227,11 @@ function CropDrawer({ crop, plans, prices, quarterly, forecastRows, api, canEdit
   const drawerTabs = ['תוכניות שתילה', 'מחירי גידול', 'תפוקה', 'תחזית'];
 
   return (
+    // ה-RecordForm הוא **אח** של ה-drawer-overlay, לא צאצא שלו (תוקן 2026-10-07,
+    // משימה U): כצאצא, לחיצה על רקע-המודאל (modal-overlay, onClick=onClose שלו)
+    // התבעבעה גם ל-drawer-overlay וסגרה את כרטיס-הגידול יחד עם הטופס.
+    // modal-overlay הוא z-index 60 מול 50 של drawer-overlay — לכן האח מוצג מעל.
+    <>
     <div className="drawer-overlay" onClick={onClose}>
       <div className="drawer struct-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="drawer-header">
@@ -328,17 +335,18 @@ function CropDrawer({ crop, plans, prices, quarterly, forecastRows, api, canEdit
           )}
         </div>
       </div>
-      {quarterlyForm !== null && (
-        <RecordForm
-          api={api} table={QUARTER_TABLE}
-          title={quarterlyForm.id ? 'עריכת תפוקה רבעונית' : 'תפוקה רבעונית חדשה'}
-          record={quarterlyForm}
-          fields={DRAWER_QUARTERLY_FIELDS}
-          onClose={() => setQuarterlyForm(null)}
-          onSaved={async () => { setQuarterlyForm(null); await onChanged(); toast('התפוקה נשמרה בהצלחה'); }}
-        />
-      )}
     </div>
+    {quarterlyForm !== null && (
+      <RecordForm
+        api={api} table={QUARTER_TABLE}
+        title={quarterlyForm.id ? 'עריכת תפוקה רבעונית' : 'תפוקה רבעונית חדשה'}
+        record={quarterlyForm}
+        fields={DRAWER_QUARTERLY_FIELDS}
+        onClose={() => setQuarterlyForm(null)}
+        onSaved={async () => { setQuarterlyForm(null); await onChanged(); toast('התפוקה נשמרה בהצלחה'); }}
+      />
+    )}
+    </>
   );
 }
 
@@ -663,17 +671,19 @@ function ForecastTab({ rows: allRows, api, canEdit, onChanged }) {
           {hiddenEmptyCount} רשומות ריקות הוסתרו (אין ק"ג צפוי/בפועל, הכנסה או קג לדונם)
         </div>
       )}
-      <div className="filter-bar no-print">
-        <input className="input" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
-        <select className="select" value={fCrop} onChange={(e) => setFCrop(e.target.value)}>
+      {/* aria-label לכל שדה-סינון — אותו דפוס כמו ה-filter-bar בחשבוניות/
+          תעודות משלוח (role="search" + aria-label לכל select) */}
+      <div className="filter-bar no-print" role="search" aria-label="סינון תחזית שבועית">
+        <input className="input" aria-label="חיפוש בתחזית" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <select className="select" aria-label="סינון לפי גידול" value={fCrop} onChange={(e) => setFCrop(e.target.value)}>
           <option value="">כל הגידולים</option>
           {cropList.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
-        <select className="select" value={fStructure} onChange={(e) => setFStructure(e.target.value)}>
+        <select className="select" aria-label="סינון לפי מבנה" value={fStructure} onChange={(e) => setFStructure(e.target.value)}>
           <option value="">כל המבנים</option>
           {structList.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
-        <select className="select" value={fYear} onChange={(e) => setFYear(e.target.value)}>
+        <select className="select" aria-label="סינון לפי שנה" value={fYear} onChange={(e) => setFYear(e.target.value)}>
           <option value="">כל השנים</option>
           {yearList.map((y) => <option key={y} value={String(y)}>{y}</option>)}
         </select>

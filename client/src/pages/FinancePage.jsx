@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../App.jsx';
 import { useAutoRefresh } from '../utils/live.js';
-import { formatMoney, formatNumber, formatDate, kpiMoney, kpiValueClass } from '../utils/format.js';
+import { formatMoney, kpiMoney, kpiValueClass } from '../utils/format.js';
 import { pick, num, expenseCategory } from '../utils/field.js';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
@@ -443,11 +443,14 @@ function MarketerTrend({ rows }) {
 
   return (
     <div style={{ marginTop: 12 }}>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      {/* aria-pressed — אותו דפוס של כפתורי-מצב במערכת (UploadDocumentPage:366,
+          כרטיסי ה-KPI המסננים בחשבוניות/תעודות): "נבחר" לא מסומן בצבע בלבד */}
+      <div role="group" aria-label="תקופת גרף הפדיון" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {TREND_PERIODS.map((p) => (
           <button
             key={p.key}
             type="button"
+            aria-pressed={period === p.key}
             className={`btn btn-sm ${period === p.key ? 'btn-primary' : 'btn-ghost'}`}
             onClick={(e) => { e.stopPropagation(); setPeriod(p.key); }}
           >
