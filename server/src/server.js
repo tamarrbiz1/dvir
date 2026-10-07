@@ -541,13 +541,23 @@ app.post('/api/expenses/manual', authenticate, requireOwner, upload.single('file
     }
 
     // ספק חייב להיות קיים ברשימת "ספקים" — לא טקסט חופשי (סעיף R)
-    let supplierRecord;
-    try {
-      supplierRecord = await getBase()(SUPPLIERS_TABLE).find(supplierId);
-    } catch (e) {
+    //
+    // ⚠️ ליל-חיזוק 2026-10-07 (המשך E1-E7, ממצא חדש) — `base(SUPPLIERS_TABLE)
+    // .find(id)` **אינו** בודק שהרשומה שייכת לטבלה הזו: Airtable מחזיר כל
+    // רשומה קיימת באותו base, מכל טבלה, כל עוד מזהה-הרשומה תקין. נמדד
+    // בפועל: supplierId ששייך בפועל לרשומת "גידולים" אמיתית עבר את ה-find()
+    // בהצלחה (עם fields של הגידול, לא של ספק) — ואז הכתיבה בפועל ל-Airtable
+    // (קישור שדה "ספקים" בטבלת "הוצאות" לרשומה מטבלה אחרת) נכשלה ב-422
+    // "the field links to table X" **מחוץ** לבלוק try/catch הזה, וחזרה
+    // ללקוח כ-500 גולמי במקום 400 נקי. התיקון: קוראים את **כל** רשימת
+    // הספקים (טבלה קטנה, כבר בשימוש בכל הקריאה הזו ממילא) ובודקים חברות
+    // בפועל לפי מזהה, לא סומכים על find() שמוחזר-בהצלחה.
+    const suppliers = await fetchRecords(SUPPLIERS_TABLE, {});
+    const supplierRow = suppliers.find((s) => s.id === supplierId);
+    if (!supplierRow) {
       return res.status(400).json({ error: 'ספק לא נמצא. יש לבחור ספק קיים מרשימת הספקים.' });
     }
-    const supplierName = supplierRecord.fields['שם ספק'] || '';
+    const supplierName = supplierRow['שם ספק'] || '';
 
     // הגנה מפני שמירה כפולה (ליל-חיזוק 2026-10-07, סעיף E5) — אחרי
     // הוולידציה ובדיקת הספק בכוונה, כדי שקלט שגוי לא "יתפוס" מפתח
