@@ -148,6 +148,10 @@ export default function InventoryPage() {
 
   const chartData = useMemo(() => filtered.map((i) => ({
     name: i['קטגוריה'] || 'פריט',
+    // סעיף Z: היחידה נשמרת בשורת-הגרף כדי שה-tooltip יוכל לנקוב בה. היא
+    // **לא** נכנסת לציר-ה-Y: הגרף משווה קטגוריות שעשויות להיות ביחידות
+    // שונות, ולכן היחידה היא נתון לכל עמודה, לא לציר כולו.
+    unit: itemUnit(i),
     'מלאי נוכחי': Number(i['מלאי נוכחי']) || 0,
     'מלאי מינימום': Number(i['מלאי מינימום']) || 0,
   })), [filtered]);
@@ -284,7 +288,7 @@ export default function InventoryPage() {
                     <CartesianGrid {...GRID_PROPS} />
                     <XAxis dataKey="name" {...xAxisProps(chartData.length, { rotate: chartData.length > 6 })} />
                     <YAxis {...yAxisProps()} />
-                    <Tooltip {...TOOLTIP_STYLE} formatter={(v, n) => [formatNumber(v), n]} />
+                    <Tooltip {...TOOLTIP_STYLE} formatter={(v, n, p) => [`${formatNumber(v)} ${p?.payload?.unit || ''}`.trim(), n]} />
                     <Legend wrapperStyle={LEGEND_STYLE} />
                     <Bar dataKey="מלאי נוכחי" fill="#078B8D" radius={[4, 4, 0, 0]} />
                     <Bar dataKey="מלאי מינימום" fill="#F79009" radius={[4, 4, 0, 0]} />
