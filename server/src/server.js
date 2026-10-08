@@ -19,6 +19,7 @@ import { fixFilenameEncoding } from './filename-utils.js';
 import { sweep as sweepWeeklySync, INVOICES_TABLE, NOTES_TABLE } from './weekly-sync.js';
 import { runAutoLink, SUPPLIERS_TABLE, MARKETERS_TABLE, EXPENSES_TABLE, CHECKS_TABLE, DELIVERY_TABLE } from './supplier-linking.js';
 import { importSprayReport, deleteSprayReport, sprayReportsHistory, scheduleSprayReportImport, startSprayImportSweep, REPORTS_TABLE as SPRAY_REPORTS_TABLE } from './spray-report-import.js';
+import { startLogisticsSweep } from './logistics-sweep.js';
 import { checkForecastPreflight } from './forecast-preflight.js';
 import { isForecastSourceTable, syncForecastForChangedRecord } from './forecast-sync.js';
 
@@ -204,7 +205,12 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 // מחכה לקודמתה (אם נכשלה — לא חוסם קריאות עתידיות).
 // ============================================================
 const inventoryLocks = new Map(); // key -> Promise (השרשרת הפעילה האחרונה)
-function withInventoryLock(key, fn) {
+// export: logistics-sweep.js (task Y) מריץ את ההורדה המחזורית-שלו
+// תחת אותו מנעול-בזיכרון, לפי מפתח `logistics:<table>:<id>` זהה לזה
+// שהריטריי-החי משתמש בו — כך ששניהם לעולם לא רצים בבת-אחת על אותה
+// רשומה (למשל אם הריטריי-החי עדיין באמצע backoff כש-tick של האיסוף
+// המחזורי מגיע לאותה רשומה).
+export function withInventoryLock(key, fn) {
   const prev = inventoryLocks.get(key) || Promise.resolve();
   const run = prev.catch(() => {}).then(fn);
   inventoryLocks.set(key, run.catch(() => {}));
@@ -333,8 +339,32 @@ async function autoAnalyzeExpenseInventory(expenseId, attempt = 0) {
 // (d.pending) לעולם לא כותב ל-Airtable בכלל, אז ריטריי בטוח ולא "נועל"
 // כלום. ממשיכים לנסות גם כשיש תוצאות אבל כולן pending (לא רק
 // results.length===0), עד כ-5 דקות סה"כ, עם לוג מפורט לכל ניסיון.
+//
+// ⚠️⚠️ תקרית אמיתית 2026-10-08 ("task Y", אומתה ב-journalctl): חשבוניות
+// #79 (rec9Pkhz4OkgALQVy, 07:50) ו-#80 (recLMiWv5ujFzP4WZ, 08:02) —
+// בניסיון 1 קרטונים/נילונים/כובעים *כן* ירדו מתעודת-המשלוח המקבילה,
+// אבל "מספר משטחים" על החשבונית עצמה עדיין לא היה ממולא. results כלל
+// גם תוצאות deducted=true וגם תוצאה pending אחת (משטחים) — ו-
+// `results.every((r) => r.pending)` היה **false** (לא כולן pending),
+// אז הלופ עצר אחרי ניסיון 1 והמשטחים נשארו תלויים-לנצח (רק כפתור "נתח
+// מחדש" ידני סגר את זה בפועל — זו תלונת הבעלים: "ההורדה קורית רק אחרי
+// שאני לוחצת"). התיקון: ממשיכים לנסות כל עוד **יש** תוצאה pending
+// (some, לא every) — deductOne עדיין אידמפוטנטי לכל קטגוריה בנפרד
+// (doneTag), כך שההורדות שכבר בוצעו לא חוזרות על עצמן, רק מה שנשאר
+// pending מטופל בניסיון הבא.
+//
+// גם חלון-הניסיונות הורחב: 9 ניסיונות/~5 דקות (ר' לוג #79/#80 — אין
+// בו עדות לכמה זמן Make היה צריך בפועל כי הריטריי נעצר אחרי ניסיון
+// 1 בגלל הבאג, לא בגלל שה-5 דקות לא הספיקו) לא מספיק ביטחון. בדיוק
+// כמו spray-report-import.js (Make יכול לקחת "שניות עד דקות"), מורחב
+// ל-16 ניסיונות עם backoff עולה עד 2 דקות — כ-27 דקות סה"כ בריטריי-
+// בזיכרון, בלי "להכביד" על Airtable (כ-3 קריאות GET לניסיון, בתדירות
+// יורדת). ה-16 ניסיונות הם רשת-ביטחון ראשונה בלבד — הריטריי הזה חי
+// רק בזיכרון של תהליך הנוד הנוכחי, ולכן restart/deploy מוחק אותו
+// לגמרי. רשת-הביטחון השנייה, שלא תלויה בזיכרון, היא איסוף מחזורי —
+// ר' logistics-sweep.js ו-startLogisticsSweep למטה.
 // ============================================================
-const MAX_LOGISTICS_ATTEMPTS = 9;
+const MAX_LOGISTICS_ATTEMPTS = 16;
 // in-memory בלבד (לא נשרד restart) — לחשיפת מצב ההורדה האחרון לכל מסמך
 // למסך ("מסמכים שהועלו לאחרונה"), כולל כפתור "נסה שוב". אין לטבלאות
 // תעודות-משלוח/חשבוניות שדה "הערות" משלהן לשמור בו state (ר' הערת הכותרת).
@@ -356,14 +386,45 @@ function recordLogisticsStatus(table, id, result, attempt) {
 
 async function autoAnalyzeLogisticsInventory(table, recordId, attempt = 0) {
   try {
-    const delay = Math.min(10000 * (attempt + 1), 45000);
+    // ⚠️⚠️ "task Y" — תקרית אמיתית 2026-10-08 (אומתה ותוקנה ע"י התיאום):
+    // לריטריי הזה *מעולם* לא היה סינון רשומות-בדיקה (בניגוד ל-
+    // scheduleSprayReportImport ב-spray-report-import.js, שכן בודק
+    // isTestRecord ובורח בשקט). זה היה סמוי כי החלון הישן (9 ניסיונות/
+    // ~5 דקות, ועם הבאג עוד פחות בפועל) כמעט אף פעם לא הספיק כדי
+    // ש-Make יספיק למלא "כמות קרטונים"/"מספר משטחים" עם נתונים *אמיתיים*
+    // (מהקובץ-האמת שבדיקות qa-check.mjs מצרפות בכוונה, כדי לא להפיל
+    // את תרחיש ה-Make). ברגע שהחלון הוארך ל-27 דקות (התיקון הזה!), חשבונית
+    // ותעודת-משלוח של QA-test קיבלו בפועל ערכים אמיתיים (27 משטחים,
+    // 1648 קרטונים/נילונים/כובעים) מ-Make — ומכיוון שאי-אפשר ליצור פריט-
+    // מלאי-QA בקטגוריה תפוסה (סעיף Q, 409), הקטגוריות האלה תמיד מצביעות
+    // על פריט-המלאי *האמיתי* היחיד. תוצאה: בדיקת-QA ניכתה בפועל ממלאי
+    // אמיתי. הסינון הזה (רק בניסיון הראשון — אין טעם לשלוף metadata/
+    // רשומה שוב בכל ניסיון חוזר) סוגר את זה באותה תבנית בדיוק כמו
+    // spray-report-import.js.
+    if (attempt === 0) {
+      const rec = await getBase()(table).find(recordId).catch(() => null);
+      if (rec) {
+        const computed = await computedFieldNames(table);
+        if (isTestRecord({ id: rec.id, ...rec.fields }, table, computed)) {
+          console.log(`[logistics-ai] ${table} ${recordId}: רשומת-בדיקה (QA/PERF-TEST) — דילוג מלא, אין ריטריי ואין ניתוח`);
+          return;
+        }
+      }
+    }
+    // backoff עולה עד 2 דקות (ר' הערת הכותרת למעלה, "task Y") — 16
+    // ניסיונות ≈ 27 דקות סה"כ.
+    const delay = Math.min(20000 * (attempt + 1), 120000);
     await new Promise((r) => setTimeout(r, delay));
     const result = await withInventoryLock(`logistics:${table}:${recordId}`, () => analyzeLogisticsInventory(table, recordId));
     recordLogisticsStatus(table, recordId, result, attempt);
-    const allPending = result.results.length > 0 && result.results.every((r) => r.pending);
-    const nothingYet = result.results.length === 0 || allPending;
     console.log(`[logistics-ai] ${table} ${recordId}: ניסיון ${attempt + 1}/${MAX_LOGISTICS_ATTEMPTS} — ${summarizeLogisticsResults(result.results)}`);
-    if (nothingYet && attempt < MAX_LOGISTICS_ATTEMPTS - 1) {
+    // ⚠️ "task Y" — היה `every` (כל התוצאות pending), וזה עצר ריטריי
+    // מוקדם מדי ברגע שחלק מהקטגוריות כבר ירדו וחלק עדיין ממתינות (למשל
+    // קרטונים ירדו, משטחים עדיין pending). shouldRetryLogistics (למעלה,
+    // `some`) ממשיך לנסות כל עוד *יש* תוצאה pending אחת לפחות —
+    // deductOne אידמפוטנטי לכל קטגוריה בנפרד, כך שהורדה שכבר בוצעה לא
+    // חוזרת על עצמה.
+    if (shouldRetryLogistics(result.results, attempt)) {
       return autoAnalyzeLogisticsInventory(table, recordId, attempt + 1);
     }
     invalidateReads('מלאי בסיסי');
@@ -1417,6 +1478,13 @@ app.listen(PORT, () => {
   // דוחות ריסוסים שנותחו אבל טרם יובאו לטיפולים — איסוף ~60 שניות אחרי
   // העלייה ואז כל 10 דקות (רק דוחות מאחרי תאריך-הסף; ר' spray-report-import.js)
   startSprayImportSweep({ afterImport: onSprayImported });
+  // "task Y": אותה תבנית בדיוק, להורדת-מלאי נגזרת מתעודות-משלוח/חשבוניות
+  // שהריטריי-החי-בזיכרון החמיץ (למשל restart באמצע המתנה ל-Make) —
+  // ר' logistics-sweep.js להסבר המלא ולתיחום-הבטיחות (cutoff).
+  startLogisticsSweep({
+    lock: withInventoryLock,
+    onResult: (table, id, result) => { recordLogisticsStatus(table, id, result, 'sweep'); invalidateReads('מלאי בסיסי'); },
+  });
 });
 
 // ============================================================
