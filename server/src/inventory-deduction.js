@@ -19,6 +19,21 @@ const EXPENSES_TABLE = 'הוצאות';
 const INVENTORY_TABLE = 'מלאי בסיסי';
 const MARKER_RE = /\[מלאי-AI\](\{[^\n]*\})/;
 
+// ⚠️ סעיף Z (8.10.2026) — יחידת-המידה של פריט-המלאי נכנסת לשורת-היומן
+// עצמה, מיד אחרי הכמות: "↓ 10 ליטר · הוצאה #81 · ...". היחידה נשמרת
+// **כפי שהייתה בזמן ההורדה**, ולכן שורה היסטורית לא "משנה את משמעותה"
+// אם תמר תחליף יחידה לפריט בעתיד.
+//
+// ⚠️ תואם-לאחור: כש-unit ריק/null (המצב של **כל** הפריטים כרגע, כל עוד
+// השדה לא מולא) מוחזרת הכמות לבדה — כלומר שורת-היומן נשארת **זהה
+// בתו** למה שהיא היום. הפרסר בצד-הלקוח
+// (client/src/utils/inventoryLedger.js) מקבל את היחידה כקבוצה
+// **אופציונלית**, כך ששורות קיימות ממשיכות להיפרס בדיוק כמו קודם.
+function qtyWithUnit(quantity, unit) {
+  const u = String(unit || '').trim();
+  return u ? `${quantity} ${u}` : `${quantity}`;
+}
+
 export function readState(notes) {
   const m = String(notes || '').match(MARKER_RE);
   if (!m) return null;
@@ -144,7 +159,7 @@ async function resumeUnresolvedLines(expenseId, currentNotes, existingState) {
     if (r.deducted || r.needsApproval) continue; // כבר טופל או ממתין לאישור — לא נוגעים
     if (!r.error && !r.pendingRun) continue; // לא אמור לקרות, אבל ליתר ביטחון
     try {
-      await deductFromInventoryItem(r.itemId, r.quantity, `↓ ${r.quantity} · הוצאה #${expenseNum ?? '?'} · ${supplierLabel || 'ספק לא ידוע'} · ${dateLabel || new Date().toISOString().slice(0, 10)}`);
+      await deductFromInventoryItem(r.itemId, r.quantity, `↓ ${qtyWithUnit(r.quantity, r.itemUnit)} · הוצאה #${expenseNum ?? '?'} · ${supplierLabel || 'ספק לא ידוע'} · ${dateLabel || new Date().toISOString().slice(0, 10)}`);
       results[i] = { ...r, deducted: true, deductedAt: new Date().toISOString(), error: undefined, pendingRun: undefined };
     } catch (e) {
       results[i] = { ...r, error: e.message, pendingRun: undefined };
@@ -276,6 +291,11 @@ async function deductMatchedLines(expenseId, startNotes, matched, meta) {
   // resumeUnresolvedLines יודע להמשיך אותה אחרי restart (סעיף E6).
   const results = matched.map((m) => ({
     description: m.line.description, quantity: m.quantity, unit: m.line.unit,
+    // itemUnit (סעיף Z) — יחידת-המידה **שהוגדרה לפריט** (לא יחידת השורה
+    // בחשבונית, שכבר נשמרת לעיל כ-unit) — משמשת רק לתצוגה בשורת-היומן
+    // (ר' qtyWithUnit למעלה), לא משפיעה על ההתאמה עצמה (זו כבר
+    // הוכרעה ב-matchLinesToInventory).
+    itemUnit: m.item['יחידת מידה'] || null,
     category: m.category, itemId: m.item.id, confidence: m.confidence,
     deducted: false,
     ...(m.needsApproval ? { needsApproval: true, reason: m.reason } : { pendingRun: true }),
@@ -320,7 +340,8 @@ async function deductMatchedLines(expenseId, startNotes, matched, meta) {
     const totalQty = idxs.reduce((sum, i) => sum + Number(results[i].quantity), 0);
     try {
       if (!Number.isFinite(totalQty) || totalQty <= 0) throw new Error(`כמות מסוכמת לא חוקית להורדה (${totalQty})`);
-      await deductFromInventoryItem(itemId, totalQty, `↓ ${totalQty} · הוצאה #${meta.expenseNum ?? '?'} · ${meta.supplierLabel || 'ספק לא ידוע'} · ${meta.dateLabel || new Date().toISOString().slice(0, 10)}`);
+      // כל השורות בקבוצה הן אותו itemId, ולכן אותה יחידת-פריט — idxs[0] מספק
+      await deductFromInventoryItem(itemId, totalQty, `↓ ${qtyWithUnit(totalQty, results[idxs[0]].itemUnit)} · הוצאה #${meta.expenseNum ?? '?'} · ${meta.supplierLabel || 'ספק לא ידוע'} · ${meta.dateLabel || new Date().toISOString().slice(0, 10)}`);
       const deductedAt = new Date().toISOString();
       idxs.forEach((i) => { results[i] = { ...results[i], deducted: true, deductedAt, pendingRun: undefined }; });
     } catch (e) {
@@ -702,7 +723,7 @@ export async function approvePendingDeduction(expenseId, lineIndex) {
   }
 
   const expenseNum = rec.fields['מספר הוצאה'];
-  await deductFromInventoryItem(line.itemId, approveQty, `↓ ${approveQty} · הוצאה #${expenseNum ?? '?'} · ${state.supplier || 'ספק לא ידוע'} · ${state.date || new Date().toISOString().slice(0, 10)} · אושר ידנית`);
+  await deductFromInventoryItem(line.itemId, approveQty, `↓ ${qtyWithUnit(approveQty, line.itemUnit)} · הוצאה #${expenseNum ?? '?'} · ${state.supplier || 'ספק לא ידוע'} · ${state.date || new Date().toISOString().slice(0, 10)} · אושר ידנית`);
 
   state.results[lineIndex] = { ...line, deducted: true, needsApproval: false, deductedAt: new Date().toISOString(), approvedManually: true };
   state.status = state.results.every((r) => r.deducted || r.error) ? 'done' : 'partial';
@@ -750,7 +771,7 @@ export async function reverseInventoryDeduction(expenseId) {
     try {
       // כמות שלילית = החזרה (ר' deductFromInventoryItem) — באותה נעילה
       // ועל ערך שנקרא מחדש, כך ששתי מחיקות במקביל לא מאבדות החזרה
-      await deductFromInventoryItem(r.itemId, -Number(r.quantity), `↩ ביטול הורדה של ${r.quantity} · הוצאה #${expenseNum ?? '?'} נמחקה · ${new Date().toISOString().slice(0, 10)}`);
+      await deductFromInventoryItem(r.itemId, -Number(r.quantity), `↩ ביטול הורדה של ${qtyWithUnit(r.quantity, r.itemUnit)} · הוצאה #${expenseNum ?? '?'} נמחקה · ${new Date().toISOString().slice(0, 10)}`);
       state.results[i] = { ...r, reversed: true, reversedAt: new Date().toISOString() };
     } catch (e) {
       // הפריט עצמו נמחק בינתיים, או כשל רשת — מתעדים את ההפרש בלי לחסום

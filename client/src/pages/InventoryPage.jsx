@@ -22,6 +22,7 @@ import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useAutoRefresh } from '../utils/live.js';
 import { parseInventoryLedger, resolveExpenseLinks, summarizeRecentDrops } from '../utils/inventoryLedger.js';
+import { UNIT_OPTIONS, itemUnit } from '../utils/inventoryUnits.js';
 
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
@@ -49,6 +50,9 @@ function buildItemFields(items, record) {
     { name: 'קטגוריה', label: 'קטגוריה', type: 'select', required: true, allowNew: true, disabledOptions: taken },
     { name: 'ספקים', label: 'ספק', type: 'link', linkTable: 'ספקים', linkNameField: 'שם ספק', multiple: true },
     { name: 'מלאי נוכחי', label: 'מלאי נוכחי', type: 'number' },
+    // סעיף Z (8.10.2026) — חובה: לפי כל פריט נקבע איך מורידים ממנו מלאי
+    // (ר' server/src/inventory-matching.js + logistics-deduction.js)
+    { name: 'יחידת מידה', label: 'יחידת מידה', type: 'select', required: true, allowNew: true, staticOptions: UNIT_OPTIONS },
     { name: 'מלאי מינימום', label: 'מלאי מינימום', type: 'number' },
     { name: 'תאריך עדכון', label: 'תאריך עדכון', type: 'date' },
     { name: 'הערות', label: 'הערות', type: 'textarea' },
@@ -144,6 +148,10 @@ export default function InventoryPage() {
 
   const chartData = useMemo(() => filtered.map((i) => ({
     name: i['קטגוריה'] || 'פריט',
+    // סעיף Z: היחידה נשמרת בשורת-הגרף כדי שה-tooltip יוכל לנקוב בה. היא
+    // **לא** נכנסת לציר-ה-Y: הגרף משווה קטגוריות שעשויות להיות ביחידות
+    // שונות, ולכן היחידה היא נתון לכל עמודה, לא לציר כולו.
+    unit: itemUnit(i),
     'מלאי נוכחי': Number(i['מלאי נוכחי']) || 0,
     'מלאי מינימום': Number(i['מלאי מינימום']) || 0,
   })), [filtered]);
@@ -187,8 +195,8 @@ export default function InventoryPage() {
               {arr.map((it) => (
                 <span key={it.id} className="obj-chip"
                   title={it['תאריך עדכון'] ? `עודכן ${formatDate(it['תאריך עדכון'])}` : 'אין תאריך עדכון'}
-                  {...activatable(() => setDrawer(it), `פתיחת פריט ${cat} — ${formatNumber(it['מלאי נוכחי'] ?? 0)} יח'`)}>
-                  {formatNumber(it['מלאי נוכחי'] ?? 0)} יח'
+                  {...activatable(() => setDrawer(it), `פתיחת פריט ${cat} — ${formatNumber(it['מלאי נוכחי'] ?? 0)} ${itemUnit(it)}`)}>
+                  {formatNumber(it['מלאי נוכחי'] ?? 0)} {itemUnit(it)}
                 </span>
               ))}
             </div>
@@ -234,8 +242,8 @@ export default function InventoryPage() {
                     <span className="badge" style={{ background: st.soft, color: st.color }}>{st.label}</span>
                   </div>
                   <div style={{ display: 'flex', gap: 20, marginBottom: 4 }}>
-                    <div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>נוכחי</div><b style={{ fontSize: 24, color: st.color }}>{formatNumber(cur)}</b></div>
-                    <div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>מינימום</div><b style={{ fontSize: 18 }}>{formatNumber(min)}</b></div>
+                    <div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>נוכחי</div><b style={{ fontSize: 24, color: st.color }}>{formatNumber(cur)} <span style={{ fontSize: 14, fontWeight: 400 }}>{itemUnit(item)}</span></b></div>
+                    <div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>מינימום</div><b style={{ fontSize: 18 }}>{formatNumber(min)} <span style={{ fontSize: 12, fontWeight: 400 }}>{itemUnit(item)}</span></b></div>
                     {item['תאריך עדכון'] && (
                       <div style={{ marginInlineStart: 'auto', textAlign: 'left' }}>
                         <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>עודכן</div>
@@ -280,7 +288,7 @@ export default function InventoryPage() {
                     <CartesianGrid {...GRID_PROPS} />
                     <XAxis dataKey="name" {...xAxisProps(chartData.length, { rotate: chartData.length > 6 })} />
                     <YAxis {...yAxisProps()} />
-                    <Tooltip {...TOOLTIP_STYLE} formatter={(v, n) => [formatNumber(v), n]} />
+                    <Tooltip {...TOOLTIP_STYLE} formatter={(v, n, p) => [`${formatNumber(v)} ${p?.payload?.unit || ''}`.trim(), n]} />
                     <Legend wrapperStyle={LEGEND_STYLE} />
                     <Bar dataKey="מלאי נוכחי" fill="#078B8D" radius={[4, 4, 0, 0]} />
                     <Bar dataKey="מלאי מינימום" fill="#F79009" radius={[4, 4, 0, 0]} />
@@ -408,17 +416,17 @@ function StockModal({ api, item, mode, defaultAmount, onClose, onSaved }) {
         <div style={{ display: 'flex', justifyContent: 'center', gap: 26, marginBottom: 14 }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>מלאי נוכחי</div>
-            <b style={{ fontSize: 22 }}>{formatNumber(cur)}</b>
+            <b style={{ fontSize: 22 }}>{formatNumber(cur)} <span style={{ fontSize: 13, fontWeight: 400 }}>{itemUnit(item)}</span></b>
           </div>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{mode === 'add' ? 'מלאי לאחר ההוספה' : 'מלאי לאחר ההורדה'}</div>
             <b style={{ fontSize: 22, color: mode === 'add' ? 'var(--ok)' : (belowAfter || notEnough ? 'var(--error)' : 'var(--text-main)') }}>
-              {amt > 0 ? formatNumber(next) : '—'}
+              {amt > 0 ? `${formatNumber(next)} ${itemUnit(item)}` : '—'}
             </b>
           </div>
         </div>
         <div className="form-group">
-          <label>כמות {mode === 'add' ? 'להוספה' : 'להורדה'}</label>
+          <label>כמות {mode === 'add' ? 'להוספה' : 'להורדה'} ({itemUnit(item)})</label>
           <input className="input" style={{ width: '100%' }} type="number" min="0" autoFocus
             value={amount} onChange={(e) => { setAmount(e.target.value); setError(''); }} />
         </div>
@@ -447,8 +455,9 @@ function ItemDrawer({ item, canEdit, onClose, onAdd, onEdit, onOpenLedger, escap
   const { movements, freeNotes } = parseInventoryLedger(item['הערות']);
   const rows = [
     ['קטגוריה', item['קטגוריה']],
-    ['מלאי נוכחי', item['מלאי נוכחי'] != null ? formatNumber(item['מלאי נוכחי']) : null],
-    ['מלאי מינימום', item['מלאי מינימום'] != null ? formatNumber(item['מלאי מינימום']) : null],
+    ['מלאי נוכחי', item['מלאי נוכחי'] != null ? `${formatNumber(item['מלאי נוכחי'])} ${itemUnit(item)}` : null],
+    ['מלאי מינימום', item['מלאי מינימום'] != null ? `${formatNumber(item['מלאי מינימום'])} ${itemUnit(item)}` : null],
+    ['יחידת מידה', item['יחידת מידה'] || null],
     ['תאריך עדכון', item['תאריך עדכון'] ? formatDate(item['תאריך עדכון']) : null],
     ['ספקים', displayName(item['ספקים'], '') || null],
     ['הערות', freeNotes || null],
@@ -638,8 +647,12 @@ function LedgerDrawer({ item, canEdit, onClose }) {
                         </td>
                         {/* dir="ltr" כדי שסימן ה-+/− יישאר צמוד למספר ולא "ייזרק" לקצה
                             השני של התא בהקשר RTL — הסימן הוא ההבדל בין החזרה לירידה */}
+                        {/* סעיף Z: היחידה שנרשמה בשורה עצמה (m.unit) מוצגת לצד
+                            הכמות. שורה בלי יחידה (היסטורית, או פריט שאין לו
+                            יחידה מוגדרת) מוצגת כמו קודם — בלי טקסט נוסף. */}
                         <td style={{ color: m.kind === 'reversal' ? 'var(--ok)' : undefined, fontWeight: 600 }}>
                           <span dir="ltr">{m.kind === 'reversal' ? '+' : '−'}{formatNumber(m.quantity)}</span>
+                          {m.unit && <span style={{ fontWeight: 400, color: 'var(--text-secondary)' }}> {m.unit}</span>}
                         </td>
                         <td>{m.derivedFrom || <span className="muted">—</span>}</td>
                         {/* ביטול-הורדה הוא תוצאה תקינה (מלאי הוחזר), לא אזהרה — badge-warn

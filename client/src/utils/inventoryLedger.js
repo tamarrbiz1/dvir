@@ -12,8 +12,10 @@
 //        אבל נתונים היסטוריים/עתידיים עדיין עשויים להכיל שורה כזו.
 // 2) inventory-deduction.js (הוצאות, כולל הוצאה-ידנית) — בלי תגית בכלל
 //    (ה-state לאידמפוטנטיות הוא JSON נפרד [מלאי-AI], לא בשורה עצמה):
-//      "↓ <כמות> · הוצאה #<num> · <ספק> · <תאריך>[ · אושר ידנית]"
-//      "↩ ביטול הורדה של <כמות> · הוצאה #<num> נמחקה · <תאריך>"
+//      "↓ <כמות>[ <יחידה>] · הוצאה #<num> · <ספק> · <תאריך>[ · אושר ידנית]"
+//      "↩ ביטול הורדה של <כמות>[ <יחידה>] · הוצאה #<num> נמחקה · <תאריך>"
+//    (<יחידה> — סעיף Z, 8.10.2026: יחידת-המידה שהוגדרה לפריט בזמן
+//     ההורדה. אופציונלית, ולכן שורות היסטוריות נפרסות כמו קודם.)
 //
 // אזהרה חשובה: אם משנים את הפורמט בשרת (logistics-deduction.js /
 // inventory-deduction.js) — יש לעדכן גם את הפרסר כאן, וגם לוודא
@@ -105,9 +107,13 @@ function parseDeductionLine(rawLine) {
   }
 
   // תבנית הוצאות: "↓ 20 · הוצאה #48 · גיניגר · 2026-09-16[ · אושר ידנית]"
-  const expenseMatch = /^↓\s*([\d.]+)\s*·\s*הוצאה\s*#(\S+)\s*·\s*([^·]+?)\s*·\s*([^·]+?)(\s*·\s*אושר ידנית)?$/.exec(body);
+  // סעיף Z (8.10.2026): יחידת-המידה של הפריט, כשהוגדרה לו אחת, נכתבת
+  // מיד אחרי הכמות — "↓ 20 ליטר · הוצאה #48 · ...". הקבוצה **אופציונלית**
+  // בכוונה: שורות שנכתבו לפני השדה (וכל שורה של פריט בלי יחידה מוגדרת)
+  // נפרסות בדיוק כמו קודם, עם unit=null.
+  const expenseMatch = /^↓\s*([\d.]+)(?:\s+([^·]+?))?\s*·\s*הוצאה\s*#(\S+)\s*·\s*([^·]+?)\s*·\s*([^·]+?)(\s*·\s*אושר ידנית)?$/.exec(body);
   if (expenseMatch) {
-    const [, qty, num, supplier, docDate, approved] = expenseMatch;
+    const [, qty, unit, num, supplier, docDate, approved] = expenseMatch;
     return {
       kind: 'deduction',
       date,
@@ -117,6 +123,7 @@ function parseDeductionLine(rawLine) {
       category: null,
       sourceLabel: `הוצאה #${num}`,
       quantity: Number(qty),
+      unit: unit ? unit.trim() : null, // סעיף Z — null בשורות ללא יחידה (היסטוריות/פריט בלי יחידה)
       derivedFrom: approved ? 'אושר ידנית' : 'ישיר מהמסמך',
       warning: null,
       link: null, // יושלם ב-UI אחרי resolveExpenseLinks
@@ -146,12 +153,14 @@ function parseReversalLine(rawLine) {
   }
 
   // "↩ ביטול הורדה של 60 · הוצאה #48 נמחקה · 2026-10-06"
-  const expenseMatch = /^↩\s*ביטול הורדה של\s*([\d.]+)\s*·\s*הוצאה\s*#(\S+)\s*נמחקה\s*·\s*(.+)$/.exec(body);
+  // סעיף Z: יחידה אופציונלית אחרי הכמות ("...של 60 ליטר · ..."), ר' ההערה
+  // בתבנית-ההורדה למעלה.
+  const expenseMatch = /^↩\s*ביטול הורדה של\s*([\d.]+)(?:\s+([^·]+?))?\s*·\s*הוצאה\s*#(\S+)\s*נמחקה\s*·\s*(.+)$/.exec(body);
   if (expenseMatch) {
-    const [, qty, num, when] = expenseMatch;
+    const [, qty, unit, num, when] = expenseMatch;
     return {
       kind: 'reversal', date: date || when.trim(), sourceTable: 'הוצאות', sourceId: null, sourceNumber: num,
-      category: null, quantity: Number(qty), sourceLabel: `הוצאה #${num} נמחקה`,
+      category: null, quantity: Number(qty), unit: unit ? unit.trim() : null, sourceLabel: `הוצאה #${num} נמחקה`,
       derivedFrom: null, warning: '↩ הוחזר במחיקת הוצאה', link: null, raw: rawLine,
     };
   }
