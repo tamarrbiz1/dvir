@@ -59,7 +59,9 @@ export function withPreservedInventoryTags(originalNotes, newFreeText) {
 /** תיאור קצר למצב (לתג קומפקטי בטבלה) */
 export function inventoryAiSummary(state) {
   if (!state) return null;
-  if (state.status === 'failed') return { kind: 'error', text: 'ניתוח מלאי נכשל' };
+  // סעיף V2 (8.10.2026): כשל-ניתוח אינו "לא נמצאו פריטים" — מוצגת הודעה
+  // ידידותית שמבהירה שזו תקלה זמנית ושכדאי לנסות שוב ("נתח מחדש").
+  if (state.status === 'failed') return { kind: 'error', text: state.error || 'הניתוח לא זמין כרגע — נסו שוב מאוחר יותר' };
   const results = Array.isArray(state.results) ? state.results : [];
   const deducted = results.filter((r) => r.deducted);
   const pending = results.filter((r) => r.needsApproval && !r.deducted);

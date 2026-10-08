@@ -457,9 +457,15 @@ function InventoryAiSection({ expense, onChanged }) {
     if (busy) return;
     setBusy(true); setError('');
     try {
-      const r = await authFetch(`/api/expenses/${expense.id}/analyze-inventory`, { method: 'POST' });
+      // סעיף V3 (8.10.2026): "נתח מחדש" על הוצאה שכבר נותחה (כולל כזו
+      // שהסתיימה ב-0 פריטים או נכשלה) חייב לשלוח force — אחרת השרת חוזר
+      // מיד עם ה-state הקיים ושום דבר לא קורה. ההורדה עצמה מוגנת
+      // מכפילות ע"י סמני ה-[מלאי-AI] הקיימים, לא ע"י חסימת ההרצה.
+      const url = `/api/expenses/${expense.id}/analyze-inventory${state ? '?force=1' : ''}`;
+      const r = await authFetch(url, { method: 'POST' });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || 'שגיאה');
+      if (data?.status === 'failed' && data?.error) setError(data.error);
       await onChanged?.();
     } catch (e) {
       setError(`הניתוח נכשל: ${e.message || e}`);
@@ -490,7 +496,10 @@ function InventoryAiSection({ expense, onChanged }) {
 
       {!state && <div className="muted" style={{ marginBottom: 10 }}>המסמך עדיין לא נותח למלאי.</div>}
       {state?.status === 'failed' && (
-        <div className="badge badge-error" style={{ width: '100%', marginBottom: 10 }}>✕ הניתוח נכשל: {state.error || 'שגיאה לא ידועה'}</div>
+        <div className="badge badge-error" style={{ width: '100%', marginBottom: 10 }}>
+          ✕ {state.error || 'הניתוח לא זמין כרגע — נסו שוב מאוחר יותר'}
+          <span className="muted"> — אפשר ללחוץ "נתח מחדש"</span>
+        </div>
       )}
       {state && state.status !== 'failed' && !results.length && (
         <div className="muted" style={{ marginBottom: 10 }}>לא נמצאו פריטי מלאי במסמך.</div>

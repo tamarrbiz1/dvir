@@ -227,7 +227,14 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
     const buffer = await downloadAttachment(file.url);
     analysis = await analyzeExpenseDocument(buffer, file.type || 'application/pdf', inventoryItems);
   } catch (e) {
-    const state = { status: 'failed', analyzedAt: new Date().toISOString(), error: e.message, results: [] };
+    // סעיף V2 (8.10.2026): להבדיל בין "הניתוח **נכשל**" לבין "נותח ובאמת
+    // אין פריטים". כשל נשמר כ-`failed` (לא `done`), עם הודעה ידידותית
+    // למשתמשת; הפירוט הטכני נרשם ללוג השרת בלבד ולא נדחף לכרטיס.
+    const friendly = e?.analysisUnavailable
+      ? 'הניתוח לא זמין כרגע — נסו שוב מאוחר יותר'
+      : (e?.message || 'שגיאה לא ידועה');
+    console.error(`[inventory-ai] ניתוח הוצאה ${expenseId} נכשל: ${e?.message}${e?.detail ? ` | ${e.detail}` : ''}`);
+    const state = { status: 'failed', analyzedAt: new Date().toISOString(), error: friendly, results: [] };
     await saveState(expenseId, currentNotes, state);
     return state;
   }
