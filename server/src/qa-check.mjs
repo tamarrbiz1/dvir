@@ -24,7 +24,7 @@ import { matchLinesToInventory, categoryOfDescription, normalize } from './inven
 import {
   readState, deductFromInventoryItem, validateManualExpenseInput, ValidationError,
   MAX_MANUAL_LINES, sanitizeFreeNotes, mergeFreeNotesWithTags, manualExpenseSubmitKey,
-  claimManualExpenseSubmission,
+  claimManualExpenseSubmission, hideInventoryLedgerLine, updateInventoryFreeNotes,
 } from './inventory-deduction.js';
 import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD, planLogisticsReversal } from './logistics-deduction.js';
 import { fixFilenameEncoding } from './filename-utils.js';
@@ -2889,6 +2889,130 @@ await test('V: יחידת-שטח (מ"ר) ו"כמות גדולה מהמלאי" ד
   const over = byDesc(rows, 'רשת מעל המלאי');
   if (!over?.needsApproval || !/גדולה מהמלאי/.test(over.reason || '')) throw new Error('כמות מעל המלאי חייבת לדרוש אישור');
   return 'מ"ר → אישור · 4 יחידות מתוך 10 → יורד · 9999 מתוך 10 → אישור';
+});
+
+// ============================================================
+// תוספת 2026-10-08 — "אפשרות למחוק הערות מרשימת ההערות" (פריט-מלאי).
+// כל הבדיקות כאן נוגעות ב"מלאי בסיסי" בלבד (לא מנוטר ע"י Make) — בטוחות
+// להרצה תמיד, בלי RUN_UPLOAD_TESTS. ההחלטה שנבדקת: שורת-תנועה (↓/↩/⚠)
+// לעולם לא נמחקת בפועל, רק מוסתרת (ר' הערת-הכותרת ב-inventory-deduction.js
+// ליד hideInventoryLedgerLine) — כדי ש(1) אף תגית-אידמפוטנטיות לא תיעלם
+// (מנעד הורדה-כפולה בניתוח חוזר), ו-(2) לא תהיה התנגשות עם מחיקה-מדורגת
+// קיימת של המסמך-המקור. רק הערה-חופשית אמיתית נמחקת.
+// ============================================================
+await test('inventoryLedger: שורת-בקרה [מלאי-מוסתר] מסתירה שורת-תנועה אבל לא פוגעת בשאר (פרסור טהור)', () => {
+  const deductionLine = '↓ 10 ממלאי: קטגX (תעודה #1, שבוע 20260101-20260107) [מלאי-D:תעודות משלוח:recFAKE1:קטגX]';
+  const notes = `${deductionLine}\nהערה חופשית\n[מלאי-מוסתר]${JSON.stringify({ lines: [deductionLine] })}`;
+  const { movements, freeNotes, hiddenCount } = parseInventoryLedger(notes);
+  if (movements.length !== 0) throw new Error(`שורת-התנועה המוסתרת לא הייתה אמורה להופיע ב-movements: ${JSON.stringify(movements)}`);
+  if (hiddenCount !== 1) throw new Error(`hiddenCount צפוי 1, התקבל ${hiddenCount}`);
+  if (freeNotes !== 'הערה חופשית') throw new Error(`freeNotes שגוי (שורת-הבקרה עצמה לא אמורה להופיע כהערה חופשית): "${freeNotes}"`);
+});
+
+await test('הסתרת שורת-תנועה (POST /api/inventory/:id/ledger-line/hide): התגית נשארת בשדה, המלאי לא נוגע, אידמפוטנטי', async () => {
+  const item = await create('מלאי בסיסי', { 'קטגוריה': await freeInventoryCategory(), 'מלאי נוכחי': 50, 'הערות': MARK });
+  const tag = `[מלאי-D:תעודות משלוח:recFAKEQA00000001:${MARK}]`;
+  const deductionLine = `↓ 10 ממלאי: ${MARK} (תעודה #1, שבוע 20260101-20260107) ${tag}`;
+  await patch('מלאי בסיסי', item.id, { 'הערות': `${MARK}\n${deductionLine}` });
+
+  const r1 = await api('POST', `inventory/${item.id}/ledger-line/hide`, { line: deductionLine });
+  if (!r1.ok) throw new Error(`הסתרה ראשונה נכשלה: ${JSON.stringify(r1)}`);
+  const after1 = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
+  const notes1 = String(after1['הערות'] || '');
+  if (!notes1.includes(deductionLine)) throw new Error('הטקסט המקורי (כולל התגית) נמחק מהשדה — זו מחיקה אמיתית, לא הסתרה!');
+  if (!notes1.includes(tag)) throw new Error('תגית-האידמפוטנטיות נעלמה — ניתוח חוזר היה מוריד שוב (הורדה כפולה)');
+  if (Number(after1['מלאי נוכחי']) !== 50) throw new Error(`הסתרה לא אמורה לשנות מלאי: ${after1['מלאי נוכחי']}`);
+  const parsed1 = parseInventoryLedger(notes1);
+  if (parsed1.movements.length !== 0 || parsed1.hiddenCount !== 1) throw new Error(`הפרסור עדיין מציג את השורה המוסתרת: ${JSON.stringify(parsed1)}`);
+
+  // קריאה שנייה על אותה שורה — אידמפוטנטי, בלי שורת-בקרה כפולה/כפל-ערך ברשימה
+  const r2 = await api('POST', `inventory/${item.id}/ledger-line/hide`, { line: deductionLine });
+  if (!r2.ok) throw new Error(`הסתרה שנייה (idempotent) נכשלה: ${JSON.stringify(r2)}`);
+  const after2 = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
+  const controlMatches = String(after2['הערות'] || '').match(/\[מלאי-מוסתר\]\{.*\}/g) || [];
+  if (controlMatches.length !== 1) throw new Error(`צפויה שורת-בקרה אחת בלבד, נמצאו ${controlMatches.length}`);
+  const hiddenArr = JSON.parse(controlMatches[0].replace('[מלאי-מוסתר]', '')).lines;
+  if (hiddenArr.length !== 1) throw new Error(`צפויה שורה מוסתרת אחת, נמצאו ${hiddenArr.length} (כפילות!)`);
+  return 'הטקסט+התגית נשארו בשדה, המלאי לא השתנה, קריאה כפולה אידמפוטנטית (בלי כפילות ברשימת-המוסתרות)';
+});
+
+await test('הסתרת שורה: דוחה הערה-חופשית (400 not-ledger-line) ושורה שלא קיימת (409 not-found)', async () => {
+  const item = await create('מלאי בסיסי', { 'קטגוריה': await freeInventoryCategory(), 'מלאי נוכחי': 10, 'הערות': `${MARK}\nהערה חופשית ממש` });
+  const problems = [];
+  try {
+    await api('POST', `inventory/${item.id}/ledger-line/hide`, { line: 'הערה חופשית ממש' });
+    problems.push('הערה-חופשית התקבלה כשורת-תנועה — לא תקין!');
+  } catch (e) { if (!String(e.message).startsWith('400')) problems.push(`הערה-חופשית: שגיאה לא-צפויה: ${e.message}`); }
+  try {
+    await api('POST', `inventory/${item.id}/ledger-line/hide`, { line: '↓ 999 ממלאי: לא-קיים (x) [מלאי-D:x:y:z]' });
+    problems.push('שורה שלא קיימת בשדה התקבלה — לא תקין!');
+  } catch (e) { if (!String(e.message).startsWith('409')) problems.push(`שורה-לא-קיימת: שגיאה לא-צפויה: ${e.message}`); }
+  try {
+    await api('PATCH', `inventory/${item.id}/notes`, { freeText: 123 });
+    problems.push('freeText לא-מחרוזת התקבל — לא תקין!');
+  } catch (e) { if (!String(e.message).startsWith('400')) problems.push(`freeText לא-מחרוזת: שגיאה לא-צפויה: ${e.message}`); }
+  if (problems.length) throw new Error(problems.join('; '));
+  return 'הערה-חופשית→400, שורה-לא-קיימת→409, freeText לא-מחרוזת→400';
+});
+
+await test('מחיקת הערה-חופשית (PATCH /api/inventory/:id/notes): מוחקת רק את הטקסט, שורת-תנועה+תגית+שורת-בקרה נשארות מילה-במילה', async () => {
+  const item = await create('מלאי בסיסי', { 'קטגוריה': await freeInventoryCategory(), 'מלאי נוכחי': 20, 'הערות': MARK });
+  const tag = `[מלאי-D:תעודות משלוח:recFAKEQA00000002:${MARK}]`;
+  const deductionLine = `↓ 3 ממלאי: ${MARK} (תעודה #2, שבוע 20260101-20260107) ${tag}`;
+  await patch('מלאי בסיסי', item.id, { 'הערות': `${MARK}\n${deductionLine}` });
+  await api('POST', `inventory/${item.id}/ledger-line/hide`, { line: deductionLine }); // גם שורה מוסתרת צריכה לשרוד
+
+  const result = await api('PATCH', `inventory/${item.id}/notes`, { freeText: `${MARK}\nהערה שנייה למחיקה` });
+  const notesAfterAdd = String(result['הערות'] || '');
+  if (!notesAfterAdd.includes(deductionLine) || !notesAfterAdd.includes(tag)) throw new Error('שורת-התנועה/התגית לא שרדו עריכת-הערה חופשית');
+  if (!/\[מלאי-מוסתר\]/.test(notesAfterAdd)) throw new Error('שורת-הבקרה (המוסתרות) לא שרדה עריכת-הערה חופשית');
+
+  // "מחיקת" השורה השנייה — שולחים רק את מה שנשאר מהטקסט החופשי
+  const result2 = await api('PATCH', `inventory/${item.id}/notes`, { freeText: MARK });
+  const notesAfterDelete = String(result2['הערות'] || '');
+  if (notesAfterDelete.includes('הערה שנייה למחיקה')) throw new Error('ההערה-החופשית לא נמחקה בפועל');
+  if (!notesAfterDelete.includes(deductionLine) || !notesAfterDelete.includes(tag)) throw new Error('מחיקת הערה-חופשית פגעה בשורת-התנועה/בתגית — זה אסור!');
+  if (!/\[מלאי-מוסתר\]/.test(notesAfterDelete)) throw new Error('מחיקת הערה-חופשית פגעה בשורת-הבקרה (המוסתרות)');
+  const parsed = parseInventoryLedger(notesAfterDelete);
+  if (parsed.movements.length !== 0 || parsed.hiddenCount !== 1) throw new Error('מצב ההסתרה לא נשמר אחרי מחיקת-הערה-חופשית');
+  return 'הערה-חופשית נמחקה; שורת-התנועה, התגית, והסתרתה — כולן שרדו מילה-במילה';
+});
+
+await test('בטיחות-מרוץ (סעיף 3 במשימה): מחיקת-הערה-חופשית במקביל להורדת-מלאי אמיתית על אותו פריט — שום דבר לא נדרס', async () => {
+  // deductFromInventoryItem (מופעל בפועל ע"י הוצאה/תעודה/חשבונית אמיתית
+  // דרך withInventoryLock+withKeyLock('item:<id>')) מדמה כאן "ניתוח-מלאי
+  // שרץ ברקע באותו רגע שבו המשתמשת מוחקת הערה-חופשית מהדרואר". שתי
+  // הפעולות חולקות את אותה נעילה (item:<id>) ב-inventory-deduction.js —
+  // קריאה-מחדש-טרייה לפני כתיבה היא מה שמונע כאן lost-update.
+  const item = await create('מלאי בסיסי', { 'קטגוריה': await freeInventoryCategory(), 'מלאי נוכחי': 100, 'הערות': MARK });
+  const deductionLine = `↓ 7 · הוצאה #${MARK}-X · ספק-QA · ${today}`;
+  await Promise.all([
+    deductFromInventoryItem(item.id, 7, deductionLine),
+    updateInventoryFreeNotes(item.id, `${MARK}\nהערה שהוקלדה בדיוק באותו רגע`),
+  ]);
+  const after = await api('GET', `${enc('מלאי בסיסי')}/${item.id}`);
+  if (Number(after['מלאי נוכחי']) !== 93) throw new Error(`צפוי 93 (100-7), התקבל ${after['מלאי נוכחי']} — ההורדה המקבילה אבדה`);
+  const notes = String(after['הערות'] || '');
+  if (!notes.includes(deductionLine)) throw new Error('שורת-ההורדה המקבילה אבדה — נדרסה ע"י מחיקת-ההערה-החופשית שרצה באותו רגע');
+  if (!notes.includes('הערה שהוקלדה בדיוק באותו רגע')) throw new Error('עריכת-ההערה-החופשית אבדה — נדרסה ע"י ההורדה המקבילה');
+  return `מלאי ${100}→${after['מלאי נוכחי']}, שתי הכתיבות המקבילות שרדו (שום lost-update)`;
+});
+
+await test('אבטחה: PATCH/POST הערות-מלאי — manager מורשה (מלאי בסיסי ב-MANAGER_WRITE), בלי טוקן נחסם', async () => {
+  const item = await create('מלאי בסיסי', { 'קטגוריה': await freeInventoryCategory(), 'מלאי נוכחי': 5, 'הערות': `${MARK}\nלמחיקה` });
+  const problems = [];
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  if (manager) {
+    const mLogin = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
+    try { await apiAs(mLogin.token, 'PATCH', `inventory/${item.id}/notes`, { freeText: MARK }); }
+    catch (e) { problems.push(`manager נחסם מ-PATCH הערות (לא תקין — "מלאי בסיסי" ב-MANAGER_WRITE): ${e.message}`); }
+  }
+  try { await apiAs(null, 'PATCH', `inventory/${item.id}/notes`, { freeText: MARK }); problems.push('בלי טוקן עבר PATCH - לא תקין!'); }
+  catch (e) { if (!String(e.message).startsWith('401')) problems.push(`בלי טוקן (PATCH) שגיאה לא-צפויה: ${e.message}`); }
+  try { await apiAs(null, 'POST', `inventory/${item.id}/ledger-line/hide`, { line: 'x' }); problems.push('בלי טוקן עבר hide - לא תקין!'); }
+  catch (e) { if (!String(e.message).startsWith('401')) problems.push(`בלי טוקן (hide) שגיאה לא-צפויה: ${e.message}`); }
+  if (problems.length) throw new Error(problems.join('; '));
+  return manager ? 'manager הורשה, בלי-טוקן נחסם (401) בשני הנתיבים' : 'דולג על בדיקת-manager (אין רשומת מנהל-עבודה) — בלי-טוקן נחסם (401) נבדק';
 });
 
 // ============ 4. ניקוי מלא ============

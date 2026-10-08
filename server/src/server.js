@@ -12,7 +12,7 @@ import {
 } from './auth.js';
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
-import { analyzeExpenseInventory, approvePendingDeduction, readState, createManualExpense, runManualExpenseInventoryDeduction, validateManualExpenseInput, manualExpenseSubmitKey, claimManualExpenseSubmission, updateExpenseFreeNotes } from './inventory-deduction.js';
+import { analyzeExpenseInventory, approvePendingDeduction, readState, createManualExpense, runManualExpenseInventoryDeduction, validateManualExpenseInput, manualExpenseSubmitKey, claimManualExpenseSubmission, updateExpenseFreeNotes, updateInventoryFreeNotes, hideInventoryLedgerLine } from './inventory-deduction.js';
 import { analyzeLogisticsInventory } from './logistics-deduction.js';
 import { cascadeDocumentDelete, summarizeCascade } from './document-cascade.js';
 import { fixFilenameEncoding } from './filename-utils.js';
@@ -467,6 +467,57 @@ app.patch('/api/expenses/:id/notes', authenticate, requireOwner, async (req, res
     const notes = await updateExpenseFreeNotes(req.params.id, freeText || '');
     invalidateReads('הוצאות');
     res.json({ id: req.params.id, 'הערות': notes });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// מחיקת/הסתרת הערה מפריט-מלאי (תוספת 2026-10-08, "אפשרות למחוק הערות
+// מרשימת ההערות") — שני נתיבים נפרדים בכוונה, לא PATCH גנרי יחיד:
+//
+// 1) PATCH /api/inventory/:id/notes — הערה-חופשית אמיתית בלבד (אותו
+//    shape בדיוק כמו PATCH /api/expenses/:id/notes למעלה: הלקוח שולח
+//    רק את הטקסט החופשי הרצוי, השרת קורא מחדש ומדביק את כל שורות-
+//    התנועה/הבקרה העכשוויות — ר' updateInventoryFreeNotes).
+// 2) POST /api/inventory/:id/ledger-line/hide — שורת-תנועה בודדת
+//    (↓/↩/⚠, עם תגית-אידמפוטנטיות או בלי) — **לא נמחקת**, רק מוסתרת
+//    (ר' הערת-הכותרת המפורטת ב-inventory-deduction.js ליד
+//    hideInventoryLedgerLine: מחיקה אמיתית הייתה מוחקת תגית-אידמפוטנטיות
+//    ומאפשרת הורדה כפולה בניתוח חוזר, או מתנגשת עם מחיקה-מדורגת קיימת
+//    של ההוצאה/המסמך עצמו). מנהל-עבודה מורשה (ר' MANAGER_WRITE באUTH —
+//    "מלאי בסיסי" כבר כתיבה-מורשית לו, לא owner-בלבד כמו "הוצאות").
+// ============================================================
+function requireInventoryWrite(req, res, next) {
+  if (!canWriteTable(req.auth.role, 'מלאי בסיסי')) return res.status(403).json({ error: 'אין הרשאת עדכון למלאי' });
+  next();
+}
+
+app.patch('/api/inventory/:id/notes', authenticate, requireInventoryWrite, async (req, res) => {
+  try {
+    const { freeText } = req.body || {};
+    if (freeText != null && typeof freeText !== 'string') {
+      return res.status(400).json({ error: 'freeText חייב להיות טקסט' });
+    }
+    const notes = await updateInventoryFreeNotes(req.params.id, freeText || '');
+    invalidateReads('מלאי בסיסי');
+    res.json({ id: req.params.id, 'הערות': notes });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/inventory/:id/ledger-line/hide', authenticate, requireInventoryWrite, async (req, res) => {
+  try {
+    const { line } = req.body || {};
+    if (!line || typeof line !== 'string') return res.status(400).json({ error: 'חסרה שורה להסתרה (line)' });
+    const result = await hideInventoryLedgerLine(req.params.id, line);
+    if (!result.ok) {
+      if (result.reason === 'not-ledger-line') return res.status(400).json({ error: 'שורה זו אינה שורת-תנועה' });
+      return res.status(409).json({ error: 'השורה לא נמצאה — ייתכן שהמלאי התרענן בינתיים, טען מחדש ונסה שוב' });
+    }
+    invalidateReads('מלאי בסיסי');
+    res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
