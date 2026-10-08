@@ -59,13 +59,32 @@ function fuzzyIncludes(haystack, needle) {
   return false;
 }
 
-/** קטגוריית המלאי (אם בכלל) שמילת-תיאור שייכת אליה, לפי מילון הכינויים */
-function categoryOfDescription(description) {
+/**
+ * קטגוריית המלאי (אם בכלל) שמילת-תיאור שייכת אליה.
+ *
+ * ⚠️ סעיף V4 (8.10.2026, הוראת תמר): עד כה ההתאמה הסתמכה **רק** על
+ * מילון-הכינויים הקבוע (4 שמות בקוד), ולכן כל קטגוריה שתמר מוסיפה
+ * במלאי — למשל "סולר" או "רשתות" — לא הייתה מזוהה לעולם, גם אם שם
+ * הפריט מופיע מילה-במילה בחשבונית. עכשיו מתאימים **גם מול רשימת
+ * הקטגוריות שקיימות בפועל במלאי**, והמילון נשאר כתוספת (לכינויים
+ * שאינם שם-הקטגוריה: "יריעה"→נילונים, "ארגז"→קרטונים וכו').
+ *
+ * סדר: קודם המילון המתוחזק (מדויק וממוקד), ואחריו שמות-הקטגוריות
+ * האמיתיים. `categories` אופציונלי — בלעדיו ההתנהגות זהה לקודם
+ * (כך שבדיקות קיימות שקוראות עם ארגומנט אחד ממשיכות לעבוד).
+ */
+function categoryOfDescription(description, categories) {
   const norm = normalize(description);
   for (const [category, aliases] of Object.entries(CATEGORY_ALIASES)) {
     if (aliases.some((a) => fuzzyIncludes(norm, a))) return category;
     // גם שם הקטגוריה המלא עצמו ("נילונים"/"קרטונים"/...) ככינוי
     if (fuzzyIncludes(norm, category)) return category;
+  }
+  for (const category of categories || []) {
+    const c = normalize(category);
+    // שם קצר מדי (1-2 תווים) יתפוס רעש — למשל קטגוריה "מ'" בתוך כל מילה
+    if (c.length < 3) continue;
+    if (fuzzyIncludes(norm, c)) return category;
   }
   return null;
 }
@@ -80,10 +99,23 @@ function categoryOfDescription(description) {
  * המלאי אצלנו לא שומר יחידת-מידה מפורשת לכל פריט (רק "מלאי נוכחי"
  * מספרי גולמי) — אין מקור-אמת להמיר נגדו בלי לנחש.
  */
+// ⚠️ 8.10.2026, באג אמיתי שנתפס בבדיקה חיה על הוצאה #48: שלוש שורות
+// "רשת נגד מזיקים" נמדדו ב-**מ"ר** (382.5 / 960 / 600), ו-"מ\"ר" לא היה
+// ברשימת היחידות-הלא-ברורות — ולכן הן ירדו כאילו היו יחידות, והורידו
+// את "רשתות" מ-10 ל-**-1932.5**. (בוטל מיד דרך reverseInventoryDeduction.)
+// לפני סעיף V4 זה לא היה מתרחש רק במקרה — "רשת" לא התאימה לאף קטגוריה
+// במילון, ולכן שום דבר לא ירד. ברגע שההתאמה לקטגוריות-אמיתיות נפתחה,
+// הפער הזה נחשף. שתי הגנות נוספו: רשימת-היחידות הורחבה (שטח/נפח/משקל/
+// אורך), **וגם** חסם-שפיות שלא נותן להוריד אוטומטית יותר מהמלאי הקיים.
+const AMBIGUOUS_UNITS = [
+  'מ', 'מטר', 'מטרים', 'מטר רץ', 'ליטר', 'ליטרים', 'חבילה', 'חבילות',
+  'ק"ג', 'קג', 'קילו', 'גרם', 'טון',
+  'מ"ר', 'מ"ק', 'דונם', 'סמ"ר', 'מ״ר', 'מ״ק',
+];
+
 function resolveQuantity(line) {
   if (line.quantity == null || !Number.isFinite(line.quantity) || line.quantity <= 0) return { ok: false };
   const unit = normalize(line.unit || '');
-  const AMBIGUOUS_UNITS = ['מ', 'מטר', 'מטרים', 'ק"ג', 'קג', 'ליטר', 'חבילה', 'חבילות']; // דורשות המרה שאין לנו בסיס לה
   if (unit && AMBIGUOUS_UNITS.some((u) => unit === normalize(u))) return { ok: false };
   return { ok: true, quantity: line.quantity };
 }
@@ -105,14 +137,20 @@ export function matchLinesToInventory(lines, inventoryItems) {
 
   const results = [];
   for (const line of lines) {
-    const category = categoryOfDescription(line.description);
+    // סעיף V4: גם מול הקטגוריות שקיימות בפועל במלאי, לא רק מול המילון
+    const category = categoryOfDescription(line.description, [...itemsByCategory.keys()]);
     if (!category) continue; // אין התאמה לאף קטגוריה — לא מדווח (רק פריטים קיימים)
     const item = itemsByCategory.get(category);
     if (!item) continue; // הקטגוריה זוהתה אבל אין לה פריט במלאי כרגע (למשל לפני שתמר תוסיף)
 
     const qty = resolveQuantity(line);
     const CONFIDENCE_THRESHOLD = 0.85;
-    const needsApproval = !qty.ok || line.confidence < CONFIDENCE_THRESHOLD;
+    // חסם-שפיות (8.10.2026): הורדה אוטומטית לא תיקח את המלאי למינוס.
+    // זה השומר האחרון מול טעות-המרת-יחידות — גם אם יחידה חדשה תתפספס
+    // ברשימה למעלה, המערכת תבקש אישור במקום להוריד 1,942 מתוך 10.
+    const current = Number(item['מלאי נוכחי']);
+    const exceedsStock = qty.ok && Number.isFinite(current) && qty.quantity > current;
+    const needsApproval = !qty.ok || exceedsStock || line.confidence < CONFIDENCE_THRESHOLD;
     results.push({
       line,
       item,
@@ -120,7 +158,11 @@ export function matchLinesToInventory(lines, inventoryItems) {
       confidence: line.confidence,
       quantity: qty.ok ? qty.quantity : line.quantity,
       needsApproval,
-      reason: !qty.ok ? 'יחידת מידה לא ברורה — דורש אישור' : (line.confidence < CONFIDENCE_THRESHOLD ? `ביטחון נמוך (${Math.round(line.confidence * 100)}%) — דורש אישור` : null),
+      reason: !qty.ok
+        ? 'יחידת מידה לא ברורה — דורש אישור'
+        : exceedsStock
+          ? `הכמות (${qty.quantity}) גדולה מהמלאי הקיים (${current}) — דורש אישור`
+          : (line.confidence < CONFIDENCE_THRESHOLD ? `ביטחון נמוך (${Math.round(line.confidence * 100)}%) — דורש אישור` : null),
     });
   }
   return results;
