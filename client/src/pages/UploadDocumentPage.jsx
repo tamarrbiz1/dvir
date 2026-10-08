@@ -5,6 +5,7 @@ import { authFetch } from '../utils/authFetch.js';
 import { formatDate, formatMoney, formatNumber } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { confirmDialog, toast } from '../utils/ui.js';
+import { cascadeDeleteMessage } from '../components/RecordForm.jsx';
 import { readInventoryAiState, inventoryAiSummary, logisticsAiSummary } from '../utils/inventoryAi.js';
 
 // ============================================================
@@ -342,14 +343,23 @@ export default function UploadDocumentPage() {
 
     const ok = await confirmDialog({ title: `מחיקת ${h.label}`, message, confirmLabel: 'מחק', danger: true });
     if (!ok) return;
+    // עדכון אופטימי (משימת "מחיקה בלי קפיצה", 2026-10-08): השורה מוסרת
+    // מההיסטוריה מיד, בלי לחכות לשרת. קודם לכן loadHistory() (לא silent)
+    // היה מחליף את כל הטבלה בשלד-טעינה בזמן שהרשומה נמחקת בשרת — זה
+    // ה"קפיצה" של האתר לכמה שניות שתמר דיווחה עליה ("כשאני מוחקת קובץ").
+    setHistory((cur) => cur.filter((x) => x.id !== h.id));
+    let result;
     try {
-      await app.api.remove(h.table, h.id);
+      result = await app.api.remove(h.table, h.id);
     } catch {
+      // כשל בשרת — השורה חוזרת למקומה (בראש הרשימה; המיקום המדויק יתוקן
+      // ברענון השקט הבא)
+      setHistory((cur) => (cur.some((x) => x.id === h.id) ? cur : [h, ...cur]));
       toast('לא ניתן היה למחוק את הפריט.', 'error');
       return;
     }
-    toast('הפריט נמחק בהצלחה');
-    loadHistory();
+    toast(cascadeDeleteMessage(result?.cascade));
+    loadHistory({ silent: true }); // סנכרון ברקע בלי שלד-טעינה — לא "קופץ"
   };
 
   return (

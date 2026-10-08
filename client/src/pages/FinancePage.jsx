@@ -85,6 +85,14 @@ export default function FinancePage() {
     const e = await app.api.get('הוצאות', '?maxRecords=400');
     setExpenses(Array.isArray(e) ? e : []);
   };
+  // הסרה/שחזור אופטימיים של הוצאה/צ'ק בודד ב-state המקומי — למחיקה בלי
+  // לחכות לרענון-מלא של כל הטבלה (ר' ExpensesTab/ChecksTab, משימת
+  // "מחיקה בלי קפיצה", 2026-10-08). reloadExpenses/reloadChecks עדיין
+  // רצים ברקע אחרי מחיקה מוצלחת כדי לסנכרן עם Airtable.
+  const removeExpenseLocal = (id) => setExpenses((cur) => cur.filter((x) => x.id !== id));
+  const restoreExpenseLocal = (exp) => setExpenses((cur) => (cur.some((x) => x.id === exp.id) ? cur : [...cur, exp]));
+  const removeCheckLocal = (id) => setChecks((cur) => cur.filter((x) => x.id !== id));
+  const restoreCheckLocal = (chk) => setChecks((cur) => (cur.some((x) => x.id === chk.id) ? cur : [...cur, chk]));
   const reloadMarketers = async () => {
     const s = await app.api.get('משווקים', '?maxRecords=100');
     setMarketers(Array.isArray(s) ? s : []);
@@ -127,9 +135,10 @@ export default function FinancePage() {
         <Overview weekly={weekly} expenses={expenses} invoices={invoices} checks={checks} />
       ) : tab === 'הוצאות' ? (
         <ExpensesTab app={app} expenses={expenses} suppliers={suppliers} onChanged={reloadExpenses}
+          onRemoveLocal={removeExpenseLocal} onRestoreLocal={restoreExpenseLocal}
           openId={pendingOpenExpense} onOpened={() => setPendingOpenExpense(null)} />
       ) : tab === "צ'קים" ? (
-        <ChecksTab checks={checks} onRefresh={reloadChecks} />
+        <ChecksTab checks={checks} onRefresh={reloadChecks} onRemoveLocal={removeCheckLocal} onRestoreLocal={restoreCheckLocal} />
       ) : (
         <MarketersTab marketers={marketers} invoices={invoices} deliveries={deliveries} app={app} onChanged={reloadMarketers} />
       )}
