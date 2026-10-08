@@ -20,7 +20,7 @@
 //   אמיתי אם יש מפתח אמיתי מוגדר.
 // ============================================================
 
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -37,8 +37,19 @@ const ANTHROPIC_VERSION = '2023-06-01';
 // ============================================================
 // נקרא בזמן-קריאה ולא בזמן-טעינת-המודול, כדי שבדיקות יוכלו להצביע
 // על CLI מדומה (ולכן גם: שינוי הנתיב לא דורש הפעלה-מחדש של השרת)
-function cliPath() { return process.env.CLAUDE_CLI_PATH || '/root/.local/bin/claude'; }
-const CLI_MODEL = 'claude-opus-5-5';
+// ⚠️ 8.10.2026 — תקלה חיה שדווחה מהשטח: `spawn ... EACCES`.
+// השירות רץ כ-User=zite עם ProtectHome=true, והתיקייה שבה ה-CLI הותקן
+// היא drwx------ של root — כלומר המשתמש zite **לא יכול להגיע אליה
+// בכלל**. בבדיקות ב-worktree זה עבד רק מפני שהרצתי אותן כ-root.
+// אסור לשנות את ה-unit ואסור להרפות ProtectHome, ולכן ה-CLI זמין
+// בעותק תחת /opt/zite-tools (נגיש ל-zite), ו-HOME ייעודי בבעלות zite
+// תחת /var/lib/zite-claude (ה-CLI צריך HOME כתיב ל-cache/session).
+// ברירות-המחדל מצביעות לשם כדי שלא יידרש שינוי ב-.env.production
+// (שאסור לי לגעת בו), ועדיין אפשר לעקוף דרך משתני-סביבה.
+function cliPath() { return process.env.CLAUDE_CLI_PATH || '/opt/zite-tools/claude'; }
+// 8.10.2026: הוחלף ל-Fable לפי הוראת תמר (המכסה עודכנה) — Opus החזיר
+// חילוץ פחות טוב (למשל כמות 0 לשורות "משטח עץ").
+const CLI_MODEL = 'claude-fable-5-1';
 function cliTimeoutMs() { return Number(process.env.DOC_ANALYSIS_TIMEOUT_MS) || 120_000; }
 const CLI_MAX_TURNS = '4'; // קריאת-קובץ אחת + תשובה; 4 מרווח-ביטחון לניסיון חוזר של הקריאה
 
@@ -77,6 +88,10 @@ const PROMPT = `אתה מנתח מסמכי הוצאה (חשבוניות/קבלו
     { "description": "התיאור המדויק כפי שמופיע במסמך", "quantity": מספר-כמות-או-null, "unit": "יחידת מידה כפי שמופיעה (יחידה/מ'/ק\"ג/ליטר/גליל/קרטון/וכו') או null", "unitPrice": מספר-או-null, "lineTotal": מספר-או-null, "confidence": מספר-בין-0-ל-1-כמה-אתה-בטוח-בזיהוי-השורה-הזו }
   ]
 }
+
+חשוב במיוחד לכל שורה:
+- "quantity" חייב להיות **הכמות שנרכשה בפועל** כפי שמופיעה בעמודת הכמות — מספר חיובי. אם בעמודת הכמות כתוב 0 אבל יש סכום/מחיר לשורה, חפש את הכמות האמיתית בעמודה אחרת (למשל "יחידות", "אריזות", "מ\"ר", "כמות שסופקה") ואל תחזיר 0. החזר 0 או null **רק** אם באמת אין במסמך שום כמות לשורה הזו.
+- "unit" חייב להיות יחידת-המידה המדויקת כפי שמופיעה במסמך לאותה שורה (יח'/יחידה/מ'/מ\"ר/מ\"ק/ק\"ג/ליטר/גליל/קרטון/שק/מגש...). אם לא כתובה יחידה — null.
 
 אם אין שום שורת מוצר ברורה במסמך — החזר lines: []. אל תמציא נתונים שלא מופיעים במסמך — שדה שלא ברור = null, לא ניחוש.`;
 
@@ -140,11 +155,18 @@ function cliSettings() {
 function cliEnv() {
   // נבנה מאפס בכוונה (לא ...process.env): ה-CLI צריך רק HOME (שם
   // יושבת ההתחברות למנוי), PATH ו-locale. כל סוד אחר לא עובר.
-  return {
-    HOME: process.env.CLAUDE_CLI_HOME || process.env.HOME || '/root',
+  const env = {
+    HOME: process.env.CLAUDE_CLI_HOME || '/var/lib/zite-claude',
     PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
     LANG: process.env.LANG || 'C.UTF-8',
   };
+  // אם הוגדר טוקן-מנוי ארוך-טווח בסביבת השרת — מועבר הלאה כמו-שהוא.
+  // זו הדרך הנקייה לאמת תהליך שרץ תחת משתמש אחר. לא נקרא, לא נרשם
+  // לשום לוג, ולא מודפס.
+  for (const k of ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN']) {
+    if (process.env[k]) env[k] = process.env[k];
+  }
+  return env;
 }
 
 function cliPrompt(fileName) {
@@ -167,21 +189,53 @@ function enqueueCli(task) {
   return result;
 }
 
+// ⚠️ 8.10.2026 — שני באגים אמיתיים שנתפסו רק כשזה רץ בפועל מתוך השרת
+// (ולא מהטרמינל), ושניהם תוקנו כאן:
+//  (1) **stdin**: ל-execFile אין stdin סגור, ולכן ה-CLI המתין לקלט
+//      והדפיס "no stdin data received in 3s". לכן spawn עם
+//      stdio:['ignore',...] — stdin סגור מראש, בלי המתנה מיותרת.
+//  (2) **יציאה לא-אפסית עם פלט תקין**: כש-ה-CLI נכשל עניינית (למשל
+//      "Not logged in") הוא יוצא בקוד שונה-מאפס **אבל מדפיס מעטפת JSON
+//      תקינה**. הגרסה הקודמת החזירה "הפעלת כלי הניתוח נכשלה" גנרי
+//      ואיבדה את הסיבה האמיתית. עכשיו: אם יש מעטפת — מפרסרים אותה
+//      (וכך הסיבה המדויקת מגיעה ללוג), ורק אם אין — שגיאת-הרצה.
 function runCli(args, cwd) {
   return new Promise((resolve, reject) => {
-    execFile(cliPath(), args, {
-      cwd,
-      timeout: cliTimeoutMs(),
-      killSignal: 'SIGKILL',
-      maxBuffer: 20 * 1024 * 1024,
-      env: cliEnv(),
-      windowsHide: true,
-    }, (err, stdout, stderr) => {
-      if (err) {
-        if (err.code === 'ENOENT') return reject(new AnalysisUnavailableError('כלי הניתוח אינו מותקן בשרת', cliPath()));
-        if (err.killed || err.signal) return reject(new AnalysisUnavailableError(`הניתוח חרג מ-${Math.round(cliTimeoutMs() / 1000)} שניות`));
-        return reject(new AnalysisUnavailableError('הפעלת כלי הניתוח נכשלה', String(stderr || err.message).slice(0, 300)));
-      }
+    let child;
+    try {
+      child = spawn(cliPath(), args, {
+        cwd,
+        env: cliEnv(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+    } catch (e) {
+      return reject(new AnalysisUnavailableError('הפעלת כלי הניתוח נכשלה', e.message));
+    }
+
+    let stdout = '';
+    let stderr = '';
+    let finished = false;
+    const MAX = 20 * 1024 * 1024;
+    const timer = setTimeout(() => {
+      if (!finished) { finished = true; child.kill('SIGKILL'); reject(new AnalysisUnavailableError(`הניתוח חרג מ-${Math.round(cliTimeoutMs() / 1000)} שניות`)); }
+    }, cliTimeoutMs());
+
+    child.stdout.on('data', (d) => { if (stdout.length < MAX) stdout += d; });
+    child.stderr.on('data', (d) => { if (stderr.length < MAX) stderr += d; });
+    child.on('error', (err) => {
+      if (finished) return;
+      finished = true; clearTimeout(timer);
+      if (err.code === 'ENOENT') return reject(new AnalysisUnavailableError('כלי הניתוח אינו מותקן בשרת', cliPath()));
+      if (err.code === 'EACCES') return reject(new AnalysisUnavailableError('אין הרשאה להפעיל את כלי הניתוח', cliPath()));
+      reject(new AnalysisUnavailableError('הפעלת כלי הניתוח נכשלה', err.message));
+    });
+    child.on('close', (code) => {
+      if (finished) return;
+      finished = true; clearTimeout(timer);
+      // יש מעטפת JSON? תמיד מעדיפים אותה — גם ביציאה לא-אפסית
+      if (String(stdout).trim().startsWith('{')) return resolve(String(stdout));
+      if (code !== 0) return reject(new AnalysisUnavailableError('הפעלת כלי הניתוח נכשלה', String(stderr || `exit ${code}`).slice(0, 300)));
       resolve(String(stdout || ''));
     });
   });
@@ -201,6 +255,13 @@ function parseCliEnvelope(stdout) {
   }
   if (envelope?.is_error || envelope?.subtype !== 'success' || envelope?.type !== 'result') {
     const why = envelope?.api_error_status || envelope?.subtype || envelope?.terminal_reason || 'שגיאה לא ידועה';
+    // מצב "אינו מחובר לחשבון" הוא תקלה תפעולית שדורשת פעולה אנושית
+    // חד-פעמית (חיבור עבור המשתמש שמריץ את השרת), ולא תקלה חולפת —
+    // מפרידים אותו כדי שהלוג יגיד בדיוק מה חסר, במקום "נסו שוב מאוחר
+    // יותר" שיחזור לנצח.
+    if (/not logged in|please run \/login/i.test(String(envelope?.result || ''))) {
+      throw new AnalysisUnavailableError('כלי הניתוח אינו מחובר לחשבון — דרושה התחברות חד-פעמית עבור המשתמש שמריץ את השרת');
+    }
     throw new AnalysisUnavailableError('הניתוח לא הושלם', String(why).slice(0, 200));
   }
   return parseJsonLoose(envelope.result); // לא-JSON → זורק (ולא "0 פריטים")

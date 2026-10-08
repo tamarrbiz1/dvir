@@ -19,7 +19,7 @@ import { authFetch } from '../utils/authFetch.js';
 import { toast } from '../utils/ui.js';
 import { CHECKS_TABLE, CHECK_FIELDS, checkBelongsToSupplier, checkNumber, checkPayee, sortByDue } from '../utils/checks.js';
 import { StatusBadge } from '../components/ChecksTab.jsx';
-import { itemUnit } from './InventoryPage.jsx';
+import { itemUnit } from '../utils/inventoryUnits.js';
 
 const TABLE = 'ספקים';
 const SUPPLIER_TABS = ['פרטים', 'הוצאות', "צ'קים", 'מלאי קשור'];

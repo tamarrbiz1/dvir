@@ -22,26 +22,12 @@ import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useAutoRefresh } from '../utils/live.js';
 import { parseInventoryLedger, resolveExpenseLinks, summarizeRecentDrops } from '../utils/inventoryLedger.js';
+import { UNIT_OPTIONS, itemUnit } from '../utils/inventoryUnits.js';
 
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 
 const TABLE = 'מלאי בסיסי';
-
-// ============================================================
-// יחידת-מידה (סעיף Z, 8.10.2026) — "יחידת מידה" הוא שדה-טקסט-חופשי
-// ב-Airtable (תמר הוסיפה אותו בעצמה, לא single-select אמיתי — אין לו
-// choices במטא). שבע האפשרויות כאן הן רשימה-קבועה בצד הלקוח בלבד
-// (ר' RecordForm.jsx, staticOptions) + "➕ ... חדש/ה…" (allowNew) לערך
-// חדש שהמשתמשת מקלידה — נשמר כטקסט רגיל, בלי typecast.
-// ⚠️ ריק נחשב "יחידות" **רק בתצוגה/בהשוואה כאן בצד-הלקוח** — בדיוק כמו
-// בשרת (ר' inventory-matching.js, resolveQuantity) — ולעולם לא נכתב
-// בפועל ל-Airtable כברירת-מחדל: פריט בלי יחידת-מידה ממשיך להיראות
-// ולהתנהג בדיוק כמו היום, עד שתמר תמלא אותה בעצמה דרך הטופס.
-export const UNIT_OPTIONS = ['יחידות', 'ליטר', 'מ"ר', "מ'", 'ק"ג', 'גליל', 'קרטון'];
-export function itemUnit(item) {
-  return String(item?.['יחידת מידה'] || '').trim() || 'יחידות';
-}
 
 // "ספקים" נוסף 2026-10-06 (סעיף C) — שדה קישור (link) לטבלת "ספקים",
 // כך שאפשר לקשר ספק לפריט מלאי ישירות מהטופס (לא רק דרך הקישור ההפוך
@@ -657,8 +643,12 @@ function LedgerDrawer({ item, canEdit, onClose }) {
                         </td>
                         {/* dir="ltr" כדי שסימן ה-+/− יישאר צמוד למספר ולא "ייזרק" לקצה
                             השני של התא בהקשר RTL — הסימן הוא ההבדל בין החזרה לירידה */}
+                        {/* סעיף Z: היחידה שנרשמה בשורה עצמה (m.unit) מוצגת לצד
+                            הכמות. שורה בלי יחידה (היסטורית, או פריט שאין לו
+                            יחידה מוגדרת) מוצגת כמו קודם — בלי טקסט נוסף. */}
                         <td style={{ color: m.kind === 'reversal' ? 'var(--ok)' : undefined, fontWeight: 600 }}>
                           <span dir="ltr">{m.kind === 'reversal' ? '+' : '−'}{formatNumber(m.quantity)}</span>
+                          {m.unit && <span style={{ fontWeight: 400, color: 'var(--text-secondary)' }}> {m.unit}</span>}
                         </td>
                         <td>{m.derivedFrom || <span className="muted">—</span>}</td>
                         {/* ביטול-הורדה הוא תוצאה תקינה (מלאי הוחזר), לא אזהרה — badge-warn

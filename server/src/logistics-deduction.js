@@ -36,6 +36,9 @@
 // 5.58% סטייה) היא המקרה שהניע את השינוי — אושר ע"י תמר להרצה לאחר המיזוג.
 // ============================================================
 import { fetchRecords, updateRecord } from './airtable.js';
+// סעיף Z — אותו נרמול-יחידות שההתאמה בהוצאות משתמשת בו, כדי ש-"יח'"/
+// "קרטונים" לא ייחשבו ליחידה אחרת מ-"יחידות"/"קרטון" (ר' unitBlockReason)
+import { canonicalUnit } from './inventory-matching.js';
 
 const NOTES_TABLE = 'תעודות משלוח';
 const INVOICES_TABLE = 'חשבוניות';
@@ -174,18 +177,25 @@ function doneTag(d) {
 }
 
 // ⚠️ סעיף Z (8.10.2026, "משימה Z" — יחידת-מידה לכל פריט): שדה "יחידת
-// מידה" חופשי על פריט-המלאי (תמר הוסיפה בעצמה, טקסט חופשי לא single-
-// select). "כמות קרטונים"/"מספר משטחים" שמגיעים מ-Make הם תמיד מניין-
-// יחידות שלמות — אם פריט-היעד כבר הוגדר (לא ריק!) ליחידת-מידה שאינה
-// "יחידות"/"קרטון" (למשל הוגדרה בטעות "ליטר" לקטגוריית קרטונים), אין
-// להוריד אוטומטית ממנה. פריט בלי יחידת-מידה מוגדרת בכלל (ריק/undefined
-// — המצב האמיתי של כל הפריטים כרגע) ממשיך **בדיוק** כמו היום — זו לא
-// רגרסיה לנתונים הקיימים, רק הגנה-עתידית. עצמאי לגמרי מהגנת-הסטייה/N1
-// הקיימת (מספר קרטונים/משטחים מול תעודה) — לא נוגע בה.
-function itemUnitBlocksAutoDeduct(item) {
+// מידה" חופשי על פריט-המלאי (תמר הוסיפה בעצמה, singleLineText — לא
+// single-select). "כמות קרטונים"/"מספר משטחים" שמגיעים מ-Make הם תמיד
+// **מניין יחידות שלמות**. לכן אם פריט-היעד הוגדר (לא ריק!) ליחידת-מידה
+// שאינה "יחידות"/"קרטון" — למשל "ליטר" או "מ\"ר" — אין שום בסיס להוריד
+// ממנו את המניין הזה אוטומטית, והשורה הופכת ל"דורש אישור" עם הסבר.
+// **אין ולא תהיה המרה בין יחידות** (בדיוק כמו ב-inventory-matching.js).
+//
+// ⚠️ פריט בלי יחידת-מידה מוגדרת (ריק — המצב של **כל** הפריטים כרגע)
+// מוחזר null, כלומר ממשיך בדיוק כמו היום. זו הגנה-עתידית, לא שינוי
+// התנהגות על הנתונים הקיימים. עצמאי לגמרי מהגנת-הסטייה/N1 (הצלבת
+// מספר קרטונים/משטחים מול התעודה) — לא נוגע בה.
+//
+// מחזיר את נוסח-הסיבה לתצוגה, או null כשאין חסימה.
+export function unitBlockReason(item) {
   const unit = String(item?.['יחידת מידה'] || '').trim();
-  if (!unit) return false;
-  return unit !== 'יחידות' && unit !== 'קרטון';
+  if (!unit) return null;
+  const canonical = canonicalUnit(unit);
+  if (canonical === 'יחידות' || canonical === 'קרטון') return null;
+  return `הפריט מנוהל ביחידת מידה "${unit}", והנתון מהמסמך הוא מניין יחידות — דורש אישור ידני (אין המרה אוטומטית בין יחידות)`;
 }
 
 async function deductOne(item, d) {
@@ -246,17 +256,15 @@ export async function analyzeLogisticsInventory(table, recordId) {
 
   const { cartonsCrossCheck, deductions } = deriveDeductions({ note, invoice, weekNoteCartonsTotal, weekInvoiceCartonsTotal, weekNoteNumbers });
   const results = [];
-  for (const raw of deductions) {
-    if (raw.pending) { results.push({ ...raw }); continue; }
-    const item = inventoryItems.find((it) => it['קטגוריה'] === raw.category);
-    if (!item) { results.push({ ...raw, skipped: 'אין פריט מלאי בקטגוריה הזו' }); continue; }
-    // סעיף Z: יחידת-מידה לא-תואמת לפריט לוגיסטי חוסמת הורדה אוטומטית
-    // (ר' itemUnitBlocksAutoDeduct למעלה) — guard קטן ועצמאי, לא נוגע
-    // בשאר הלוגיקה (סטייה/N1 וכו').
-    const d = itemUnitBlocksAutoDeduct(item)
-      ? { ...raw, needsApproval: true, softWarning: true, reason: `הפריט מנוהל ביחידת-מידה "${item['יחידת מידה']}" — ${raw.category} לא יורד אוטומטית מיחידה זו, דורש אישור ידני` }
-      : raw;
-    results.push(await deductOne(item, d));
+  for (const d of deductions) {
+    if (d.pending) { results.push({ ...d }); continue; }
+    const item = inventoryItems.find((it) => it['קטגוריה'] === d.category);
+    if (!item) { results.push({ ...d, skipped: 'אין פריט מלאי בקטגוריה הזו' }); continue; }
+    // סעיף Z — guard יחיד (ר' unitBlockReason למעלה): יחידת-מידה שהוגדרה
+    // לפריט ואינה מניין-יחידות הופכת את ההורדה ל"דורש אישור" במקום
+    // אוטומטית. לא נוגע בשאר הלוגיקה (סטייה/N1/אידמפוטנטיות).
+    const unitBlock = unitBlockReason(item);
+    results.push(await deductOne(item, unitBlock ? { ...d, needsApproval: true, reason: unitBlock } : d));
   }
   return { weekCode, cartonsCrossCheck, results };
 }

@@ -132,7 +132,11 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
       body[f.name] = f.type === 'number' ? Number(v) : v;
     }
     // ערך חדש בשדה allowNew → typecast (יוצר את האפשרות ב-Airtable)
-    const typecast = fields.some((f) => f.type === 'select' && f.allowNew && body[f.name] && !(options[f.name] || []).includes(body[f.name]));
+    // ⚠️ סעיף Z: שדה staticOptions אינו single-select אמיתי אלא טקסט חופשי —
+    // אין "אפשרות" ליצור, ולכן הוא **לא** מצדיק typecast. זה חשוב כי typecast
+    // הוא דגל ברמת-הבקשה כולה, ולא נכון להדליק אותו על כל שאר השדות ברשומה
+    // רק מפני שהוקלדה יחידת-מידה חדשה.
+    const typecast = fields.some((f) => f.type === 'select' && f.allowNew && !f.staticOptions && body[f.name] && !(options[f.name] || []).includes(body[f.name]));
     try {
       if (record?.id) await api.update(table, record.id, body, { typecast });
       else await api.create(table, body, { typecast });

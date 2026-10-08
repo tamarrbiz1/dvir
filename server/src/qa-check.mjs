@@ -26,7 +26,7 @@ import {
   MAX_MANUAL_LINES, sanitizeFreeNotes, mergeFreeNotesWithTags, manualExpenseSubmitKey,
   claimManualExpenseSubmission, hideInventoryLedgerLine, updateInventoryFreeNotes,
 } from './inventory-deduction.js';
-import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD, planLogisticsReversal } from './logistics-deduction.js';
+import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD, planLogisticsReversal, unitBlockReason } from './logistics-deduction.js';
 import { fixFilenameEncoding } from './filename-utils.js';
 import { weekCodeFromDate, WEEK_CODE_RE } from './weekly-sync.js';
 import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggestions, summarizeSuggestions, AUTO_THRESHOLD } from './supplier-linking.js';
@@ -1139,10 +1139,13 @@ await test('התאמת מלאי: ריבוי נקבה ("יריעות" מול כי
   if (matches.length !== 1 || matches[0].item.id !== 'recFAKE_NYLON') throw new Error('לא נמצאה התאמה מטושטשת (יריעה/יריעות)');
 });
 
-await test('התאמת מלאי: יחידת מידה עמומה (ליטר) חוסמת הורדה אוטומטית', () => {
+await test('התאמת מלאי: יחידה שאינה יחידת-הפריט (ליטר מול פריט ביחידות) חוסמת הורדה אוטומטית', () => {
+  // פריטי FAKE_INVENTORY הם בלי "יחידת מידה" — כלומר "יחידות" בקריאה
+  // (סעיף Z), ולכן שורה ב"ליטר" היא יחידה שונה ודורשת אישור.
   const matches = matchLinesToInventory([{ description: 'ניילון 50 ליטר', quantity: 50, unit: 'ליטר', confidence: 0.95 }], FAKE_INVENTORY);
-  if (!matches[0]?.needsApproval) throw new Error('ציפייה ל-needsApproval=true ביחידה לא ברורה');
-  if (!/יחידת מידה/.test(matches[0].reason || '')) throw new Error('הסיבה לא מזכירה יחידת מידה');
+  if (!matches[0]?.needsApproval) throw new Error('ציפייה ל-needsApproval=true ביחידה שאינה יחידת-הפריט');
+  // 8.10.2026: ההסבר נעשה מפורש — נוקב ביחידת-החשבונית ולא "לא ברור" סתום
+  if (!/ליטר/.test(matches[0].reason || '')) throw new Error(`הסיבה לא נוקבת ביחידה שבחשבונית: ${matches[0].reason}`);
 });
 
 await test('התאמת מלאי: ביטחון מתחת לסף 0.85 חוסם הורדה אוטומטית', () => {
@@ -2883,12 +2886,145 @@ await test('V: יחידת-שטח (מ"ר) ו"כמות גדולה מהמלאי" ד
     { description: 'רשת מעל המלאי', quantity: 9999, unit: 'יחידה', confidence: 0.95 },
   ], items);
   const area = byDesc(rows, 'רשת נגד מזיקים 50 מש');
-  if (!area?.needsApproval || !/יחידת מידה/.test(area.reason || '')) throw new Error('מ"ר חייבת לדרוש אישור');
+  if (!area?.needsApproval || !/מ"ר/.test(area.reason || '')) throw new Error(`מ"ר חייבת לדרוש אישור עם הסבר שנוקב ביחידה: ${area?.reason}`);
   const ok = byDesc(rows, 'רשת צל תקינה');
   if (ok?.needsApproval) throw new Error('יחידה תקינה בתוך המלאי לא אמורה לדרוש אישור');
   const over = byDesc(rows, 'רשת מעל המלאי');
   if (!over?.needsApproval || !/גדולה מהמלאי/.test(over.reason || '')) throw new Error('כמות מעל המלאי חייבת לדרוש אישור');
   return 'מ"ר → אישור · 4 יחידות מתוך 10 → יורד · 9999 מתוך 10 → אישור';
+});
+
+// ============================================================
+// סעיף Z (8.10.2026) — "יחידת מידה" לכל פריט מלאי היא מקור-האמת להורדה.
+//
+// כל הבדיקות כאן **טהורות** (פונקציות + פריטים מוזרקים), בלי שום רשומה
+// ב-Airtable ובלי שום מסמך. זה מכוון: הורדה לוגיסטית מתאימה **לפי
+// קטגוריה**, והפריטים היחידים בקטגוריות קרטונים/נילונים/כובעים/משטחי-עץ
+// הם הפריטים האמיתיים של תמר — ולכן תעודה/חשבונית-בדיקה עם כמויות
+// בקטגוריות האלה הייתה מורידה מלאי אמיתי (קרה בפועל ב-8.10 והפילה שלושה
+// פריטים ל--1076). בדיקה טהורה מכסה את אותה לוגיקה בדיוק, בעלות אפס.
+// ============================================================
+
+await test('Z: יחידה זהה בין החשבונית לפריט → הורדה אוטומטית', () => {
+  const items = [{ id: 'recZ1', 'קטגוריה': 'סולר', 'מלאי נוכחי': 52, 'יחידת מידה': 'ליטר' }];
+  const rows = matchLinesToInventory([{ description: 'סולר לטרקטור', quantity: 10, unit: 'ליטר', confidence: 0.95 }], items);
+  if (rows.length !== 1) throw new Error(`צפויה שורה אחת, התקבלו ${rows.length}`);
+  if (rows[0].needsApproval) throw new Error(`יחידה זהה לא אמורה לדרוש אישור: ${rows[0].reason}`);
+  if (rows[0].why !== 'ok' || rows[0].quantity !== 10) throw new Error(`why/quantity שגויים: ${JSON.stringify(rows[0].why)} / ${rows[0].quantity}`);
+  return '10 ליטר מתוך 52 ליטר → יורד אוטומטית';
+});
+
+await test('Z: יחידה שונה → דורש אישור, וההסבר נוקב בשתי היחידות', () => {
+  const items = [{ id: 'recZ2', 'קטגוריה': 'רשתות', 'מלאי נוכחי': 10, 'יחידת מידה': 'יחידות' }];
+  const rows = matchLinesToInventory([{ description: 'רשת נגד מזיקים 50 מש', quantity: 382.5, unit: 'מ"ר', confidence: 0.95 }], items);
+  if (!rows[0]?.needsApproval) throw new Error('יחידה שונה חייבת לדרוש אישור');
+  if (rows[0].why !== 'unitMismatch') throw new Error(`why צפוי unitMismatch, התקבל ${rows[0].why}`);
+  const reason = rows[0].reason || '';
+  // שתי היחידות — זו שבמסמך וזו שהוגדרה לפריט — חייבות להופיע בהודעה
+  if (!/מ"ר/.test(reason)) throw new Error(`ההסבר לא נוקב ביחידת-החשבונית: ${reason}`);
+  if (!/יחידות/.test(reason)) throw new Error(`ההסבר לא נוקב ביחידת-הפריט: ${reason}`);
+  // ולא בוצעה שום המרה — הכמות נשארה כפי שהיא, להצגה בבקשת-האישור
+  if (rows[0].quantity !== 382.5) throw new Error('הכמות לא אמורה להומר/להשתנות');
+  return `דורש אישור · "${reason}"`;
+});
+
+await test('Z: פריט בלי יחידת מידה (ריק) מתנהג בדיוק כמו "יחידות" — אין רגרסיה', () => {
+  // המצב האמיתי של **כל** הפריטים כרגע: השדה קיים בטבלה אבל ריק.
+  // שני הגלגולים של "ריק" נבדקים: שדה חסר לגמרי, ושדה עם מחרוזת ריקה.
+  for (const empty of [{}, { 'יחידת מידה': '' }, { 'יחידת מידה': '   ' }, { 'יחידת מידה': null }]) {
+    const items = [{ id: 'recZ3', 'קטגוריה': 'רשתות', 'מלאי נוכחי': 10, ...empty }];
+    const ok = matchLinesToInventory([{ description: 'רשת צל', quantity: 4, unit: 'יחידה', confidence: 0.95 }], items);
+    if (ok[0]?.needsApproval) throw new Error(`פריט בלי יחידה + שורה ב"יחידה" אמור לירד אוטומטית (${JSON.stringify(empty)}): ${ok[0].reason}`);
+    // גם unit=null מהמנתח (שדה-יחידה שלא נמצא במסמך) נחשב "יחידות", כמו עד היום
+    const nullUnit = matchLinesToInventory([{ description: 'רשת צל', quantity: 4, unit: null, confidence: 0.95 }], items);
+    if (nullUnit[0]?.needsApproval) throw new Error(`unit=null אמור להמשיך לירד אוטומטית (${JSON.stringify(empty)})`);
+    // ושורה ביחידת-שטח עדיין נחסמת — בדיוק כמו ההתנהגות שבמיין
+    const area = matchLinesToInventory([{ description: 'רשת נגד מזיקים', quantity: 382.5, unit: 'מ"ר', confidence: 0.95 }], items);
+    if (!area[0]?.needsApproval) throw new Error(`מ"ר מול פריט בלי יחידה חייבת לדרוש אישור (${JSON.stringify(empty)})`);
+    if (!/יחידות/.test(area[0].reason || '')) throw new Error(`ההסבר אמור לומר שהמלאי מנוהל ב"יחידות": ${area[0].reason}`);
+  }
+  return 'ריק/חסר/רווחים/null → "יחידות" בקריאה; יחידה+null יורדים, מ"ר נחסמת';
+});
+
+await test('Z: נרמול-יחידות — גרשיים/יחיד-רבים/לטינית מתכנסים לאותה יחידה', () => {
+  const same = [
+    ['מ"ר', 'מר'], ['מ"ר', 'מ״ר'], ['מ"ר', 'sqm'], ['מ"ר', 'מ"ר '],
+    ['יחידות', 'יחידה'], ['יחידות', "יח'"], ['יחידות', 'units'],
+    ['ליטר', 'ליטרים'], ['ליטר', "ל'"], ['ק"ג', 'קג'], ['ק"ג', 'קילו'],
+    ['קרטון', 'קרטונים'], ['קרטון', 'ארגזים'], ['גליל', 'גלילים'],
+  ];
+  for (const [itemUnit, lineUnit] of same) {
+    const items = [{ id: 'recZ4', 'קטגוריה': 'רשתות', 'מלאי נוכחי': 1000, 'יחידת מידה': itemUnit }];
+    const rows = matchLinesToInventory([{ description: 'רשת צל', quantity: 5, unit: lineUnit, confidence: 0.95 }], items);
+    if (rows[0]?.needsApproval) throw new Error(`"${lineUnit}" אמורה להיחשב זהה ל-"${itemUnit}": ${rows[0].reason}`);
+  }
+  // ...ושתי יחידות שונות באמת לא מתכנסות — מ"ר מול מ' (אורך) הן שונות
+  const items = [{ id: 'recZ4b', 'קטגוריה': 'רשתות', 'מלאי נוכחי': 1000, 'יחידת מידה': "מ'" }];
+  const rows = matchLinesToInventory([{ description: 'רשת צל', quantity: 5, unit: 'מ"ר', confidence: 0.95 }], items);
+  if (!rows[0]?.needsApproval) throw new Error('מ"ר (שטח) מול מ\' (אורך) חייבות להיחשב יחידות שונות');
+  return `${same.length} זוגות-כינויים מתכנסים · מ"ר≠מ' נשמר`;
+});
+
+await test('Z: יחידה חופשית שתמר הקלידה ("שק") משתווה לעצמה ולא לאחרות', () => {
+  const items = [{ id: 'recZ5', 'קטגוריה': 'רשתות', 'מלאי נוכחי': 50, 'יחידת מידה': 'שק' }];
+  const sameUnit = matchLinesToInventory([{ description: 'רשת צל', quantity: 3, unit: 'שק', confidence: 0.95 }], items);
+  if (sameUnit[0]?.needsApproval) throw new Error(`יחידה חופשית זהה אמורה לירד אוטומטית: ${sameUnit[0].reason}`);
+  const other = matchLinesToInventory([{ description: 'רשת צל', quantity: 3, unit: 'יחידה', confidence: 0.95 }], items);
+  if (!other[0]?.needsApproval) throw new Error('"יחידה" מול פריט שמנוהל ב"שק" חייבת לדרוש אישור');
+  if (!/שק/.test(other[0].reason || '')) throw new Error(`ההסבר אמור לנקוב ביחידת-הפריט "שק": ${other[0].reason}`);
+  return 'שק↔שק יורד · יחידה↔שק דורש אישור';
+});
+
+await test('Z: חסם-השפיות (לא מורידים מעבר למלאי) נשמר גם כשהיחידות זהות', () => {
+  const items = [{ id: 'recZ6', 'קטגוריה': 'סולר', 'מלאי נוכחי': 52, 'יחידת מידה': 'ליטר' }];
+  const rows = matchLinesToInventory([{ description: 'סולר לטרקטור', quantity: 9999, unit: 'ליטר', confidence: 0.95 }], items);
+  if (!rows[0]?.needsApproval) throw new Error('כמות מעל המלאי חייבת לדרוש אישור גם ביחידה תואמת');
+  if (rows[0].why !== 'exceedsStock' || !/גדולה מהמלאי/.test(rows[0].reason || '')) throw new Error(`צפוי exceedsStock: ${rows[0].why} / ${rows[0].reason}`);
+  return '9999 ליטר מתוך 52 ליטר → אישור (הגנת-עומק שרדה)';
+});
+
+await test('Z: הזנה ידנית (שורה בלי מפתח unit) לא נבדקת מול יחידת-הפריט', () => {
+  // runManualExpenseInventoryDeduction בונה שורות בלי unit בכלל (סעיף R) —
+  // המשתמשת בחרה את הפריט ואת הכמות בעצמה, ואין מה להשוות מולה.
+  const items = [{ id: 'recZ7', 'קטגוריה': 'סולר', 'מלאי נוכחי': 52, 'יחידת מידה': 'ליטר' }];
+  const rows = matchLinesToInventory([{ description: 'סולר לטרקטור', quantity: 10, confidence: 1 }], items);
+  if (rows[0]?.needsApproval) throw new Error(`הזנה ידנית לא אמורה להיחסם על יחידה: ${rows[0].reason}`);
+  return 'כמות שהוקלדה ידנית יורדת כרגיל';
+});
+
+await test('Z: הורדה לוגיסטית — יחידת-פריט שאינה מניין-יחידות חוסמת אוטומט', () => {
+  // guard טהור (unitBlockReason), בלי שום תעודה/חשבונית — ר' הערת-הכותרת
+  for (const unit of ['ליטר', 'מ"ר', "מ'", 'ק"ג', 'גליל', 'שק']) {
+    const reason = unitBlockReason({ 'קטגוריה': 'קרטונים', 'יחידת מידה': unit });
+    if (!reason) throw new Error(`יחידה "${unit}" חייבת לחסום הורדה אוטומטית מנתון-מניין`);
+    if (!reason.includes(unit)) throw new Error(`ההסבר לא נוקב ביחידה "${unit}": ${reason}`);
+    if (!/אישור/.test(reason)) throw new Error(`ההסבר לא אומר שנדרש אישור: ${reason}`);
+  }
+  // מניין-יחידות (וכינוייו) לא נחסם — וגם לא פריט בלי יחידה מוגדרת,
+  // שזה המצב האמיתי של כל הפריטים כרגע (אין רגרסיה להורדות הקיימות).
+  for (const unit of ['יחידות', 'יחידה', "יח'", 'קרטון', 'קרטונים', 'ארגזים', '', '   ', null, undefined]) {
+    const reason = unitBlockReason({ 'קטגוריה': 'קרטונים', 'יחידת מידה': unit });
+    if (reason) throw new Error(`יחידה ${JSON.stringify(unit)} לא אמורה לחסום: ${reason}`);
+  }
+  if (unitBlockReason({ 'קטגוריה': 'משטחי עץ' })) throw new Error('פריט בלי השדה בכלל לא אמור לחסום');
+  return 'ליטר/מ"ר/ק"ג/גליל/שק → אישור · יחידות/קרטון/ריק → כרגיל';
+});
+
+await test('Z: שורת-יומן עם יחידה נפרסת, ושורה ללא יחידה נפרסת כמו קודם', () => {
+  // תואמות-לאחור של הפרסר (client/src/utils/inventoryLedger.js): היחידה
+  // היא קבוצה אופציונלית, ולכן כל שורה קיימת ב-Airtable ממשיכה להיפרס.
+  const withUnit = parseInventoryLedger('↓ 10 ליטר · הוצאה #81 · גיניגר · 2026-09-16').movements[0];
+  if (withUnit?.kind !== 'deduction' || withUnit.quantity !== 10 || withUnit.unit !== 'ליטר') throw new Error(`שורה עם יחידה לא נפרסה: ${JSON.stringify(withUnit)}`);
+  if (withUnit.sourceNumber !== '81' || withUnit.supplier !== 'גיניגר' || withUnit.docDate !== '2026-09-16') throw new Error(`היחידה "בלעה" שדות אחרים: ${JSON.stringify(withUnit)}`);
+  const legacy = parseInventoryLedger('↓ 20 · הוצאה #48 · גיניגר · 2026-09-16').movements[0];
+  if (legacy?.kind !== 'deduction' || legacy.quantity !== 20 || legacy.unit !== null) throw new Error(`שורה היסטורית (בלי יחידה) שינתה התנהגות: ${JSON.stringify(legacy)}`);
+  const approved = parseInventoryLedger('↓ 5 מ"ר · הוצאה #48 · גיניגר · 2026-09-16 · אושר ידנית').movements[0];
+  if (approved?.unit !== 'מ"ר' || approved.derivedFrom !== 'אושר ידנית') throw new Error(`"אושר ידנית" + יחידה: ${JSON.stringify(approved)}`);
+  const reversal = parseInventoryLedger('↩ ביטול הורדה של 10 ליטר · הוצאה #81 נמחקה · 2026-10-08').movements[0];
+  if (reversal?.kind !== 'reversal' || reversal.quantity !== 10 || reversal.unit !== 'ליטר') throw new Error(`שורת-ביטול עם יחידה: ${JSON.stringify(reversal)}`);
+  const legacyRev = parseInventoryLedger('↩ ביטול הורדה של 60 · הוצאה #48 נמחקה · 2026-10-06').movements[0];
+  if (legacyRev?.kind !== 'reversal' || legacyRev.quantity !== 60 || legacyRev.unit !== null) throw new Error(`שורת-ביטול היסטורית: ${JSON.stringify(legacyRev)}`);
+  return 'יחידה אופציונלית · 4 פורמטים (חדש/ישן, הורדה/ביטול) נפרסים';
 });
 
 // ============================================================

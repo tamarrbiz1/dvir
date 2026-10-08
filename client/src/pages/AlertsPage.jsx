@@ -8,7 +8,7 @@ import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_S
 import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { INVOICES_TABLE, invLabel, invMarketer, invWeekCode, invDeductionCheck, invTransportCheck, invDeductionDev, invTransportPerPallet, isDeductionAnomaly, isTransportAnomaly } from '../utils/invoices.js';
-import { itemUnit } from './InventoryPage.jsx';
+import { itemUnit } from '../utils/inventoryUnits.js';
 
 // ============================================================
 // חריגות והתאמות (סעיף 35)

@@ -89,11 +89,6 @@ function categoryOfDescription(description, categories) {
   return null;
 }
 
-/**
- * ממיר כמות ליחידת המלאי כשהיא ברורה. מחזיר {quantity, ok:true} אם
- * ההמרה חד-משמעית, אחרת {ok:false} — "לא ברור" חייב לעצור הורדה
- * אוטומטית (לא לנחש), לפי הכלל המפורש במשימה.
- */
 // ⚠️ 8.10.2026, באג אמיתי שנתפס בבדיקה חיה על הוצאה #48: שלוש שורות
 // "רשת נגד מזיקים" נמדדו ב-**מ"ר** (382.5 / 960 / 600), ו-"מ\"ר" לא היה
 // ברשימת היחידות-הלא-ברורות — ולכן הן ירדו כאילו היו יחידות, והורידו
@@ -102,10 +97,11 @@ function categoryOfDescription(description, categories) {
 // במילון, ולכן שום דבר לא ירד. ברגע שההתאמה לקטגוריות-אמיתיות נפתחה,
 // הפער הזה נחשף.
 //
-// ⚠️⚠️ סעיף Z (8.10.2026, "משימה Z" — יחידת-מידה לכל פריט): התיקון
-// הזמני (רשימת-יחידות-עמומות + חסם לא-מורידים-מעבר-למלאי) הוחלף עכשיו
-// במקור-אמת אמיתי: שדה "יחידת מידה" על פריט-המלאי עצמו (טקסט חופשי
-// ב-Airtable, לא single-select — תמר הוסיפה את השדה בעצמה). ההשוואה:
+// ⚠️⚠️ סעיף Z (8.10.2026, "משימה Z" — יחידת-מידה לכל פריט): רשימת
+// היחידות-העמומות (AMBIGUOUS_UNITS) — שהייתה פתרון-ביניים, ושחסרה בה
+// בהגדרה כל יחידה שלא נזכרה בה מראש — הוסרה והוחלפה במקור-אמת אמיתי:
+// שדה "יחידת מידה" על פריט-המלאי עצמו (טקסט חופשי ב-Airtable, לא
+// single-select — תמר הוסיפה את השדה בעצמה). ההשוואה:
 // היחידה שחולצה מהשורה מול היחידה שהוגדרה לפריט, שתיהן אחרי נרמול-
 // יחידות (לא ניחוש-המרה!): זהות → מורידים אוטומטית; שונות → "דורש
 // אישור" עם הסבר מפורש ששתי היחידות מוצגות בו. **לעולם לא ממירים בין
@@ -120,10 +116,15 @@ function categoryOfDescription(description, categories) {
 // ממשיכה לעבוד בדיוק כמו היום (יחידה/ריק נחשב "יחידות"), עד שתמר תמלא
 // את השדה בעצמה דרך הטופס.
 
-// שבעת סוגי-היחידות שהטופס מציע (ר' client/src/pages/InventoryPage.jsx,
+// שבעת סוגי-היחידות שהטופס מציע (ר' client/src/utils/inventoryUnits.js,
 // UNIT_OPTIONS) + כינויים נפוצים לכל אחד מהם. המפתחות הם "נרמול-יחידה"
-// קומפקטי (ר' compactUnit למטה — מסיר גם רווחים, לא רק מנקד/מפסיק),
+// קומפקטי (ר' compactUnit למטה — מסיר גם רווחים, לא רק ניקוד/פיסוק),
 // כדי ש"מ\"ר"/"מר"/"מ״ר" (כל הגרשיים השונים) יתכנסו לאותו מפתח.
+//
+// ⚠️ המחרוזת הריקה היא כינוי מכוון של "יחידות": document-analysis.js
+// כותב unit=null כששדה-היחידה לא נמצא במסמך, ועד היום שורה כזו ירדה
+// אוטומטית. מיפוי ריק→"יחידות" **בשני הצדדים** (שורה ופריט) שומר על
+// ההתנהגות הזו בדיוק.
 const UNIT_ALIAS_TABLE = {
   'יחידות': ['יחידה', "יח'", 'יח', 'יחידת', 'pcs', 'piece', 'pieces', 'unit', 'units', ''],
   'ליטר': ['ליטרים', "ל'", 'ל', 'liter', 'liters', 'litre', 'litres'],
@@ -144,8 +145,8 @@ const UNIT_ALIAS_LOOKUP = (() => {
 
 /** נרמול-יחידה קומפקטי: מסיר ניקוד/פיסוק/**כל** רווח (לא רק מכפיל) — יחידות
  * הן טוקנים קצרים, ובניגוד ל-normalize() (שמשמש להתאמת-קטגוריה מטושטשת
- * ומשמר רווח יחיד), כאן "מ\"ר" (עם גרש) ו"מר" (בלי) חייבים להתכנס לאותו
- * ערך — ה-גרש/גרשיים מוסרים ע"י [^\p{L}\p{N}] בדיוק כמו רווח. */
+ * ומשמר רווח יחיד), כאן "מ\"ר" (עם גרש) ו-"מר" (בלי) חייבים להתכנס לאותו
+ * ערך — הגרש/גרשיים מוסרים ע"י [^\p{L}\p{N}] בדיוק כמו רווח. */
 function compactUnit(text) {
   return String(text || '')
     .toLowerCase()
@@ -154,65 +155,65 @@ function compactUnit(text) {
     .replace(/[^\p{L}\p{N}]/gu, '');
 }
 
-/** היחידה-הקנונית (אחת מ-7 השמות בטופס) שטקסט שייך אליה, או null אם
- * הטקסט לא מזוהה כלל כאחת מהיחידות הידועות/כינוייהן. */
+/** היחידה-הקנונית (אחד מ-7 השמות שבטופס) שטקסט שייך אליה, או null אם
+ * הטקסט אינו מזוהה כאחת מהיחידות הידועות/כינוייהן (יחידה חופשית שתמר
+ * הקלידה בעצמה, למשל "שק"). */
 function canonicalUnit(text) {
   const key = compactUnit(text);
   return Object.prototype.hasOwnProperty.call(UNIT_ALIAS_LOOKUP, key) ? UNIT_ALIAS_LOOKUP[key] : null;
 }
 
+/** מפתח-ההשוואה של יחידה: השם הקנוני כשהיחידה מזוהה, ואחרת הצורה
+ * הקומפקטית של הטקסט עצמו — כך שגם יחידה חופשית שתמר הקלידה בעצמה
+ * (פריט "שק" מול שורה בחשבונית ב-"שק") משתווה לעצמה, בלי שום המרה. */
+function unitKey(text) {
+  return canonicalUnit(text) || compactUnit(text);
+}
+
+/**
+ * ממיר כמות ליחידת-המלאי של הפריט — כלומר מאשר שהיא **כבר** באותה
+ * יחידה. אין ולא תהיה המרה בין יחידות שונות (מ"ר↔יחידות וכו'): זה
+ * בדיוק מה שהפיל את "רשתות" ל-1932.5- (ר' הערה למעלה).
+ */
 function resolveQuantity(line, item) {
-  if (line.quantity == null || !Number.isFinite(line.quantity) || line.quantity <= 0) return { ok: false, why: 'invalid-quantity' };
+  if (line.quantity == null || !Number.isFinite(line.quantity) || line.quantity <= 0) {
+    return { ok: false, why: 'missingQty' };
+  }
 
   // הזנה ידנית (סעיף R, 7.10.2026: "יחידה הוסרה — לא רלוונטית להפחתת
   // כמות מהמלאי") — ל-cleanLines ב-runManualExpenseInventoryDeduction
   // (inventory-deduction.js) אין בכלל מפתח unit (undefined ממש, לא
   // null/''). document-analysis.js לעומת זאת **תמיד** כותב unit מפורש
-  // (מחרוזת או null, ר' שם) — ולכן undefined ממש הוא סימן אמין ל"כמות
-  // הוקלדה ידנית ע"י המשתמשת" (ביטחון 1.0, היא בחרה את הפריט בעצמה),
-  // לא לבדיקת-יחידה בכלל.
-  if (line.unit === undefined) return { ok: true, quantity: line.quantity, why: 'ok' };
+  // (מחרוזת או null, ר' שם) — ולכן undefined ממש הוא סימן אמין ל"הכמות
+  // הוקלדה ידנית ע"י המשתמשת" (היא בחרה את הפריט והכמות בעצמה), ואין
+  // מה להשוות מולה.
+  if (line.unit === undefined) return { ok: true, quantity: line.quantity };
 
+  // סעיף Z: יחידת-המידה **שהוגדרה לפריט** היא מקור-האמת. ריק → "יחידות"
+  // בזמן-קריאה בלבד; לעולם לא נכתב כברירת-מחדל ל-Airtable (ר' הערה למעלה).
   const itemUnitRaw = String(item?.['יחידת מידה'] || '').trim();
-  // ריק → "יחידות" בזמן-קריאה בלבד (ר' הערת-הכותרת למעלה) — לא נכתב בחזרה
-  const itemUnit = itemUnitRaw ? canonicalUnit(itemUnitRaw) : 'יחידות';
-  const lineUnit = canonicalUnit(line.unit);
-
-  if (lineUnit == null) {
-    // טקסט-יחידה שלא מזוהה כלל (לא אחת מ-7 הסוגים או כינוי שלהם) — נשאר
-    // "לא ברור" בדיוק כמו ההתנהגות הקודמת (AMBIGUOUS_UNITS), גם אם
-    // itemUnit לא ידוע: אין בסיס להשוואה.
-    return { ok: false, why: 'unit-unknown' };
+  const itemUnitDisplay = itemUnitRaw || 'יחידות';
+  if (unitKey(itemUnitRaw) === unitKey(line.unit)) {
+    return { ok: true, quantity: line.quantity };
   }
-  if (!itemUnit || lineUnit !== itemUnit) {
-    return {
-      ok: false, why: 'unit-mismatch',
-      lineUnitDisplay: lineUnit, itemUnitDisplay: itemUnit || (itemUnitRaw || 'לא מוגדרת'),
-    };
-  }
-  return { ok: true, quantity: line.quantity, why: 'ok' };
+  return {
+    ok: false,
+    why: 'unitMismatch',
+    unit: String(line.unit || '').trim() || 'יחידות',
+    itemUnit: itemUnitDisplay,
+  };
 }
 
-/** בונה את הודעת-ההסבר ל-reason לפי קוד ה-why (ר' resolveQuantity/
- * matchLinesToInventory) — מחרוזת-תצוגה אחת לכל קוד, כולל שני
- * היחידות בפועל כש-why==='unit-mismatch' (בדיוק כמו שהתבקש: "החשבונית
- * ב-X, המלאי מנוהל ב-Y — אשרי את הכמות"). null כש-why==='ok'. */
-function approvalReason(why, qty, current, line) {
-  switch (why) {
-    case 'ok': return null;
-    case 'unit-mismatch':
-      // "יחידת מידה" חייב להישאר במחרוזת (לא רק בתיאור הכללי) — נבדק
-      // במפורש בבדיקות קיימות (qa-check.mjs).
-      return `יחידת מידה שונה: החשבונית ב-${qty.lineUnitDisplay}, המלאי מנוהל ב-${qty.itemUnitDisplay} — אשרי את הכמות`;
-    case 'unit-unknown':
-      return 'יחידת מידה לא ברורה — דורש אישור';
-    case 'exceeds-stock':
-      return `הכמות (${qty.quantity}) גדולה מהמלאי הקיים (${current}) — דורש אישור`;
-    case 'low-confidence':
-      return `ביטחון נמוך (${Math.round(line.confidence * 100)}%) — דורש אישור`;
-    default:
-      return 'דורש אישור';
+/** הסבר קריא למשתמשת למה השורה דורשת אישור ידני */
+function approvalReason(qty, line) {
+  if (qty.why === 'missingQty') {
+    return `לא זוהתה כמות לשורה (${line.quantity === 0 ? 'נקראה כמות 0' : 'הכמות חסרה'}) — אשרי את הכמות הנכונה`;
   }
+  if (qty.why === 'unitMismatch') {
+    // סעיף Z: שתי היחידות נקובות בשם — זו של המסמך וזו שהוגדרה לפריט.
+    return `יחידת מידה שונה: החשבונית ב-${qty.unit}, והמלאי מנוהל ב-${qty.itemUnit} — אשרי את הכמות להורדה`;
+  }
+  return 'יחידת מידה לא ברורה — דורש אישור';
 }
 
 /**
@@ -246,9 +247,10 @@ export function matchLinesToInventory(lines, inventoryItems) {
     const current = Number(item['מלאי נוכחי']);
     const exceedsStock = qty.ok && Number.isFinite(current) && qty.quantity > current;
     const needsApproval = !qty.ok || exceedsStock || line.confidence < CONFIDENCE_THRESHOLD;
-    // why: קוד-סיבה יציב (לצריכה תכנותית, לא רק טקסט תצוגה) — סעיף Z.
-    // מסדר-העדיפויות שלא השתנה: יחידה לפני חריגה-ממלאי לפני ביטחון-נמוך.
-    const why = !qty.ok ? qty.why : exceedsStock ? 'exceeds-stock' : (line.confidence < CONFIDENCE_THRESHOLD ? 'low-confidence' : 'ok');
+    // why: קוד-סיבה יציב (לצריכה תכנותית, לא רק טקסט-תצוגה) — סעיף Z
+    // מרחיב את ה-why שכבר מוחזר מ-resolveQuantity גם לשני השלבים שאחריו.
+    // סדר-העדיפויות לא השתנה: כמות-חסרה/יחידה → חריגה-ממלאי → ביטחון-נמוך.
+    const why = !qty.ok ? qty.why : exceedsStock ? 'exceedsStock' : (line.confidence < CONFIDENCE_THRESHOLD ? 'lowConfidence' : 'ok');
     results.push({
       line,
       item,
@@ -257,10 +259,16 @@ export function matchLinesToInventory(lines, inventoryItems) {
       quantity: qty.ok ? qty.quantity : line.quantity,
       needsApproval,
       why,
-      reason: approvalReason(why, qty, current, line),
+      // סעיף Z: יחידת-הפריט נקובה בהודעה (ר' approvalReason), וחסם-השפיות
+      // "לא מורידים מעבר למלאי" נשאר כהגנת-עומק עצמאית מתחתיו.
+      reason: !qty.ok
+        ? approvalReason(qty, line)
+        : exceedsStock
+          ? `הכמות (${qty.quantity}) גדולה מהמלאי הקיים (${current}) — דורש אישור`
+          : (line.confidence < CONFIDENCE_THRESHOLD ? `ביטחון נמוך (${Math.round(line.confidence * 100)}%) — דורש אישור` : null),
     });
   }
   return results;
 }
 
-export { normalize, categoryOfDescription, canonicalUnit }; // נחשפים לבדיקות
+export { normalize, categoryOfDescription, canonicalUnit, unitKey }; // נחשפים לבדיקות
