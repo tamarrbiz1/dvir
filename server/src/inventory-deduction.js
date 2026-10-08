@@ -489,6 +489,130 @@ export async function updateExpenseFreeNotes(expenseId, freeText) {
   });
 }
 
+// ============================================================
+// מחיקת הערות מפריט-מלאי (2026-10-08, "אפשרות למחוק הערות מרשימת
+// ההערות") — שדה "הערות" של "מלאי בסיסי" מכיל גם יומן-תנועות אוטומטי
+// (שורות ↓/↩/⚠, ר' logistics-deduction.js וגם deductFromInventoryItem
+// למעלה) שחלקן נושאות תגית-אידמפוטנטיות **בתוך הטקסט עצמו**
+// ([מלאי-D:טבלה:מזהה:קטגוריה]) וחלקן (שורות הוצאה, "↓ ... · הוצאה
+// #N...") בלי תגית נראית-לעין כלל — האידמפוטנטיות שלהן נשמרת בנפרד,
+// בשדה "הערות" של רשומת-ההוצאה עצמה ([מלאי-AI]).
+//
+// ⚠️ החלטה מכוונת: שורת-תנועה **לעולם לא נמחקת בפועל** — רק מוסתרת
+// (ר' isLedgerLine/hideInventoryLedgerLine למטה). שני טעמים, לא אחד:
+// (1) logistics-deduction.js בודק אידמפוטנטיות ב-`notes.includes(tag)`
+//     על כל שדה "הערות" — מחיקת הטקסט מוחקת את התגית, ומאפשרת הורדה
+//     כפולה בניתוח חוזר של אותו מסמך (ולדוגמת-אזהרות הישנות: דה-דופ
+//     לפי טקסט-מדויק, ר' deductOne — מחיקה "משחררת" אזהרה שכבר טופלה
+//     לחזור).
+// (2) גם לשורות-הוצאה (בלי תגית נראית): מחיקה-אמיתית+"החזרת כמות" ידנית
+//     כאן הייתה מתנגשת עם מחיקה-מדורגת קיימת של ההוצאה עצמה
+//     (reverseInventoryDeduction למעלה) — שתי מחיקות בלתי-תלויות
+//     שמחזירות כמות לאותו פריט הן כפל-ספירה (ולא תמיד יקרה בסדר
+//     שמונע את זה). הסתרה לא נוגעת ב"מלאי נוכחי" בכלל ולא בטקסט של
+//     התנועה עצמה — בטוחה בוודאות במקום בטוחה-בניסוח-קפדני.
+// לכן: ההסתרה חלה על **כל** שורה שנראית כמו תנועה (מתחילה ב-↓/↩/⚠,
+// אחרי תאריך-ISO מוביל אופציונלי) — לא רק על שורות עם תגית נראית.
+// רק הערה-חופשית אמיתית (טקסט שהמשתמשת הקלידה, לא תנועה) נמחקת בפועל.
+//
+// ⚠️ isLedgerLine חייבת להישאר מסונכרנת עם הסיווג המקביל ב-client
+// (client/src/utils/inventoryLedger.js — stripLeadingDate + הבדיקה
+// rest.startsWith('↓'/'↩'/'⚠') ב-parseInventoryLedger) — שני הצדדים
+// חייבים להסכים על מה "שורת-תנועה" לעומת "הערה חופשית".
+// ============================================================
+const ITEM_LEADING_DATE_RE = /^(\d{4}-\d{2}-\d{2})[T ]?[\d:.,Z]*\s+/;
+const ITEM_HIDDEN_RE = /^\[מלאי-מוסתר\](\{.*\})\s*$/;
+
+function isLedgerLine(line) {
+  const rest = String(line || '').replace(ITEM_LEADING_DATE_RE, '');
+  return rest.startsWith('↓') || rest.startsWith('↩') || rest.startsWith('⚠');
+}
+
+/** קורא את רשימת השורות-המוסתרות הנוכחית מתוך שורת-הבקרה [מלאי-מוסתר] */
+function readHiddenLedgerLines(notes) {
+  for (const line of String(notes || '').split('\n')) {
+    const m = ITEM_HIDDEN_RE.exec(line.trim());
+    if (!m) continue;
+    try {
+      const parsed = JSON.parse(m[1]);
+      return Array.isArray(parsed?.lines) ? parsed.lines : [];
+    } catch (e) {
+      console.error(`[inventory-notes] פענוח [מלאי-מוסתר] נכשל (JSON פגום): ${e.message}`);
+      return [];
+    }
+  }
+  return [];
+}
+
+/** כותב רשימת שורות-מוסתרות חדשה ל"הערות" — מחליף שורת-בקרה קיימת או מוסיף אחת בסוף */
+function writeHiddenLedgerLines(notes, hiddenLines) {
+  const controlLine = `[מלאי-מוסתר]${JSON.stringify({ lines: hiddenLines })}`;
+  const lines = String(notes || '').split('\n');
+  const idx = lines.findIndex((l) => ITEM_HIDDEN_RE.test(l.trim()));
+  if (idx >= 0) lines[idx] = controlLine; else lines.push(controlLine);
+  return lines.join('\n');
+}
+
+/** האם שורה היא "תגית" שאסור לאבד ממחיקת-הערה-חופשית — תנועה, או שורת-הבקרה עצמה */
+function isInventoryTagLine(line) {
+  return isLedgerLine(line) || ITEM_HIDDEN_RE.test(String(line || '').trim());
+}
+
+/** מסיר מהטקסט שהמשתמשת הקלידה כל שורה שנראית כמו תנועה/בקרה (הגנה — ר' sanitizeFreeNotes המקביל) */
+export function sanitizeInventoryFreeNotes(text) {
+  return String(text || '')
+    .split('\n')
+    .filter((line) => !isInventoryTagLine(line))
+    .join('\n')
+    .trim();
+}
+
+/** מחבר טקסט-חופשי נקי עם כל שורות-התנועה/הבקרה שקיימות כרגע ברשומה */
+export function mergeInventoryFreeNotesWithTags(currentNotes, freeText) {
+  const tagLines = String(currentNotes || '').split('\n').filter(isInventoryTagLine);
+  const free = sanitizeInventoryFreeNotes(freeText);
+  if (!tagLines.length) return free;
+  return free ? `${free}\n${tagLines.join('\n')}` : tagLines.join('\n');
+}
+
+/**
+ * כותבת טקסט-חופשי חדש ל"הערות" של פריט-מלאי — קוראת מחדש בתוך
+ * נעילה (אותו מפתח `item:<id>` של deductFromInventoryItem, כדי לא
+ * לדרוס שורת-תנועה שניתוח-מלאי מקביל (הוצאה/תעודת-משלוח/חשבונית)
+ * הוסיף בדיוק עכשיו), ומדביקה את כל שורות-התנועה/הבקרה הנוכחיות.
+ */
+export async function updateInventoryFreeNotes(itemId, freeText) {
+  return withKeyLock(`item:${itemId}`, async () => {
+    const rec = await getBase()(INVENTORY_TABLE).find(itemId);
+    const next = mergeInventoryFreeNotesWithTags(rec.fields['הערות'] || '', freeText);
+    await updateRecord(INVENTORY_TABLE, itemId, { 'הערות': next || null });
+    return next;
+  });
+}
+
+/**
+ * "מוחקת" שורת-תנועה בודדת מהתצוגה — בפועל רק מוסיפה אותה לרשימת
+ * השורות-המוסתרות (ר' הערת הכותרת לעיל): הטקסט (כולל כל תגית-
+ * אידמפוטנטיות) נשאר בשדה בדיוק כמו שהיה, "מלאי נוכחי" לא נוגע בכלל.
+ * אידמפוטנטי: קריאה כפולה על שורה שכבר מוסתרת מחזירה ok:true בלי שינוי.
+ * קריאה-מחדש-טרייה בתוך נעילה (item:<id>) — לא snapshot מהדפדפן.
+ * @returns {{ok:true}|{ok:false, reason:'not-found'|'not-ledger-line'}}
+ */
+export async function hideInventoryLedgerLine(itemId, rawLine) {
+  return withKeyLock(`item:${itemId}`, async () => {
+    if (!isLedgerLine(rawLine)) return { ok: false, reason: 'not-ledger-line' };
+    const rec = await getBase()(INVENTORY_TABLE).find(itemId);
+    const notes = String(rec.fields['הערות'] || '');
+    const lines = notes.split('\n').map((l) => l.trim());
+    if (!lines.includes(String(rawLine).trim())) return { ok: false, reason: 'not-found' };
+    const hidden = readHiddenLedgerLines(notes);
+    if (hidden.includes(rawLine)) return { ok: true }; // כבר מוסתרת — אידמפוטנטי
+    const nextNotes = writeHiddenLedgerLines(notes, [...hidden, rawLine]);
+    await updateRecord(INVENTORY_TABLE, itemId, { 'הערות': nextNotes });
+    return { ok: true };
+  });
+}
+
 /**
  * יוצר רשומת הוצאה ידנית (ידני?=true) — כתיבה ישירה לאותם שדות -AI
  * שהניתוח האוטומטי כותב אליהם (השם היסטורי, לא משנים אותו), כולל קישור

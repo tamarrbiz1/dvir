@@ -178,15 +178,45 @@ function parseWarningOnlyLine(rawLine) {
   return { kind: 'unknown', date, raw: rawLine };
 }
 
+// שורת-בקרה [מלאי-מוסתר]{"lines":[...]} (תוספת 2026-10-08, "מחיקת הערות") —
+// רשימת שורות-תנועה ש"נמחקו" ע"י המשתמשת מהתצוגה. לא מחיקה אמיתית: ר'
+// hideInventoryLedgerLine/isLedgerLine ב-server/src/inventory-deduction.js —
+// שורת-תנועה (↓/↩/⚠) עם תגית-אידמפוטנטיות (embedded, [מלאי-D:...]) או בלי
+// (שורות-הוצאה — שהאידמפוטנטיות שלהן נשמרת בנפרד בשדה "הערות" של ההוצאה
+// עצמה) לעולם לא נמחקת מהטקסט בפועל, כדי לא לאפשר הורדה-כפולה בניתוח חוזר
+// של אותו מסמך ולא להתנגש עם מחיקה-מדורגת קיימת. השורה **נשארת** בשדה
+// (עם כל תגית), רק מסוננת מכאן והלאה משני הפלטים (movements/freeNotes).
+const HIDDEN_CONTROL_RE = /^\[מלאי-מוסתר\](\{.*\})\s*$/;
+
 /**
  * מפרק שדה "הערות" שלם של פריט-מלאי לשורות-תנועה + הערות-חופשיות.
- * @returns { movements: Array<{kind,date,sourceTable,sourceId,category,sourceLabel,quantity,derivedFrom,warning,link,raw,...}>, freeNotes: string }
+ * @returns { movements: Array<{kind,date,sourceTable,sourceId,category,sourceLabel,quantity,derivedFrom,warning,link,raw,...}>, freeNotes: string, hiddenCount: number }
  */
 export function parseInventoryLedger(notes) {
-  const lines = String(notes || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const allLines = String(notes || '').split('\n').map((l) => l.trim()).filter(Boolean);
+
+  // שלב 1: שולפים את שורת-הבקרה (אם קיימת) ואת רשימת השורות-המוסתרות —
+  // שורת-הבקרה עצמה לעולם לא מוצגת (לא כתנועה, לא כהערה חופשית).
+  let hidden = [];
+  const lines = [];
+  for (const line of allLines) {
+    const m = HIDDEN_CONTROL_RE.exec(line);
+    if (m) {
+      try {
+        const parsed = JSON.parse(m[1]);
+        if (Array.isArray(parsed?.lines)) hidden = parsed.lines;
+      } catch { /* JSON פגום בשורת-בקרה — מתייחסים כאילו אין שורות מוסתרות */ }
+      continue;
+    }
+    lines.push(line);
+  }
+  const hiddenSet = new Set(hidden);
+
   const movements = [];
   const freeNotes = [];
+  let hiddenCount = 0;
   for (const line of lines) {
+    if (hiddenSet.has(line)) { hiddenCount += 1; continue; } // מוסתרת — אבל נשארת בשדה עצמו
     // ⚠️ 7.10.2026 (לילה 3), באג אמיתי שנתפס (ר' לוג-המשימה): מאז
     // שנוספה חתימת-תאריך-ISO מובילה לשורות-תנועה חדשות (todayStamp(),
     // ר' logistics-deduction.js/inventory-deduction.js), השורה כבר לא
@@ -204,7 +234,7 @@ export function parseInventoryLedger(notes) {
     else if (rest.startsWith('⚠')) movements.push(parseWarningOnlyLine(line));
     else freeNotes.push(line);
   }
-  return { movements: movements.reverse(), freeNotes: freeNotes.join('\n') }; // חדש-ביותר קודם
+  return { movements: movements.reverse(), freeNotes: freeNotes.join('\n'), hiddenCount }; // חדש-ביותר קודם
 }
 
 /**

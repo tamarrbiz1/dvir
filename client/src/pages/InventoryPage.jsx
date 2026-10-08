@@ -86,6 +86,11 @@ function itemStatus(item) {
   return { key: 'ok', label: 'תקין', color: 'var(--ok)', soft: 'var(--ok-soft)' };
 }
 
+/** פיצול freeNotes (מחרוזת מחוברת ב-\n, ר' parseInventoryLedger) לרשימת שורות — למחיקה פר-שורה (תוספת 2026-10-08) */
+function splitFreeLines(text) {
+  return text ? text.split('\n').filter((l) => l.trim()) : [];
+}
+
 export default function InventoryPage() {
   const app = useApp();
   // חריג שני להרשאת מנהל-עבודה (2026-09-07): עדכון מלאי מותר גם לו,
@@ -315,6 +320,7 @@ export default function InventoryPage() {
       {ledgerItem && (
         <LedgerDrawer
           item={items.find((x) => x.id === ledgerItem.id) || ledgerItem}
+          canEdit={canEdit}
           onClose={() => setLedgerItem(null)}
         />
       )}
@@ -470,11 +476,15 @@ function ItemDrawer({ item, canEdit, onClose, onAdd, onEdit, onOpenLedger, escap
             </div>
           </div>
 
-          {movements.length > 0 && (
+          {/* תוספת 2026-10-08 ("מחיקת הערות"): הכפתור חייב להיות נגיש גם כשיש
+              רק הערות-חופשיות בלי תנועה אחת (לא היה כך קודם — התנאי היה
+              movements.length > 0 בלבד, כך שלפריט עם הערה ידנית אחת ובלי
+              יומן-תנועות לא הייתה שום דרך לפתוח את מסך-הניהול ולמחוק אותה). */}
+          {(movements.length > 0 || freeNotes) && (
             <div className="card">
-              <div className="section-title" style={{ marginTop: 0 }}>📦 תנועות מלאי</div>
+              <div className="section-title" style={{ marginTop: 0 }}>📦 תנועות והערות</div>
               <button type="button" className="btn btn-ghost" onClick={onOpenLedger}>
-                📜 היסטוריית ירידות ({movements.length})
+                📜 {movements.length > 0 ? `היסטוריית ירידות (${movements.length})` : 'הערות'}
               </button>
             </div>
           )}
@@ -489,12 +499,23 @@ function ItemDrawer({ item, canEdit, onClose, onAdd, onEdit, onOpenLedger, escap
 // תאריך · מסמך (קישור) · כמות שירדה · ממה נגזר · הערה (אי-התאמה/ביטול).
 // קישורי-הוצאות (שאין להם מזהה-רשומה בשורה עצמה, רק "הוצאה #מספר")
 // נפתרים מול רשימת הוצאות אמיתית — נטענת פעם אחת כשהדרואר נפתח.
+//
+// תוספת 2026-10-08 ("אפשרות למחוק הערות מרשימת ההערות"): כפתור 🗑
+// לכל שורת-תנועה (מסתיר בשרת — ר' הערת-הכותרת המפורטת ב-POST
+// /api/inventory/:id/ledger-line/hide ו-inventory-deduction.js —
+// *לא* מחיקה אמיתית, כדי לא לאפשר הורדה-כפולה בניתוח חוזר ולא
+// להתנגש עם מחיקה-מדורגת קיימת של המסמך-המקור) וכפתור 🗑 לכל שורת
+// הערה-חופשית (PATCH /api/inventory/:id/notes — מחיקה אמיתית, בלי
+// תגית לאבד). עדכון אופטימי מקומי בלבד — בלי טעינה מלאה; הרשימה
+// המלאה (items ב-InventoryPage) תתעדכן בעצמה בסבב ה-refresh הבא.
 // ============================================================
-function LedgerDrawer({ item, onClose }) {
+function LedgerDrawer({ item, canEdit, onClose }) {
   const navigate = useNavigate();
   useEscapeClose(onClose);
-  const { movements: rawMovements, freeNotes } = useMemo(() => parseInventoryLedger(item['הערות']), [item]);
+  const { movements: rawMovements, freeNotes: rawFreeNotes, hiddenCount } = useMemo(() => parseInventoryLedger(item['הערות']), [item]);
   const [movements, setMovements] = useState(rawMovements);
+  const [freeLines, setFreeLines] = useState(() => splitFreeLines(rawFreeNotes));
+  const [busyKey, setBusyKey] = useState(null); // מזהה-פעולה בודד שרץ כרגע (חוסם לחיצה כפולה)
   useEffect(() => {
     setMovements(rawMovements);
     const needsExpenseResolve = rawMovements.some((m) => m.sourceTable === 'הוצאות' && !m.link && m.sourceNumber);
@@ -508,6 +529,61 @@ function LedgerDrawer({ item, onClose }) {
       })
       .catch(() => {});
   }, [rawMovements]);
+  useEffect(() => { setFreeLines(splitFreeLines(rawFreeNotes)); }, [rawFreeNotes]);
+
+  // "מחיקת" שורת-תנועה = הסתרה בלבד בשרת (הנתון, כולל כל תגית-
+  // אידמפוטנטיות, נשאר שמור; "מלאי נוכחי" לא נוגע בכלל) — ר' הערה
+  // בכותרת. אופטימי: מסירים מה-state המקומי רק אחרי תשובת-הצלחה.
+  const hideMovement = async (m) => {
+    if (busyKey) return;
+    const ok = await confirmDialog({
+      title: 'הסתרת שורה מהתצוגה',
+      message: 'השורה תוסתר מרשימת התנועות — הנתון עצמו נשאר שמור במערכת (כולל סימון-המעקב הפנימי שמונע הורדה כפולה), והמלאי הנוכחי לא ישתנה.\n\nלהסתיר?',
+      confirmLabel: 'הסתר',
+    });
+    if (!ok) return;
+    setBusyKey(m.raw);
+    try {
+      const r = await authFetch(`/api/inventory/${item.id}/ledger-line/hide`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ line: m.raw }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'שגיאה');
+      setMovements((prev) => prev.filter((mv) => mv.raw !== m.raw));
+      toast('השורה הוסתרה');
+    } catch (e) {
+      toast(`הסתרת השורה נכשלה: ${e.message || e}`, 'error');
+    }
+    setBusyKey(null);
+  };
+
+  // מחיקת הערה-חופשית — אמיתית (אין תגית לאבד): השרת מקבל רק את
+  // הטקסט החופשי הרצוי ומדביק בעצמו את כל שורות-התנועה/הבקרה
+  // העכשוויות (קריאה-מחדש-טרייה בתוך נעילה — ר' updateInventoryFreeNotes).
+  const deleteFreeLine = async (idx) => {
+    if (busyKey) return;
+    const ok = await confirmDialog({
+      title: 'מחיקת הערה',
+      message: 'ההערה תימחק לצמיתות ולא ניתן לשחזר אותה.\n\nלמחוק?',
+      confirmLabel: 'מחק',
+      danger: true,
+    });
+    if (!ok) return;
+    const next = freeLines.filter((_, i) => i !== idx);
+    setBusyKey(`free:${idx}`);
+    try {
+      const r = await authFetch(`/api/inventory/${item.id}/notes`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ freeText: next.join('\n') }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'שגיאה');
+      setFreeLines(next);
+      toast('ההערה נמחקה');
+    } catch (e) {
+      toast(`מחיקת ההערה נכשלה: ${e.message || e}`, 'error');
+    }
+    setBusyKey(null);
+  };
 
   return (
     <div className="drawer-overlay" onClick={onClose}>
@@ -526,7 +602,7 @@ function LedgerDrawer({ item, onClose }) {
               <div className="table-wrap">
                 <table className="data-table">
                   <thead>
-                    <tr><th>תאריך</th><th>מסמך</th><th>כמות</th><th>ממה נגזר</th><th>הערה</th></tr>
+                    <tr><th>תאריך</th><th>מסמך</th><th>כמות</th><th>ממה נגזר</th><th>הערה</th>{canEdit && <th></th>}</tr>
                   </thead>
                   <tbody>
                     {movements.map((m, i) => (
@@ -541,6 +617,12 @@ function LedgerDrawer({ item, onClose }) {
                           <td>{m.date ? formatDate(m.date) : <span className="muted">—</span>}</td>
                           <td colSpan={3} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.raw}</td>
                           <td><span className="badge badge-warn" style={{ fontSize: 12 }}>שורה בפורמט לא מזוהה</span></td>
+                          {canEdit && (
+                            <td>
+                              <button type="button" className="btn btn-sm btn-ghost" aria-label="הסתרת שורה" title="הסתרת שורה מהתצוגה"
+                                style={{ color: 'var(--error)' }} disabled={busyKey === m.raw} onClick={() => hideMovement(m)}>🗑</button>
+                            </td>
+                          )}
                         </tr>
                       ) : (
                       <tr key={i}>
@@ -567,6 +649,12 @@ function LedgerDrawer({ item, onClose }) {
                             : m.warning ? <span className="badge badge-warn">{m.warning}</span>
                               : <span className="muted">—</span>}
                         </td>
+                        {canEdit && (
+                          <td>
+                            <button type="button" className="btn btn-sm btn-ghost" aria-label="הסתרת שורה" title="הסתרת שורה מהתצוגה"
+                              style={{ color: 'var(--error)' }} disabled={busyKey === m.raw} onClick={() => hideMovement(m)}>🗑</button>
+                          </td>
+                        )}
                       </tr>
                       )
                     ))}
@@ -574,11 +662,24 @@ function LedgerDrawer({ item, onClose }) {
                 </table>
               </div>
             )}
+            {hiddenCount > 0 && (
+              <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                {hiddenCount === 1 ? 'שורה אחת הוסתרה' : `${hiddenCount} שורות הוסתרו`} מהתצוגה (הנתון נשאר שמור)
+              </div>
+            )}
           </div>
-          {freeNotes && (
+          {freeLines.length > 0 && (
             <div className="card">
               <div className="section-title" style={{ marginTop: 0 }}>הערות ידניות</div>
-              <div style={{ whiteSpace: 'pre-wrap' }}>{freeNotes}</div>
+              {freeLines.map((line, i) => (
+                <div key={i} className="obj-row" style={{ alignItems: 'flex-start' }}>
+                  <span className="obj-row-value" style={{ whiteSpace: 'pre-wrap', flex: 1 }}>{line}</span>
+                  {canEdit && (
+                    <button type="button" className="btn btn-sm btn-ghost" aria-label="מחיקת הערה" title="מחיקת הערה"
+                      style={{ color: 'var(--error)' }} disabled={busyKey === `free:${i}`} onClick={() => deleteFreeLine(i)}>🗑</button>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </div>
