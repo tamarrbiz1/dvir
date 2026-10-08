@@ -20,6 +20,7 @@ import { sweep as sweepWeeklySync, INVOICES_TABLE, NOTES_TABLE } from './weekly-
 import { runAutoLink, SUPPLIERS_TABLE, MARKETERS_TABLE, EXPENSES_TABLE, CHECKS_TABLE, DELIVERY_TABLE } from './supplier-linking.js';
 import { importSprayReport, deleteSprayReport, sprayReportsHistory, scheduleSprayReportImport, startSprayImportSweep, REPORTS_TABLE as SPRAY_REPORTS_TABLE } from './spray-report-import.js';
 import { startLogisticsSweep } from './logistics-sweep.js';
+import { startAuth, completeAuth, authStatus, loadTokenIntoEnv, redactSecrets } from './cli-auth.js';
 import { checkForecastPreflight } from './forecast-preflight.js';
 import { isForecastSourceTable, syncForecastForChangedRecord } from './forecast-sync.js';
 
@@ -1030,7 +1031,7 @@ function invalidateReads(table) {
 // טבלה שאינה קיימת ב-Base → 404 עם הודעה ברורה בעברית
 // (Airtable מחזיר לזה 403 עמום: "You are not authorized...")
 // ============================================================
-const RESERVED_PATHS = new Set(['tables', 'meta', 'select-options', 'upload-document', 'spray-reports', 'documents']);
+const RESERVED_PATHS = new Set(['tables', 'meta', 'select-options', 'upload-document', 'spray-reports', 'documents', 'cli-auth']);
 let tableNamesCache = { at: 0, names: null };
 async function knownTableNames() {
   if (tableNamesCache.names && Date.now() - tableNamesCache.at < 5 * 60 * 1000) return tableNamesCache.names;
@@ -1092,6 +1093,42 @@ function sendApiError(res, e) {
   const status = e?.statusCode;
   res.status(status >= 400 && status < 500 ? status : 500).json({ error: e.message });
 }
+
+// ⚠️ המיקום כאן הוא קריטי ולא אסתטי: הראוטים הגנריים למטה
+// (`/api/:table` ו-`/api/:table/:id`) קולטים כל נתיב בן סגמנט-שניים,
+// ולכן `/api/cli-auth/status` היה מגיע אליהם ונכשל ב-500/404 אם
+// היה מוגדר אחריהם. (אותה מלכודת בדיוק כמו `documents`; שם זה לא
+// התפוצץ רק מפני ששם הנתיב ארוך יותר.) נתפס בבדיקת-ההרשאות.
+// ============================================================
+// חידוש אימות הניתוח מתוך האפליקציה (משימה AA, 8.10.2026) — owner
+// בלבד. ר' server/src/cli-auth.js להסבר המנגנון ולמה הוא נראה כך.
+// שום תשובה כאן לא מכילה את הטוקן או את קוד-ההדבקה.
+// ============================================================
+app.post('/api/cli-auth/start', authenticate, requireOwner, async (req, res) => {
+  try {
+    res.json(await startAuth());
+  } catch (e) {
+    console.error(`[cli-auth] start נכשל: ${redactSecrets(e.message)}`);
+    res.status(e.statusCode || 500).json({ error: redactSecrets(e.message) });
+  }
+});
+
+app.post('/api/cli-auth/complete', authenticate, requireOwner, async (req, res) => {
+  try {
+    res.json(await completeAuth(req.body?.code));
+  } catch (e) {
+    console.error(`[cli-auth] complete נכשל: ${redactSecrets(e.message)}`);
+    res.status(e.statusCode || 500).json({ error: redactSecrets(e.message) });
+  }
+});
+
+app.get('/api/cli-auth/status', authenticate, requireOwner, async (req, res) => {
+  try {
+    res.json(await authStatus());
+  } catch (e) {
+    res.status(500).json({ error: redactSecrets(e.message) });
+  }
+});
 
 // רשומות מטבלה (עם filters / sort / limit)
 app.get('/api/:table', authorizeRead, async (req, res) => {
@@ -1521,6 +1558,11 @@ app.use((err, req, res, _next) => {
 
 app.listen(PORT, () => {
   console.log(`✅ שרת Zite רץ על http://localhost:${PORT}`);
+  // טוקן שחודש מהאפליקציה גובר על זה שב-.env (ר' cli-auth.js).
+  // לא זורק: כשל כאן לא מפיל את השרת, רק משאיר את המצב הקיים.
+  loadTokenIntoEnv()
+    .then((r) => console.log(`[cli-auth] מקור הטוקן: ${r.source}${r.expiresAt ? `, עד ${r.expiresAt}` : ''}`))
+    .catch(() => {});
   warmUpLinkIndex();
   scheduleFridaysCheck(); // ימי שישי תמיד ב"ימי אי עבודה" — ר' fridays.js
   // דוחות ריסוסים שנותחו אבל טרם יובאו לטיפולים — איסוף ~60 שניות אחרי

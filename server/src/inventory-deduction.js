@@ -245,11 +245,16 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
     // סעיף V2 (8.10.2026): להבדיל בין "הניתוח **נכשל**" לבין "נותח ובאמת
     // אין פריטים". כשל נשמר כ-`failed` (לא `done`), עם הודעה ידידותית
     // למשתמשת; הפירוט הטכני נרשם ללוג השרת בלבד ולא נדחף לכרטיס.
-    const friendly = e?.analysisUnavailable
-      ? 'הניתוח לא זמין כרגע — נסו שוב מאוחר יותר'
-      : (e?.message || 'שגיאה לא ידועה');
+    // משימה AA: כשל-אימות הוא מצב שהלקוחה **יכולה לתקן בעצמה** (כפתור
+    // "חדש אימות"), ולכן הוא מקבל הודעה אחרת וקוד שהלקוח מזהה — ולא
+    // "נסו שוב מאוחר יותר", שבמצב הזה יחזור לנצח.
+    const authExpired = e?.code === 'AUTH_EXPIRED';
+    const friendly = authExpired
+      ? 'האימות של הניתוח האוטומטי פג — לחצו "חדש אימות" למעלה'
+      : (e?.analysisUnavailable ? 'הניתוח לא זמין כרגע — נסו שוב מאוחר יותר' : (e?.message || 'שגיאה לא ידועה'));
     console.error(`[inventory-ai] ניתוח הוצאה ${expenseId} נכשל: ${e?.message}${e?.detail ? ` | ${e.detail}` : ''}`);
     const state = { status: 'failed', analyzedAt: new Date().toISOString(), error: friendly, results: [] };
+    if (authExpired) state.errorCode = 'AUTH_EXPIRED';
     await saveState(expenseId, currentNotes, state);
     return state;
   }
