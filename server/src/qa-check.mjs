@@ -1142,7 +1142,8 @@ await test('התאמת מלאי: ריבוי נקבה ("יריעות" מול כי
 await test('התאמת מלאי: יחידת מידה עמומה (ליטר) חוסמת הורדה אוטומטית', () => {
   const matches = matchLinesToInventory([{ description: 'ניילון 50 ליטר', quantity: 50, unit: 'ליטר', confidence: 0.95 }], FAKE_INVENTORY);
   if (!matches[0]?.needsApproval) throw new Error('ציפייה ל-needsApproval=true ביחידה לא ברורה');
-  if (!/יחידת מידה/.test(matches[0].reason || '')) throw new Error('הסיבה לא מזכירה יחידת מידה');
+  // 8.10.2026: ההסבר נעשה מפורש — נוקב ביחידת-החשבונית ולא "לא ברור" סתום
+  if (!/ליטר/.test(matches[0].reason || '')) throw new Error(`הסיבה לא נוקבת ביחידה שבחשבונית: ${matches[0].reason}`);
 });
 
 await test('התאמת מלאי: ביטחון מתחת לסף 0.85 חוסם הורדה אוטומטית', () => {
@@ -2883,7 +2884,7 @@ await test('V: יחידת-שטח (מ"ר) ו"כמות גדולה מהמלאי" ד
     { description: 'רשת מעל המלאי', quantity: 9999, unit: 'יחידה', confidence: 0.95 },
   ], items);
   const area = byDesc(rows, 'רשת נגד מזיקים 50 מש');
-  if (!area?.needsApproval || !/יחידת מידה/.test(area.reason || '')) throw new Error('מ"ר חייבת לדרוש אישור');
+  if (!area?.needsApproval || !/מ"ר/.test(area.reason || '')) throw new Error(`מ"ר חייבת לדרוש אישור עם הסבר שנוקב ביחידה: ${area?.reason}`);
   const ok = byDesc(rows, 'רשת צל תקינה');
   if (ok?.needsApproval) throw new Error('יחידה תקינה בתוך המלאי לא אמורה לדרוש אישור');
   const over = byDesc(rows, 'רשת מעל המלאי');

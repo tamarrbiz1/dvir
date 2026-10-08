@@ -113,11 +113,33 @@ const AMBIGUOUS_UNITS = [
   'מ"ר', 'מ"ק', 'דונם', 'סמ"ר', 'מ״ר', 'מ״ק',
 ];
 
+// ⚠️ 8.10.2026: טבלת "מלאי בסיסי" **לא שומרת יחידת-מידה** לפריט — יש בה
+// רק "מלאי נוכחי"/"מלאי מינימום" מספריים (אומת מול getMeta). לכן כשחשבונית
+// נוקבת ביחידת-שטח/נפח/משקל אין שום מקור-אמת להמיר נגדו, וההחלטה הנכונה
+// היא לבקש אישור — אבל **עם הסבר שאומר מה הבעיה**, לא "לא ברור" סתום.
+// דוגמה אמיתית (הוצאה #48): "רשת נגד מזיקים 50 מש — 382.5 מ\"ר" מול פריט
+// "רשתות" שמנוהל ביחידות (מלאי 10, מינימום 9) — המרה בלתי-אפשרית בלי
+// לדעת כמה מ"ר בגליל.
 function resolveQuantity(line) {
-  if (line.quantity == null || !Number.isFinite(line.quantity) || line.quantity <= 0) return { ok: false };
+  if (line.quantity == null || !Number.isFinite(line.quantity) || line.quantity <= 0) {
+    return { ok: false, why: 'missingQty' };
+  }
   const unit = normalize(line.unit || '');
-  if (unit && AMBIGUOUS_UNITS.some((u) => unit === normalize(u))) return { ok: false };
+  if (unit && AMBIGUOUS_UNITS.some((u) => unit === normalize(u))) {
+    return { ok: false, why: 'unitMismatch', unit: String(line.unit).trim() };
+  }
   return { ok: true, quantity: line.quantity };
+}
+
+/** הסבר קריא למשתמשת למה השורה דורשת אישור ידני */
+function approvalReason(qty, line) {
+  if (qty.why === 'missingQty') {
+    return `לא זוהתה כמות לשורה (${line.quantity === 0 ? 'נקראה כמות 0' : 'הכמות חסרה'}) — אשרי את הכמות הנכונה`;
+  }
+  if (qty.why === 'unitMismatch') {
+    return `החשבונית ב-${qty.unit}, והמלאי מנוהל ביחידות — אשרי את הכמות להורדה`;
+  }
+  return 'יחידת מידה לא ברורה — דורש אישור';
 }
 
 /**
@@ -159,7 +181,7 @@ export function matchLinesToInventory(lines, inventoryItems) {
       quantity: qty.ok ? qty.quantity : line.quantity,
       needsApproval,
       reason: !qty.ok
-        ? 'יחידת מידה לא ברורה — דורש אישור'
+        ? approvalReason(qty, line)
         : exceedsStock
           ? `הכמות (${qty.quantity}) גדולה מהמלאי הקיים (${current}) — דורש אישור`
           : (line.confidence < CONFIDENCE_THRESHOLD ? `ביטחון נמוך (${Math.round(line.confidence * 100)}%) — דורש אישור` : null),
