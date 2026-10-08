@@ -13,7 +13,7 @@ import {
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
 import { analyzeExpenseInventory, approvePendingDeduction, readState, createManualExpense, runManualExpenseInventoryDeduction, validateManualExpenseInput, manualExpenseSubmitKey, claimManualExpenseSubmission, updateExpenseFreeNotes } from './inventory-deduction.js';
-import { analyzeLogisticsInventory } from './logistics-deduction.js';
+import { analyzeLogisticsInventory, shouldRetryLogistics, MAX_LOGISTICS_ATTEMPTS } from './logistics-deduction.js';
 import { cascadeDocumentDelete, summarizeCascade } from './document-cascade.js';
 import { fixFilenameEncoding } from './filename-utils.js';
 import { sweep as sweepWeeklySync, INVOICES_TABLE, NOTES_TABLE } from './weekly-sync.js';
@@ -92,7 +92,17 @@ const COMPUTED_FIELD_TYPES = new Set([
 // רשומה לפני העשרה/קאש — התבניות ספציפיות מספיק כדי לא לפגוע ברשומה
 // אמיתית בטעות (מזהי בדיקה תמיד כוללים __PLANT_TEST_ או QA- ואחריו
 // חותמת-זמן ארוכה, לא טקסט חופשי שמישהו היה כותב).
-const TEST_RECORD_PATTERN = /__PLANT_TEST_\d+__|\bQA-\d{10,}\b|\bPERF-TEST\b/;
+//
+// ⚠️ 2026-10-08 ("task Y") — הוסר גבול-המילה שהיה בסוף החלופה של QA
+// (`\bQA-\d{10,}\b` → `\bQA-\d{10,}`). "\b" דרש תו-שאינו-תו-מילה אחרי
+// הספרה האחרונה, ולכן **כל סמן-QA שאחריו אות או קו-תחתי חמק מהזיהוי
+// בשקט**: "QA-1791448600878b" (MARK + סיומת — התבנית שבה qa-check מייצר
+// קוד-שבוע שני ייחודי) לא נתפס כרשומת-בדיקה בכלל. זה לא תיאורטי —
+// תעודת-המשלוח של QA שניכתה 1648 קרטונים/נילונים/כובעים ממלאי *אמיתי*
+// ב-8.10 נשאה בדיוק את קוד-השבוע הזה. כיוון השינוי בטוח: הוא רק
+// *מרחיב* את הזיהוי (יותר רשומות מסומנות כבדיקה, לא פחות), ורשומה
+// אמיתית תצטרך להכיל "QA-" ואחריו 10+ ספרות כדי להיפגע.
+const TEST_RECORD_PATTERN = /__PLANT_TEST_\d+__|\bQA-\d{10,}|\bPERF-TEST\b/;
 // ?includeTest=1 — יציאת חירום למערך הבדיקות (qa-check.mjs) בלבד: הוא
 // יוצר וקורא בחזרה רשומות מתויגות-MARK כחלק מהאימות העצמי שלו, ולכן
 // חייב לראות אותן; שום מסך אמיתי באפליקציה לא שולח את הפרמטר הזה.
@@ -340,31 +350,15 @@ async function autoAnalyzeExpenseInventory(expenseId, attempt = 0) {
 // כלום. ממשיכים לנסות גם כשיש תוצאות אבל כולן pending (לא רק
 // results.length===0), עד כ-5 דקות סה"כ, עם לוג מפורט לכל ניסיון.
 //
-// ⚠️⚠️ תקרית אמיתית 2026-10-08 ("task Y", אומתה ב-journalctl): חשבוניות
-// #79 (rec9Pkhz4OkgALQVy, 07:50) ו-#80 (recLMiWv5ujFzP4WZ, 08:02) —
-// בניסיון 1 קרטונים/נילונים/כובעים *כן* ירדו מתעודת-המשלוח המקבילה,
-// אבל "מספר משטחים" על החשבונית עצמה עדיין לא היה ממולא. results כלל
-// גם תוצאות deducted=true וגם תוצאה pending אחת (משטחים) — ו-
-// `results.every((r) => r.pending)` היה **false** (לא כולן pending),
-// אז הלופ עצר אחרי ניסיון 1 והמשטחים נשארו תלויים-לנצח (רק כפתור "נתח
-// מחדש" ידני סגר את זה בפועל — זו תלונת הבעלים: "ההורדה קורית רק אחרי
-// שאני לוחצת"). התיקון: ממשיכים לנסות כל עוד **יש** תוצאה pending
-// (some, לא every) — deductOne עדיין אידמפוטנטי לכל קטגוריה בנפרד
-// (doneTag), כך שההורדות שכבר בוצעו לא חוזרות על עצמן, רק מה שנשאר
-// pending מטופל בניסיון הבא.
-//
-// גם חלון-הניסיונות הורחב: 9 ניסיונות/~5 דקות (ר' לוג #79/#80 — אין
-// בו עדות לכמה זמן Make היה צריך בפועל כי הריטריי נעצר אחרי ניסיון
-// 1 בגלל הבאג, לא בגלל שה-5 דקות לא הספיקו) לא מספיק ביטחון. בדיוק
-// כמו spray-report-import.js (Make יכול לקחת "שניות עד דקות"), מורחב
-// ל-16 ניסיונות עם backoff עולה עד 2 דקות — כ-27 דקות סה"כ בריטריי-
-// בזיכרון, בלי "להכביד" על Airtable (כ-3 קריאות GET לניסיון, בתדירות
-// יורדת). ה-16 ניסיונות הם רשת-ביטחון ראשונה בלבד — הריטריי הזה חי
-// רק בזיכרון של תהליך הנוד הנוכחי, ולכן restart/deploy מוחק אותו
-// לגמרי. רשת-הביטחון השנייה, שלא תלויה בזיכרון, היא איסוף מחזורי —
+// ⚠️⚠️ תקרית אמיתית 2026-10-08 ("task Y"): הלופ עצר אחרי ניסיון אחד
+// ברגע שחלק מהקטגוריות כבר ירדו וחלק עדיין המתינו ל-Make (`every`
+// במקום `some`), והמשטחים ירדו רק בלחיצה ידנית. ההחלטה עברה לפונקציה
+// טהורה ונבדקת — shouldRetryLogistics ב-logistics-deduction.js; שם גם
+// ההסבר המלא, מספרי החשבוניות שנפגעו, והנמקת גודל-החלון מול היומן.
+// הריטריי הזה הוא רשת-ביטחון ראשונה בלבד: הוא חי בזיכרון התהליך, ולכן
+// restart/deploy מוחק אותו. רשת-הביטחון השנייה היא האיסוף המחזורי —
 // ר' logistics-sweep.js ו-startLogisticsSweep למטה.
 // ============================================================
-const MAX_LOGISTICS_ATTEMPTS = 16;
 // in-memory בלבד (לא נשרד restart) — לחשיפת מצב ההורדה האחרון לכל מסמך
 // למסך ("מסמכים שהועלו לאחרונה"), כולל כפתור "נסה שוב". אין לטבלאות
 // תעודות-משלוח/חשבוניות שדה "הערות" משלהן לשמור בו state (ר' הערת הכותרת).
@@ -386,21 +380,19 @@ function recordLogisticsStatus(table, id, result, attempt) {
 
 async function autoAnalyzeLogisticsInventory(table, recordId, attempt = 0) {
   try {
-    // ⚠️⚠️ "task Y" — תקרית אמיתית 2026-10-08 (אומתה ותוקנה ע"י התיאום):
-    // לריטריי הזה *מעולם* לא היה סינון רשומות-בדיקה (בניגוד ל-
-    // scheduleSprayReportImport ב-spray-report-import.js, שכן בודק
-    // isTestRecord ובורח בשקט). זה היה סמוי כי החלון הישן (9 ניסיונות/
-    // ~5 דקות, ועם הבאג עוד פחות בפועל) כמעט אף פעם לא הספיק כדי
-    // ש-Make יספיק למלא "כמות קרטונים"/"מספר משטחים" עם נתונים *אמיתיים*
-    // (מהקובץ-האמת שבדיקות qa-check.mjs מצרפות בכוונה, כדי לא להפיל
-    // את תרחיש ה-Make). ברגע שהחלון הוארך ל-27 דקות (התיקון הזה!), חשבונית
-    // ותעודת-משלוח של QA-test קיבלו בפועל ערכים אמיתיים (27 משטחים,
-    // 1648 קרטונים/נילונים/כובעים) מ-Make — ומכיוון שאי-אפשר ליצור פריט-
-    // מלאי-QA בקטגוריה תפוסה (סעיף Q, 409), הקטגוריות האלה תמיד מצביעות
-    // על פריט-המלאי *האמיתי* היחיד. תוצאה: בדיקת-QA ניכתה בפועל ממלאי
-    // אמיתי. הסינון הזה (רק בניסיון הראשון — אין טעם לשלוף metadata/
-    // רשומה שוב בכל ניסיון חוזר) סוגר את זה באותה תבנית בדיוק כמו
-    // spray-report-import.js.
+    // ⚠️⚠️ "task Y" — תקרית אמיתית 2026-10-08: לריטריי הזה *מעולם* לא
+    // היה סינון רשומות-בדיקה (בניגוד ל-scheduleSprayReportImport ב-
+    // spray-report-import.js, שכן בודק isTestRecord ובורח בשקט). זה היה
+    // סמוי כל עוד החלון היה קצר, אבל הוא מסוכן בדיוק כאן: בדיקות
+    // qa-check.mjs *חייבות* לצרף קובץ-אמת לטבלאות שמנוטרות ע"י Make
+    // (אחרת תרחיש ה-Make נפל והושבת — תקריות 2-3.9), ו-Make מוציא
+    // מהקובץ הזה כמויות *אמיתיות*. מכיוון שאי-אפשר ליצור פריט-מלאי-QA
+    // בקטגוריה תפוסה (סעיף Q, 409), הקטגוריות קרטונים/נילונים/כובעים/
+    // משטחי-עץ מצביעות *תמיד* על פריט-המלאי האמיתי היחיד — ולכן רשומת-QA
+    // שהגיעה לכאן מנכה ממלאי אמיתי. זה קרה בפועל ב-8.10 (חשבונית-QA #81
+    // לקחה 27 משטחים, תעודת-QA #101 לקחה 1648 מכל אחת משלוש הקטגוריות);
+    // בוטל ידנית. הסינון (רק בניסיון הראשון — אין טעם לשלוף שוב בכל
+    // ניסיון חוזר) סוגר את זה באותה תבנית כמו spray-report-import.js.
     if (attempt === 0) {
       const rec = await getBase()(table).find(recordId).catch(() => null);
       if (rec) {
@@ -411,19 +403,24 @@ async function autoAnalyzeLogisticsInventory(table, recordId, attempt = 0) {
         }
       }
     }
-    // backoff עולה עד 2 דקות (ר' הערת הכותרת למעלה, "task Y") — 16
-    // ניסיונות ≈ 27 דקות סה"כ.
-    const delay = Math.min(20000 * (attempt + 1), 120000);
+    // backoff עולה: 10 שנ' לניסיון הראשון, +10 לכל ניסיון, תקרה 2 דקות.
+    // עם MAX_LOGISTICS_ATTEMPTS=20 ≈ 29 דקות סה"כ (ר' ההנמקה מול היומן
+    // ב-logistics-deduction.js).
+    const delay = Math.min(10000 * (attempt + 1), 120000);
     await new Promise((r) => setTimeout(r, delay));
     const result = await withInventoryLock(`logistics:${table}:${recordId}`, () => analyzeLogisticsInventory(table, recordId));
     recordLogisticsStatus(table, recordId, result, attempt);
     console.log(`[logistics-ai] ${table} ${recordId}: ניסיון ${attempt + 1}/${MAX_LOGISTICS_ATTEMPTS} — ${summarizeLogisticsResults(result.results)}`);
-    // ⚠️ "task Y" — היה `every` (כל התוצאות pending), וזה עצר ריטריי
+    // ⚠️ "task Y": אם *משהו* ירד בפועל בניסיון הזה — לרענן את הקאש מיד,
+    // גם אם נמשיך לנסות. קודם invalidateReads רץ רק כשהלופ *נעצר*, וזה
+    // היה אומר שבשרשרת-ריטריי ארוכה (עד 29 דק') המסך מציג מלאי מיושן
+    // למרות שההורדה כבר בוצעה — בדיוק תסמין התלונה ("זה לא מתעדכן").
+    if (result.results?.some((r) => r.deducted)) invalidateReads('מלאי בסיסי');
+    // ⚠️ "task Y" — היה `every` (כל התוצאות pending), וזה עצר את הריטריי
     // מוקדם מדי ברגע שחלק מהקטגוריות כבר ירדו וחלק עדיין ממתינות (למשל
-    // קרטונים ירדו, משטחים עדיין pending). shouldRetryLogistics (למעלה,
-    // `some`) ממשיך לנסות כל עוד *יש* תוצאה pending אחת לפחות —
-    // deductOne אידמפוטנטי לכל קטגוריה בנפרד, כך שהורדה שכבר בוצעה לא
-    // חוזרת על עצמה.
+    // קרטונים ירדו, משטחים עדיין pending). shouldRetryLogistics (`some`)
+    // ממשיך לנסות כל עוד *יש* תוצאה pending אחת לפחות — deductOne
+    // אידמפוטנטי לכל קטגוריה בנפרד, כך שהורדה שכבר בוצעה לא חוזרת.
     if (shouldRetryLogistics(result.results, attempt)) {
       return autoAnalyzeLogisticsInventory(table, recordId, attempt + 1);
     }
