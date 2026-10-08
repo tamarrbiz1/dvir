@@ -13,12 +13,13 @@ import {
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
 import { analyzeExpenseInventory, approvePendingDeduction, readState, createManualExpense, runManualExpenseInventoryDeduction, validateManualExpenseInput, manualExpenseSubmitKey, claimManualExpenseSubmission, updateExpenseFreeNotes, updateInventoryFreeNotes, hideInventoryLedgerLine } from './inventory-deduction.js';
-import { analyzeLogisticsInventory } from './logistics-deduction.js';
+import { analyzeLogisticsInventory, shouldRetryLogistics, MAX_LOGISTICS_ATTEMPTS } from './logistics-deduction.js';
 import { cascadeDocumentDelete, summarizeCascade } from './document-cascade.js';
 import { fixFilenameEncoding } from './filename-utils.js';
 import { sweep as sweepWeeklySync, INVOICES_TABLE, NOTES_TABLE } from './weekly-sync.js';
 import { runAutoLink, SUPPLIERS_TABLE, MARKETERS_TABLE, EXPENSES_TABLE, CHECKS_TABLE, DELIVERY_TABLE } from './supplier-linking.js';
 import { importSprayReport, deleteSprayReport, sprayReportsHistory, scheduleSprayReportImport, startSprayImportSweep, REPORTS_TABLE as SPRAY_REPORTS_TABLE } from './spray-report-import.js';
+import { startLogisticsSweep } from './logistics-sweep.js';
 import { checkForecastPreflight } from './forecast-preflight.js';
 import { isForecastSourceTable, syncForecastForChangedRecord } from './forecast-sync.js';
 
@@ -91,7 +92,17 @@ const COMPUTED_FIELD_TYPES = new Set([
 // רשומה לפני העשרה/קאש — התבניות ספציפיות מספיק כדי לא לפגוע ברשומה
 // אמיתית בטעות (מזהי בדיקה תמיד כוללים __PLANT_TEST_ או QA- ואחריו
 // חותמת-זמן ארוכה, לא טקסט חופשי שמישהו היה כותב).
-const TEST_RECORD_PATTERN = /__PLANT_TEST_\d+__|\bQA-\d{10,}\b|\bPERF-TEST\b/;
+//
+// ⚠️ 2026-10-08 ("task Y") — הוסר גבול-המילה שהיה בסוף החלופה של QA
+// (`\bQA-\d{10,}\b` → `\bQA-\d{10,}`). "\b" דרש תו-שאינו-תו-מילה אחרי
+// הספרה האחרונה, ולכן **כל סמן-QA שאחריו אות או קו-תחתי חמק מהזיהוי
+// בשקט**: "QA-1791448600878b" (MARK + סיומת — התבנית שבה qa-check מייצר
+// קוד-שבוע שני ייחודי) לא נתפס כרשומת-בדיקה בכלל. זה לא תיאורטי —
+// תעודת-המשלוח של QA שניכתה 1648 קרטונים/נילונים/כובעים ממלאי *אמיתי*
+// ב-8.10 נשאה בדיוק את קוד-השבוע הזה. כיוון השינוי בטוח: הוא רק
+// *מרחיב* את הזיהוי (יותר רשומות מסומנות כבדיקה, לא פחות), ורשומה
+// אמיתית תצטרך להכיל "QA-" ואחריו 10+ ספרות כדי להיפגע.
+const TEST_RECORD_PATTERN = /__PLANT_TEST_\d+__|\bQA-\d{10,}|\bPERF-TEST\b/;
 // ?includeTest=1 — יציאת חירום למערך הבדיקות (qa-check.mjs) בלבד: הוא
 // יוצר וקורא בחזרה רשומות מתויגות-MARK כחלק מהאימות העצמי שלו, ולכן
 // חייב לראות אותן; שום מסך אמיתי באפליקציה לא שולח את הפרמטר הזה.
@@ -204,7 +215,12 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 // מחכה לקודמתה (אם נכשלה — לא חוסם קריאות עתידיות).
 // ============================================================
 const inventoryLocks = new Map(); // key -> Promise (השרשרת הפעילה האחרונה)
-function withInventoryLock(key, fn) {
+// export: logistics-sweep.js (task Y) מריץ את ההורדה המחזורית-שלו
+// תחת אותו מנעול-בזיכרון, לפי מפתח `logistics:<table>:<id>` זהה לזה
+// שהריטריי-החי משתמש בו — כך ששניהם לעולם לא רצים בבת-אחת על אותה
+// רשומה (למשל אם הריטריי-החי עדיין באמצע backoff כש-tick של האיסוף
+// המחזורי מגיע לאותה רשומה).
+export function withInventoryLock(key, fn) {
   const prev = inventoryLocks.get(key) || Promise.resolve();
   const run = prev.catch(() => {}).then(fn);
   inventoryLocks.set(key, run.catch(() => {}));
@@ -333,8 +349,16 @@ async function autoAnalyzeExpenseInventory(expenseId, attempt = 0) {
 // (d.pending) לעולם לא כותב ל-Airtable בכלל, אז ריטריי בטוח ולא "נועל"
 // כלום. ממשיכים לנסות גם כשיש תוצאות אבל כולן pending (לא רק
 // results.length===0), עד כ-5 דקות סה"כ, עם לוג מפורט לכל ניסיון.
+//
+// ⚠️⚠️ תקרית אמיתית 2026-10-08 ("task Y"): הלופ עצר אחרי ניסיון אחד
+// ברגע שחלק מהקטגוריות כבר ירדו וחלק עדיין המתינו ל-Make (`every`
+// במקום `some`), והמשטחים ירדו רק בלחיצה ידנית. ההחלטה עברה לפונקציה
+// טהורה ונבדקת — shouldRetryLogistics ב-logistics-deduction.js; שם גם
+// ההסבר המלא, מספרי החשבוניות שנפגעו, והנמקת גודל-החלון מול היומן.
+// הריטריי הזה הוא רשת-ביטחון ראשונה בלבד: הוא חי בזיכרון התהליך, ולכן
+// restart/deploy מוחק אותו. רשת-הביטחון השנייה היא האיסוף המחזורי —
+// ר' logistics-sweep.js ו-startLogisticsSweep למטה.
 // ============================================================
-const MAX_LOGISTICS_ATTEMPTS = 9;
 // in-memory בלבד (לא נשרד restart) — לחשיפת מצב ההורדה האחרון לכל מסמך
 // למסך ("מסמכים שהועלו לאחרונה"), כולל כפתור "נסה שוב". אין לטבלאות
 // תעודות-משלוח/חשבוניות שדה "הערות" משלהן לשמור בו state (ר' הערת הכותרת).
@@ -356,14 +380,48 @@ function recordLogisticsStatus(table, id, result, attempt) {
 
 async function autoAnalyzeLogisticsInventory(table, recordId, attempt = 0) {
   try {
-    const delay = Math.min(10000 * (attempt + 1), 45000);
+    // ⚠️⚠️ "task Y" — תקרית אמיתית 2026-10-08: לריטריי הזה *מעולם* לא
+    // היה סינון רשומות-בדיקה (בניגוד ל-scheduleSprayReportImport ב-
+    // spray-report-import.js, שכן בודק isTestRecord ובורח בשקט). זה היה
+    // סמוי כל עוד החלון היה קצר, אבל הוא מסוכן בדיוק כאן: בדיקות
+    // qa-check.mjs *חייבות* לצרף קובץ-אמת לטבלאות שמנוטרות ע"י Make
+    // (אחרת תרחיש ה-Make נפל והושבת — תקריות 2-3.9), ו-Make מוציא
+    // מהקובץ הזה כמויות *אמיתיות*. מכיוון שאי-אפשר ליצור פריט-מלאי-QA
+    // בקטגוריה תפוסה (סעיף Q, 409), הקטגוריות קרטונים/נילונים/כובעים/
+    // משטחי-עץ מצביעות *תמיד* על פריט-המלאי האמיתי היחיד — ולכן רשומת-QA
+    // שהגיעה לכאן מנכה ממלאי אמיתי. זה קרה בפועל ב-8.10 (חשבונית-QA #81
+    // לקחה 27 משטחים, תעודת-QA #101 לקחה 1648 מכל אחת משלוש הקטגוריות);
+    // בוטל ידנית. הסינון (רק בניסיון הראשון — אין טעם לשלוף שוב בכל
+    // ניסיון חוזר) סוגר את זה באותה תבנית כמו spray-report-import.js.
+    if (attempt === 0) {
+      const rec = await getBase()(table).find(recordId).catch(() => null);
+      if (rec) {
+        const computed = await computedFieldNames(table);
+        if (isTestRecord({ id: rec.id, ...rec.fields }, table, computed)) {
+          console.log(`[logistics-ai] ${table} ${recordId}: רשומת-בדיקה (QA/PERF-TEST) — דילוג מלא, אין ריטריי ואין ניתוח`);
+          return;
+        }
+      }
+    }
+    // backoff עולה: 10 שנ' לניסיון הראשון, +10 לכל ניסיון, תקרה 2 דקות.
+    // עם MAX_LOGISTICS_ATTEMPTS=20 ≈ 29 דקות סה"כ (ר' ההנמקה מול היומן
+    // ב-logistics-deduction.js).
+    const delay = Math.min(10000 * (attempt + 1), 120000);
     await new Promise((r) => setTimeout(r, delay));
     const result = await withInventoryLock(`logistics:${table}:${recordId}`, () => analyzeLogisticsInventory(table, recordId));
     recordLogisticsStatus(table, recordId, result, attempt);
-    const allPending = result.results.length > 0 && result.results.every((r) => r.pending);
-    const nothingYet = result.results.length === 0 || allPending;
     console.log(`[logistics-ai] ${table} ${recordId}: ניסיון ${attempt + 1}/${MAX_LOGISTICS_ATTEMPTS} — ${summarizeLogisticsResults(result.results)}`);
-    if (nothingYet && attempt < MAX_LOGISTICS_ATTEMPTS - 1) {
+    // ⚠️ "task Y": אם *משהו* ירד בפועל בניסיון הזה — לרענן את הקאש מיד,
+    // גם אם נמשיך לנסות. קודם invalidateReads רץ רק כשהלופ *נעצר*, וזה
+    // היה אומר שבשרשרת-ריטריי ארוכה (עד 29 דק') המסך מציג מלאי מיושן
+    // למרות שההורדה כבר בוצעה — בדיוק תסמין התלונה ("זה לא מתעדכן").
+    if (result.results?.some((r) => r.deducted)) invalidateReads('מלאי בסיסי');
+    // ⚠️ "task Y" — היה `every` (כל התוצאות pending), וזה עצר את הריטריי
+    // מוקדם מדי ברגע שחלק מהקטגוריות כבר ירדו וחלק עדיין ממתינות (למשל
+    // קרטונים ירדו, משטחים עדיין pending). shouldRetryLogistics (`some`)
+    // ממשיך לנסות כל עוד *יש* תוצאה pending אחת לפחות — deductOne
+    // אידמפוטנטי לכל קטגוריה בנפרד, כך שהורדה שכבר בוצעה לא חוזרת.
+    if (shouldRetryLogistics(result.results, attempt)) {
       return autoAnalyzeLogisticsInventory(table, recordId, attempt + 1);
     }
     invalidateReads('מלאי בסיסי');
@@ -1468,6 +1526,13 @@ app.listen(PORT, () => {
   // דוחות ריסוסים שנותחו אבל טרם יובאו לטיפולים — איסוף ~60 שניות אחרי
   // העלייה ואז כל 10 דקות (רק דוחות מאחרי תאריך-הסף; ר' spray-report-import.js)
   startSprayImportSweep({ afterImport: onSprayImported });
+  // "task Y": אותה תבנית בדיוק, להורדת-מלאי נגזרת מתעודות-משלוח/חשבוניות
+  // שהריטריי-החי-בזיכרון החמיץ (למשל restart באמצע המתנה ל-Make) —
+  // ר' logistics-sweep.js להסבר המלא ולתיחום-הבטיחות (cutoff).
+  startLogisticsSweep({
+    lock: withInventoryLock,
+    onResult: (table, id, result) => { recordLogisticsStatus(table, id, result, 'sweep'); invalidateReads('מלאי בסיסי'); },
+  });
 });
 
 // ============================================================

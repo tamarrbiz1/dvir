@@ -42,7 +42,7 @@ const DOSAGE_FIELD = 'מינון '; // שם השדה החי כולל רווח ב
 
 // אותה תבנית כמו TEST_RECORD_PATTERN ב-server.js: רשומות בדיקה (qa-check.mjs)
 // לעולם לא מיובאות אוטומטית ולא מוצגות בהיסטוריה למשתמש אמיתי.
-const TEST_RECORD_PATTERN = /__PLANT_TEST_\d+__|\bQA-\d{10,}\b|\bPERF-TEST\b/;
+const TEST_RECORD_PATTERN = /__PLANT_TEST_\d+__|\bQA-\d{10,}|\bPERF-TEST\b/;
 export const isTestRecord = (rec) => TEST_RECORD_PATTERN.test(JSON.stringify(rec));
 
 export const markerOf = (number) => `[מדוח ריסוסים #${number}]`;

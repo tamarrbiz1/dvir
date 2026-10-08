@@ -26,7 +26,8 @@ import {
   MAX_MANUAL_LINES, sanitizeFreeNotes, mergeFreeNotesWithTags, manualExpenseSubmitKey,
   claimManualExpenseSubmission, hideInventoryLedgerLine, updateInventoryFreeNotes,
 } from './inventory-deduction.js';
-import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD, planLogisticsReversal, unitBlockReason } from './logistics-deduction.js';
+import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD, planLogisticsReversal, unitBlockReason, shouldRetryLogistics, MAX_LOGISTICS_ATTEMPTS } from './logistics-deduction.js';
+import { sweepFloor, sweepCandidateReason } from './logistics-sweep.js';
 import { fixFilenameEncoding } from './filename-utils.js';
 import { weekCodeFromDate, WEEK_CODE_RE } from './weekly-sync.js';
 import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggestions, summarizeSuggestions, AUTO_THRESHOLD } from './supplier-linking.js';
@@ -158,9 +159,11 @@ const REAL_FIXTURE_NAME = 'qa-real-invoice.pdf';
 // שום שדה-טקסט שיכול לשאת את ה-MARK (ר' "דוחות ריסוסים": 4 שדות, 2 מהם
 // מחושבים) — שם-הקובץ נשמר בתוך אובייקט ה-attachment, ו-isTestRecord מריץ
 // את התבנית על JSON.stringify של הרשומה כולה, ולכן MARK בשם-הקובץ מסמן
-// את הרשומה כבדיקה לכל דבר. **המפריד חייב להיות מקף ולא קו-תחתי**:
-// התבנית היא /\bQA-\d{10,}\b/ ו-"_" הוא תו-מילה ב-regex, כך ש-
-// "QA-1234567890123_x.pdf" לא היה נתפס בכלל.
+// את הרשומה כבדיקה לכל דבר. (עד 8.10.2026 המפריד היה *חייב* להיות מקף:
+// התבנית הייתה /\bQA-\d{10,}\b/ ו-"_" הוא תו-מילה ב-regex, כך ש-
+// "QA-1234567890123_x.pdf" לא נתפס בכלל. גבול-המילה הסופי הוסר מאז —
+// ר' ההערה ליד TEST_RECORD_PATTERN ב-server.js — ולכן גם קו-תחתי וגם
+// אות נתפסים. מקף עדיין מועדף, לקריאוּת.)
 const createWithFile = async (table, field, extraFields = {}, filename = REAL_FIXTURE_NAME) => {
   const fileBuf = await readFile(REAL_FIXTURE_PATH);
   const fd = new FormData();
@@ -1770,6 +1773,30 @@ await test('הורדה נגזרת: תעודה+חשבונית תואמות (קר�
 });
 
 // ============================================================
+// "task Y" (2026-10-08) — תיעוד-רגרסיה קבוע לתיקון some/every ב-
+// autoAnalyzeLogisticsInventory (server.js): חשבוניות #79/#80 הוכיחו
+// בפועל שתעודה+חשבונית לאותו שבוע, כשרק צד אחד עדיין pending, מייצרות
+// results מעורב (גם deducted וגם pending) — זה בדיוק התנאי שגרם לקוד
+// הישן (`results.every(r => r.pending)`) לפרש "לא הכל pending" כ"סיימנו"
+// ולעצור את הריטריי מוקדם מדי, במקום להמשיך כל עוד *יש* pending אחד
+// (`some`). בדיקה טהורה בלי Airtable — נועדה למנוע רגרסיה עתידית בדיוק
+// לתנאי הזה, בלי תלות בתזמון-אמת/Make.
+// ============================================================
+await test('תיקון "task Y" (some/every): זוג מעורב (קרטונים מולא, משטחים עדיין לא) → יש pending אבל לא כל התוצאות pending', () => {
+  const note = { id: 'recTaskYNote', 'קוד שבוע': 'QA-TASKY', 'כמות קרטונים': '50', 'מספר תעודה': 'QA-TASKY-note' };
+  const invoice = { id: 'recTaskYInv', 'קוד שבוע': 'QA-TASKY', 'מספר חשבונית': 'QA-TASKY-inv' }; // בכוונה בלי "מספר משטחים" — Make עדיין מעבד
+  const { deductions } = deriveDeductions({ note, invoice });
+  const somePending = deductions.some((d) => d.pending);
+  const everyPending = deductions.every((d) => d.pending);
+  if (!somePending) throw new Error('צפויה תוצאת pending אחת (משטחים מהחשבונית) — לא נמצאה');
+  if (everyPending) throw new Error('לא צפוי שכל התוצאות pending — קרטונים/נילונים/כובעים אמורים להיות מוכנים-להורדה');
+  // זה בדיוק ה-regression: הקוד הישן ב-server.js בדק `every` וקיבל false
+  // (נכון, אבל פורש בטעות כ"אין עוד מה לעשות") ועצר. `some` מקבל true
+  // ונכון ממשיך לנסות עד שהמשטחים יתמלאו.
+  return `${deductions.length} שורות: ${deductions.filter((d) => d.pending).length} pending (משטחים), ${deductions.filter((d) => !d.pending).length} מוכנות — some≠every כצפוי, זה התנאי שתוקן`;
+});
+
+// ============================================================
 // תוספת 2026-10-06 (אחה"צ) — ממצא-אמת מול Airtable חי: סטייה מעל הסף
 // לא אמורה לחסום קרטונים/נילונים/כובעים (התעודה היא עדות ישירה לכמות
 // שיצאה פיזית — מורידים, רק מסמנים אזהרה).
@@ -2441,23 +2468,33 @@ await test('סמן המקור: markerOf תואם את תבנית הזיהוי ש
 // (1) רשומת "דוחות ריסוסים" אין לה שדה-טקסט ל-MARK, ולכן הסימון היחיד
 //     האפשרי הוא שם-הקובץ של הצרופה. אם זה יישבר — poll/sweep יייבאו
 //     רשומות-בדיקה ליומן הטיפולים האמיתי של תמר.
-// (2) המפריד בין MARK לשם-הקובץ חייב להיות **לא תו-מילה**: ב-regex
-//     /\bQA-\d{10,}\b/ אין גבול-מילה בין ספרה ל-"_", ולכן קו-תחתי שובר
-//     את הזיהוי בשקט מוחלט.
-await test('זיהוי רשומת-בדיקה של "דוחות ריסוסים" לפי שם-הקובץ בצרופה (מקף מזוהה, קו-תחתי לא)', () => {
+// (2) ⚠️ **המלכודת הזו נסגרה ב-8.10.2026 ("task Y")** — ר' ההערה המלאה
+//     ליד TEST_RECORD_PATTERN ב-server.js. קודם התבנית הייתה
+//     /\bQA-\d{10,}\b/, ו-"\b" דרש תו-שאינו-תו-מילה אחרי הספרה האחרונה,
+//     כך שכל סמן-QA שאחריו אות/קו-תחתי ("QA-...b", "QA-..._x.pdf") חמק
+//     מהזיהוי בשקט מוחלט. זה לא נשאר תיאורטי: תעודת-משלוח של QA עם
+//     קוד-שבוע "QA-1791448600878b" ניכתה 1648 קרטונים/נילונים/כובעים
+//     ממלאי אמיתי. גבול-המילה הסופי הוסר, ולכן עכשיו **גם קו-תחתי וגם
+//     אות מזוהים**. הבדיקה הופכת בהתאם (כפי שההערה הקודמת הורתה:
+//     "עדכן את התבנית/הבדיקה יחד").
+await test('זיהוי רשומת-בדיקה של "דוחות ריסוסים" לפי שם-הקובץ בצרופה (מקף/קו-תחתי/אות — כולם מזוהים)', () => {
   const mk = 'QA-1759800000000';
   const recOf = (filename) => ({ id: 'recX', 'מספור אוטומטי': 77, 'דוח ריסוסים': [{ url: 'https://x/y.pdf', filename }] });
   if (!isSprayTestRecord(recOf(`${mk}-qa-real-invoice.pdf`))) {
     throw new Error('MARK במפריד-מקף בשם-הקובץ לא זוהה כרשומת בדיקה — האיסוף האוטומטי יייבא רשומות QA לייצור');
   }
-  if (isSprayTestRecord(recOf(`${mk}_qa-real-invoice.pdf`))) {
-    throw new Error('המלכודת התהפכה: קו-תחתי כן מזוהה עכשיו — עדכן את התבנית/הבדיקה יחד');
+  // ⚠️ הרגרסיה שנסגרה: קו-תחתי/אות מיד אחרי חותמת-הזמן חייבים להיתפס.
+  if (!isSprayTestRecord(recOf(`${mk}_qa-real-invoice.pdf`))) {
+    throw new Error('קו-תחתי אחרי MARK לא זוהה — זו בדיוק הרגרסיה שאפשרה לרשומת-QA לנכות מלאי אמיתי');
+  }
+  if (!isSprayTestRecord(recOf(`${mk}b-qa-real-invoice.pdf`))) {
+    throw new Error('אות מיד אחרי MARK ("QA-...b") לא זוהתה — זה היה קוד-השבוע של תעודת-ה-QA שניכתה 1648 יחידות');
   }
   if (isSprayTestRecord(recOf('qa-real-invoice.pdf'))) throw new Error('שם-קובץ בלי MARK זוהה בטעות כבדיקה');
   if (isSprayTestRecord(recOf('דוח ריסוסים אוקטובר.pdf'))) throw new Error('דוח אמיתי זוהה בטעות כבדיקה');
   // התבנית דורשת 10 ספרות ומעלה — MARK קצר מדי לא נתפס (שומר על הכוונה)
   if (isSprayTestRecord(recOf('QA-123-x.pdf'))) throw new Error('"QA-123" (קצר) לא אמור להיחשב סמן בדיקה');
-  return 'מקף→בדיקה, קו-תחתי→לא, שם רגיל→לא';
+  return 'מקף→בדיקה, קו-תחתי→בדיקה, אות→בדיקה, שם רגיל→לא, QA קצר→לא';
 });
 
 await test('דוח ריסוסים: רשומה עם קובץ אמיתי שכבר נותח בעבר + dry-run בלבד (0 יצירות אמיתיות)', async () => {
@@ -3164,6 +3201,114 @@ await test('אבטחה: PATCH/POST הערות-מלאי — manager מורשה (�
   catch (e) { if (!String(e.message).startsWith('401')) problems.push(`בלי טוקן (hide) שגיאה לא-צפויה: ${e.message}`); }
   if (problems.length) throw new Error(problems.join('; '));
   return manager ? 'manager הורשה, בלי-טוקן נחסם (401) בשני הנתיבים' : 'דולג על בדיקת-manager (אין רשומת מנהל-עבודה) — בלי-טוקן נחסם (401) נבדק';
+});
+
+// ============================================================
+// "task Y" (2026-10-08) — ⚠️ בכוונה *אין כאן* בדיקת-קצה-לקצה עם
+// מסמכים אמיתיים (תעודה/חשבונית+קובץ-אמת) שמחכה לריטריי-החי/לאיסוף
+// המחזורי בפועל. הייתה כאן כזו בניסיון קודם — והיא **גרמה בפועל**
+// לתקרית אמיתית: חשבונית-QA ותעודת-משלוח-QA (עם הקובץ-האמת המצורף,
+// כפי שהכלל דורש) קיבלו מ-Make ערכים אמיתיים ("כמות קרטונים"/"מספר
+// משטחים" מתוך תוכן הקובץ עצמו — לא קשור לשום דבר שהבדיקה "ביקשה"),
+// ומכיוון שאי-אפשר ליצור פריט-מלאי-QA בקטגוריה תפוסה (סעיף Q, 409),
+// הקטגוריות קרטונים/נילונים/כובעים/משטחי-עץ מצביעות *תמיד* על פריט-
+// המלאי האמיתי היחיד. הריטריי-המוארך שהתיקון הזה עצמו הוסיף נתן בדיוק
+// מספיק זמן ל-Make "להספיק" למלא נתון אמיתי לתוך רשומת-QA — שתי
+// רשומות-בדיקה (לא קשורות לבדיקה הזו בכלל, ר' "חשבונית/תעודת משלוח:
+// יצירה עם קובץ מצורף..." למעלה) ניכו בפועל 27 משטחי-עץ ו-1648
+// קרטונים/נילונים/כובעים ממלאי אמיתי, והורידו את שלושת הפריטים ל-1076-.
+// בוטל ידנית (reverseLogisticsDeduction) ואומת שהמלאי חזר למדויק.
+// שורש-הגורם השני (מעבר ל-some/every): autoAnalyzeLogisticsInventory
+// מעולם לא סינן רשומות-בדיקה כלל (תוקן ב-server.js — בדיוק כמו ש-
+// scheduleSprayReportImport כבר עושה ל"דוחות ריסוסים"), וגם האיסוף
+// המחזורי ב-logistics-sweep.js מסנן אותן.
+//
+// לכן שום בדיקה כאן לא יוצרת תעודת-משלוח/חשבונית-QA עם כמויות בקטגוריות
+// האלה. האימות הוא על *ההחלטות* — הפונקציות הטהורות shouldRetryLogistics
+// (האם לנסות שוב) ו-sweepFloor/sweepCandidateReason (מה האיסוף בכלל
+// נוגע בו) — ולא על הרצה אמיתית מול Airtable.
+// ============================================================
+await test('תיקון "task Y": shouldRetryLogistics — ממשיך כל עוד *יש* pending, לא רק "לא הכל pending"', () => {
+  const MAX = MAX_LOGISTICS_ATTEMPTS;
+  // תרחיש #79/#80 בדיוק: 3 קטגוריות כבר ירדו מהתעודה, "מספר משטחים"
+  // בחשבונית עדיין ממתין ל-Make.
+  const mixed = [{ pending: false, category: 'קרטונים' }, { pending: false, category: 'נילונים' }, { pending: false, category: 'כובעים' }, { pending: true, category: null }];
+  const allPending = [{ pending: true }, { pending: true }];
+  const empty = [];
+  const allDone = [{ pending: false }, { pending: false }];
+
+  if (!shouldRetryLogistics(mixed, 0)) throw new Error('זוג מעורב (3 מוכנות + 1 pending) היה אמור להמשיך לנסות — זה בדיוק הבאג שתוקן');
+  // התיעוד של הבאג עצמו: הקוד הישן בדק every, וכאן every=false → עצר.
+  if (mixed.every((r) => r.pending)) throw new Error('הנחת-הבדיקה שבורה: הזוג המעורב אמור להיות every=false');
+  if (!shouldRetryLogistics(allPending, 0)) throw new Error('הכל pending — חייב להמשיך לנסות');
+  if (!shouldRetryLogistics(empty, 0)) throw new Error('אין עדיין תוצאות בכלל — חייב להמשיך לנסות');
+  if (shouldRetryLogistics(allDone, 0)) throw new Error('שום דבר לא pending — לא אמור להמשיך לנסות');
+  // חלון-הניסיונות מכובד: גם כשיש pending, בניסיון האחרון עוצרים.
+  if (shouldRetryLogistics(mixed, MAX - 1)) throw new Error(`בניסיון האחרון (${MAX}/${MAX}) היה אמור לעצור בלי קשר ל-pending`);
+  if (!shouldRetryLogistics(mixed, MAX - 2)) throw new Error('בניסיון הלפני-אחרון עדיין אמור להמשיך');
+  // החלון חייב להישאר בסדר-גודל של עשרות דקות (ר' ההנמקה מול היומן).
+  const totalMs = Array.from({ length: MAX }, (_, i) => Math.min(10000 * (i + 1), 120000)).reduce((a, b) => a + b, 0);
+  if (totalMs < 20 * 60 * 1000) throw new Error(`חלון-הריטריי ${Math.round(totalMs / 60000)} דק' — קצר מדי מול Make איטי (נדרש 20 דק' לפחות)`);
+
+  return `מעורב→ממשיך, הכל-pending→ממשיך, ריק→ממשיך, הכל-מוכן→עוצר, חלון ${MAX} ניסיונות ≈ ${Math.round(totalMs / 60000)} דק' — 7/7`;
+});
+
+// ============================================================
+// "task Y" — תיחום האיסוף המחזורי (logistics-sweep.js). זו הבדיקה
+// החשובה-ביותר בסעיף הזה, כי הכיוון המסוכן הוא דווקא ההפוך מהבאג
+// המקורי: ארבעת פריטי המלאי (משטחי עץ/נילונים/קרטונים/כובעים) נוצרו
+// מחדש ביד ב-8.10 עם id חדשים, כלומר ההערות שלהם *ריקות מההיסטוריה* —
+// ולכן כל מסמך היסטורי נראה לאיסוף כ"מעולם לא נוכה". אימות מול הבסיס
+// החי הראה שבלי רצפה, האיסוף היה מועמד 7 מסמכים היסטוריים (תעודות
+// #45/#32/#47/#31, חשבוניות #47/#49/#48) ומוריד 1653 מכל אחת משלוש
+// הקטגוריות + 43 משטחים — כלומר 1081- בקרטונים/נילונים/כובעים, שחזור
+// כמעט-מדויק של התקרית. הבדיקה הזו נועלת את הרצפה.
+// ============================================================
+await test('תיקון "task Y": תיחום האיסוף — רצפת-דיפלוי + חלון מתגלגל חוסמים מסמכים היסטוריים', () => {
+  const now = Date.parse('2026-10-08T12:00:00.000Z');
+  // רצפה טרייה (אחרי יצירת-הפריטים-מחדש) גוברת על החלון המתגלגל.
+  const fresh = sweepFloor('2026-10-08T11:00:00.000Z', now);
+  if (fresh !== '2026-10-08T11:00:00.000Z') throw new Error(`רצפת-דיפלוי טרייה הייתה אמורה לגבור, קיבלנו ${fresh}`);
+  // רצפה עתיקה (או קובץ-מצב שאבד ונכתב מחדש אחורה) — החלון המתגלגל
+  // חוסם, כך שגם תקלה בקובץ-המצב לא פותחת את ההיסטוריה.
+  const old = sweepFloor('2026-09-01T00:00:00.000Z', now);
+  if (old !== '2026-10-05T12:00:00.000Z') throw new Error(`החלון המתגלגל (3 ימים) היה אמור לגבור, קיבלנו ${old}`);
+  if (sweepFloor(null, now) !== '2026-10-05T12:00:00.000Z') throw new Error('בלי cutoff בכלל — החלון המתגלגל חייב לחסום');
+
+  const floor = '2026-10-08T11:00:00.000Z';
+  const noteSrc = { table: 'תעודות משלוח', field: 'כמות קרטונים', categories: ['קרטונים', 'נילונים', 'כובעים'] };
+  const invSrc = { table: 'חשבוניות', field: 'מספר משטחים', categories: ['משטחי עץ'] };
+  const emptyNotes = new Map([['קרטונים', ''], ['נילונים', ''], ['כובעים', ''], ['משטחי עץ', '']]);
+
+  // ⚠️ הליבה: מסמך היסטורי עם שדה מולא ובלי שום תגית — חייב להידחות.
+  const historic = { id: 'recPuhd0dotAhQAdF', createdTime: '2026-10-06T12:07:59.000Z', fields: { 'מספר תעודה': 45, 'כמות קרטונים': '450', 'קוד שבוע': '20260926-20261001' } };
+  const why = sweepCandidateReason(historic, noteSrc, floor, emptyNotes);
+  if (why !== 'לפני רצפת-הסריקה') throw new Error(`תעודה היסטורית #45 חייבת להידחות ע"י הרצפה — קיבלנו ${JSON.stringify(why)}`);
+
+  // מסמך חדש שהשדה שלו מולא ואין תגית — זה בדיוק מה שהאיסוף נועד לתפוס.
+  const fresh1 = { id: 'recNEW1', createdTime: '2026-10-08T11:30:00.000Z', fields: { 'מספר תעודה': 200, 'כמות קרטונים': '100' } };
+  if (sweepCandidateReason(fresh1, noteSrc, floor, emptyNotes) !== null) throw new Error('תעודה חדשה עם נתון מולא ובלי תגית חייבת להיות מועמדת');
+  // ...ואחרי שהתגית נכתבה — לא שוב (אידמפוטנטיות לפי *תגית המסמך*).
+  const tagged = new Map(emptyNotes);
+  for (const c of noteSrc.categories) tagged.set(c, `↓ 100 ממלאי: ${c} [מלאי-D:תעודות משלוח:recNEW1:${c}]`);
+  if (sweepCandidateReason(fresh1, noteSrc, floor, tagged) !== 'כל הקטגוריות כבר נוכו') throw new Error('מסמך שכבר נוכה לא אמור להיות מועמד שוב');
+  // תגית של מסמך *אחר* לא סופרת — המפתח הוא המסמך, לא הפריט/ה-itemId.
+  const otherTag = new Map(emptyNotes);
+  for (const c of noteSrc.categories) otherTag.set(c, `↓ 999 ממלאי: ${c} [מלאי-D:תעודות משלוח:recOTHER:${c}]`);
+  if (sweepCandidateReason(fresh1, noteSrc, floor, otherTag) !== null) throw new Error('תגית של מסמך אחר לא אמורה לחסום את המסמך הזה (אידמפוטנטיות לפי מסמך)');
+
+  // Make עוד לא מילא → לא נוגעים (אין "0 מזויף"), כמו חשבונית #79.
+  const unfilled = { id: 'recNEW2', createdTime: '2026-10-08T11:30:00.000Z', fields: { 'מספר חשבונית': 79 } };
+  if (sweepCandidateReason(unfilled, invSrc, floor, emptyNotes) !== '"מספר משטחים" עוד לא מולא') throw new Error('מסמך שה-Make עוד לא מילא לא אמור להיות מועמד');
+  const zero = { id: 'recNEW3', createdTime: '2026-10-08T11:30:00.000Z', fields: { 'מספר חשבונית': 90, 'מספר משטחים': '0' } };
+  if (sweepCandidateReason(zero, invSrc, floor, emptyNotes) === null) throw new Error('"0" נחשב "עוד לא מולא" (כמו num()) — לא אמור להיות מועמד');
+
+  // רשומת-QA לעולם לא נסרקת, גם אם הכול אחר מתאים — זה הקו שמגן על
+  // המלאי האמיתי, כי לקטגוריות האלה אין פריט-QA חלופי (409).
+  const qa = { id: 'recQA', createdTime: '2026-10-08T11:30:00.000Z', fields: { 'מספר תעודה': 101, 'כמות קרטונים': '1648', 'קוד שבוע': 'QA-1791448600878b' } };
+  if (sweepCandidateReason(qa, noteSrc, floor, emptyNotes) !== 'רשומת-בדיקה') throw new Error('רשומת-QA חייבת להידחות ע"י האיסוף');
+
+  return 'רצפת-דיפלוי חוסמת היסטוריה, חלון-מתגלגל חוסם cutoff אבוד, מסמך-חדש נתפס, תגית-מסמך אידמפוטנטית (ולא לפי itemId), "0"/לא-מולא לא נוגעים, QA נדחה — 10/10';
 });
 
 // ============ 4. ניקוי מלא ============
