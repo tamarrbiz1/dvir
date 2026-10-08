@@ -259,8 +259,13 @@ function parseCliEnvelope(stdout) {
     // חד-פעמית (חיבור עבור המשתמש שמריץ את השרת), ולא תקלה חולפת —
     // מפרידים אותו כדי שהלוג יגיד בדיוק מה חסר, במקום "נסו שוב מאוחר
     // יותר" שיחזור לנצח.
-    if (/not logged in|please run \/login/i.test(String(envelope?.result || ''))) {
-      throw new AnalysisUnavailableError('כלי הניתוח אינו מחובר לחשבון — דרושה התחברות חד-פעמית עבור המשתמש שמריץ את השרת');
+    // משימה AA: מצב-אימות מסומן ב-code:'AUTH_EXPIRED' כדי שהלקוח יוכל
+    // להציג "לחצי חדש אימות" במקום "נסו שוב מאוחר יותר" — ולהבדיל
+    // אותו מ-timeout/מכסה, ששם "נסו שוב" הוא כן העצה הנכונה.
+    if (/not logged in|please run \/login|failed to authenticate|oauth session expired|invalid api key|authentication_error/i.test(String(envelope?.result || ''))) {
+      const err = new AnalysisUnavailableError('האימות של הניתוח האוטומטי פג — יש לחדש אותו');
+      err.code = 'AUTH_EXPIRED';
+      throw err;
     }
     throw new AnalysisUnavailableError('הניתוח לא הושלם', String(why).slice(0, 200));
   }
