@@ -243,7 +243,7 @@ export default function WeeklySummaryPage() {
             </select>
             <select className="select" aria-label="סינון לפי חודש" value={fMonth} onChange={(e) => { setFMonth(e.target.value); setFWeek(''); }}>
               <option value="">כל החודשים</option>
-              {monthOptions.map((m) => <option key={m} value={m}>{Number(m)}/{fYear || 'שנה'}</option>)}
+              {monthOptions.map((m) => <option key={m} value={m}>{HEB_MONTHS[Number(m) - 1]}{fYear ? ` ${fYear}` : ''}</option>)}
             </select>
             <select className="select" aria-label="סינון לפי שבוע" value={fWeek} onChange={(e) => setFWeek(e.target.value)}>
               <option value="">כל השבועות</option>
@@ -1093,6 +1093,7 @@ function pct(part, total) { return total ? `${((num(part) / total) * 100).toFixe
 function countOf(v) { return Array.isArray(v) ? v.length : 0; }
 function idsOf(v) { return Array.isArray(v) ? v.map((x) => (x && typeof x === 'object' ? x.id : x)).filter(Boolean) : []; }
 function hhmm(d) { return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
+const HEB_MONTHS = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר'];
 function shortDate(d) { if (!d) return ''; const x = new Date(d); return Number.isNaN(x.getTime()) ? String(d).slice(0, 5) : `${x.getDate()}/${x.getMonth() + 1}`; }
 function shortWeek(code) {
   // 20260830-20260905 → 30/08
