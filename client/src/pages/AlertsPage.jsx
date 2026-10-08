@@ -8,6 +8,7 @@ import { CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_S
 import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { INVOICES_TABLE, invLabel, invMarketer, invWeekCode, invDeductionCheck, invTransportCheck, invDeductionDev, invTransportPerPallet, isDeductionAnomaly, isTransportAnomaly } from '../utils/invoices.js';
+import { itemUnit } from './InventoryPage.jsx';
 
 // ============================================================
 // חריגות והתאמות (סעיף 35)
@@ -231,7 +232,7 @@ export default function AlertsPage() {
                   <div key={item.id} className="card" style={{ borderRight: '4px solid var(--warning)' }}>
                     <b>⚠️ {item['קטגוריה']}</b>
                     <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 6 }}>
-                      נוכחי: {Number(item['מלאי נוכחי']) || 0} · מינימום: {Number(item['מלאי מינימום']) || 0}
+                      נוכחי: {Number(item['מלאי נוכחי']) || 0} {itemUnit(item)} · מינימום: {Number(item['מלאי מינימום']) || 0} {itemUnit(item)}
                     </div>
                   </div>
                 ))}

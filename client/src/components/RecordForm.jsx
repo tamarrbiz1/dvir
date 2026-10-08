@@ -10,6 +10,11 @@
 // אפשרויות ה-select/multiselect נטענות מהמטא של Airtable — לא מקודדות
 // בקוד, כדי שלא ייכתב ערך שאינו ברשימה (כתיבה כזו נדחית).
 //
+// staticOptions (סעיף Z, 8.10.2026) — יוצא-מן-הכלל יחיד: שדה-טקסט-חופשי
+// ב-Airtable (לא single-select אמיתי, אין לו choices במטא בכלל) שרוצים
+// להציג כ-select עם רשימה קבועה בקוד + "➕ ... חדש/ה…" (allowNew) לערך
+// חופשי. כשקיים staticOptions — לא נטען דבר מ-/api/select-options.
+//
 // disabledOptions (סעיף Q, 7.10.2026) — רק ל-select: Set של ערכים
 // שמוצגים ברשימה אבל חסומים לבחירה (disabled + " · קיים"), למשל
 // קטגוריות-מלאי שכבר תפוסות ע"י פריט אחר. השוואה-עם-ולידציה אמיתית
@@ -64,7 +69,16 @@ export default function RecordForm({ api, table, title, fields, record, onClose,
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (!cancelled && Array.isArray(d?.computedFields)) setComputedFields(new Set(d.computedFields)); })
       .catch(() => {});
-    fields.filter((f) => f.type === 'select' || f.type === 'multiselect').forEach((f) => {
+    // staticOptions (סעיף Z, 8.10.2026) — ל-select על שדה-טקסט-חופשי
+    // ב-Airtable (לא single-select אמיתי, ולכן אין לו choices במטא) —
+    // למשל "יחידת מידה" ב"מלאי בסיסי". הרשימה קבועה מראש בקוד הקורא
+    // (לא נטענת מהמטא), ו-allowNew עדיין מאפשר "➕ ... חדש/ה…" לערך
+    // שאינו ברשימה — נכתב כטקסט רגיל, בלי תלות ב-typecast (לא דרוש
+    // לשדה-טקסט, הבדיקה בשרת מתעלמת משדות שאינם select/multiselect).
+    fields.filter((f) => f.type === 'select' && f.staticOptions).forEach((f) => {
+      setOptions((o) => ({ ...o, [f.name]: f.staticOptions }));
+    });
+    fields.filter((f) => (f.type === 'select' || f.type === 'multiselect') && !f.staticOptions).forEach((f) => {
       authFetch(`/api/select-options/${encodeURIComponent(table)}/${encodeURIComponent(f.name)}`)
         .then((r) => (r.ok ? r.json() : { choices: [] }))
         .then((d) => { if (!cancelled) setOptions((o) => ({ ...o, [f.name]: Array.isArray(d.choices) ? d.choices : [] })); })

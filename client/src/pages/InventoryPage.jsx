@@ -28,6 +28,21 @@ import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisPro
 
 const TABLE = 'מלאי בסיסי';
 
+// ============================================================
+// יחידת-מידה (סעיף Z, 8.10.2026) — "יחידת מידה" הוא שדה-טקסט-חופשי
+// ב-Airtable (תמר הוסיפה אותו בעצמה, לא single-select אמיתי — אין לו
+// choices במטא). שבע האפשרויות כאן הן רשימה-קבועה בצד הלקוח בלבד
+// (ר' RecordForm.jsx, staticOptions) + "➕ ... חדש/ה…" (allowNew) לערך
+// חדש שהמשתמשת מקלידה — נשמר כטקסט רגיל, בלי typecast.
+// ⚠️ ריק נחשב "יחידות" **רק בתצוגה/בהשוואה כאן בצד-הלקוח** — בדיוק כמו
+// בשרת (ר' inventory-matching.js, resolveQuantity) — ולעולם לא נכתב
+// בפועל ל-Airtable כברירת-מחדל: פריט בלי יחידת-מידה ממשיך להיראות
+// ולהתנהג בדיוק כמו היום, עד שתמר תמלא אותה בעצמה דרך הטופס.
+export const UNIT_OPTIONS = ['יחידות', 'ליטר', 'מ"ר', "מ'", 'ק"ג', 'גליל', 'קרטון'];
+export function itemUnit(item) {
+  return String(item?.['יחידת מידה'] || '').trim() || 'יחידות';
+}
+
 // "ספקים" נוסף 2026-10-06 (סעיף C) — שדה קישור (link) לטבלת "ספקים",
 // כך שאפשר לקשר ספק לפריט מלאי ישירות מהטופס (לא רק דרך הקישור ההפוך
 // בכרטיס הספק עצמו). ר' RecordForm.jsx type:'link'.
@@ -49,6 +64,9 @@ function buildItemFields(items, record) {
     { name: 'קטגוריה', label: 'קטגוריה', type: 'select', required: true, allowNew: true, disabledOptions: taken },
     { name: 'ספקים', label: 'ספק', type: 'link', linkTable: 'ספקים', linkNameField: 'שם ספק', multiple: true },
     { name: 'מלאי נוכחי', label: 'מלאי נוכחי', type: 'number' },
+    // סעיף Z (8.10.2026) — חובה: לפי כל פריט נקבע איך מורידים ממנו מלאי
+    // (ר' server/src/inventory-matching.js + logistics-deduction.js)
+    { name: 'יחידת מידה', label: 'יחידת מידה', type: 'select', required: true, allowNew: true, staticOptions: UNIT_OPTIONS },
     { name: 'מלאי מינימום', label: 'מלאי מינימום', type: 'number' },
     { name: 'תאריך עדכון', label: 'תאריך עדכון', type: 'date' },
     { name: 'הערות', label: 'הערות', type: 'textarea' },
@@ -187,8 +205,8 @@ export default function InventoryPage() {
               {arr.map((it) => (
                 <span key={it.id} className="obj-chip"
                   title={it['תאריך עדכון'] ? `עודכן ${formatDate(it['תאריך עדכון'])}` : 'אין תאריך עדכון'}
-                  {...activatable(() => setDrawer(it), `פתיחת פריט ${cat} — ${formatNumber(it['מלאי נוכחי'] ?? 0)} יח'`)}>
-                  {formatNumber(it['מלאי נוכחי'] ?? 0)} יח'
+                  {...activatable(() => setDrawer(it), `פתיחת פריט ${cat} — ${formatNumber(it['מלאי נוכחי'] ?? 0)} ${itemUnit(it)}`)}>
+                  {formatNumber(it['מלאי נוכחי'] ?? 0)} {itemUnit(it)}
                 </span>
               ))}
             </div>
@@ -234,8 +252,8 @@ export default function InventoryPage() {
                     <span className="badge" style={{ background: st.soft, color: st.color }}>{st.label}</span>
                   </div>
                   <div style={{ display: 'flex', gap: 20, marginBottom: 4 }}>
-                    <div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>נוכחי</div><b style={{ fontSize: 24, color: st.color }}>{formatNumber(cur)}</b></div>
-                    <div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>מינימום</div><b style={{ fontSize: 18 }}>{formatNumber(min)}</b></div>
+                    <div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>נוכחי</div><b style={{ fontSize: 24, color: st.color }}>{formatNumber(cur)} <span style={{ fontSize: 14, fontWeight: 400 }}>{itemUnit(item)}</span></b></div>
+                    <div><div style={{ fontSize: 12, color: 'var(--text-muted)' }}>מינימום</div><b style={{ fontSize: 18 }}>{formatNumber(min)} <span style={{ fontSize: 12, fontWeight: 400 }}>{itemUnit(item)}</span></b></div>
                     {item['תאריך עדכון'] && (
                       <div style={{ marginInlineStart: 'auto', textAlign: 'left' }}>
                         <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>עודכן</div>
@@ -408,17 +426,17 @@ function StockModal({ api, item, mode, defaultAmount, onClose, onSaved }) {
         <div style={{ display: 'flex', justifyContent: 'center', gap: 26, marginBottom: 14 }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>מלאי נוכחי</div>
-            <b style={{ fontSize: 22 }}>{formatNumber(cur)}</b>
+            <b style={{ fontSize: 22 }}>{formatNumber(cur)} <span style={{ fontSize: 13, fontWeight: 400 }}>{itemUnit(item)}</span></b>
           </div>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{mode === 'add' ? 'מלאי לאחר ההוספה' : 'מלאי לאחר ההורדה'}</div>
             <b style={{ fontSize: 22, color: mode === 'add' ? 'var(--ok)' : (belowAfter || notEnough ? 'var(--error)' : 'var(--text-main)') }}>
-              {amt > 0 ? formatNumber(next) : '—'}
+              {amt > 0 ? `${formatNumber(next)} ${itemUnit(item)}` : '—'}
             </b>
           </div>
         </div>
         <div className="form-group">
-          <label>כמות {mode === 'add' ? 'להוספה' : 'להורדה'}</label>
+          <label>כמות {mode === 'add' ? 'להוספה' : 'להורדה'} ({itemUnit(item)})</label>
           <input className="input" style={{ width: '100%' }} type="number" min="0" autoFocus
             value={amount} onChange={(e) => { setAmount(e.target.value); setError(''); }} />
         </div>
@@ -447,8 +465,9 @@ function ItemDrawer({ item, canEdit, onClose, onAdd, onEdit, onOpenLedger, escap
   const { movements, freeNotes } = parseInventoryLedger(item['הערות']);
   const rows = [
     ['קטגוריה', item['קטגוריה']],
-    ['מלאי נוכחי', item['מלאי נוכחי'] != null ? formatNumber(item['מלאי נוכחי']) : null],
-    ['מלאי מינימום', item['מלאי מינימום'] != null ? formatNumber(item['מלאי מינימום']) : null],
+    ['מלאי נוכחי', item['מלאי נוכחי'] != null ? `${formatNumber(item['מלאי נוכחי'])} ${itemUnit(item)}` : null],
+    ['מלאי מינימום', item['מלאי מינימום'] != null ? `${formatNumber(item['מלאי מינימום'])} ${itemUnit(item)}` : null],
+    ['יחידת מידה', item['יחידת מידה'] || null],
     ['תאריך עדכון', item['תאריך עדכון'] ? formatDate(item['תאריך עדכון']) : null],
     ['ספקים', displayName(item['ספקים'], '') || null],
     ['הערות', freeNotes || null],

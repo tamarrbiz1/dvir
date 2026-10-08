@@ -173,6 +173,21 @@ function doneTag(d) {
   return `[מלאי-D:${d.sourceTable}:${d.sourceId}:${d.category}]`;
 }
 
+// ⚠️ סעיף Z (8.10.2026, "משימה Z" — יחידת-מידה לכל פריט): שדה "יחידת
+// מידה" חופשי על פריט-המלאי (תמר הוסיפה בעצמה, טקסט חופשי לא single-
+// select). "כמות קרטונים"/"מספר משטחים" שמגיעים מ-Make הם תמיד מניין-
+// יחידות שלמות — אם פריט-היעד כבר הוגדר (לא ריק!) ליחידת-מידה שאינה
+// "יחידות"/"קרטון" (למשל הוגדרה בטעות "ליטר" לקטגוריית קרטונים), אין
+// להוריד אוטומטית ממנה. פריט בלי יחידת-מידה מוגדרת בכלל (ריק/undefined
+// — המצב האמיתי של כל הפריטים כרגע) ממשיך **בדיוק** כמו היום — זו לא
+// רגרסיה לנתונים הקיימים, רק הגנה-עתידית. עצמאי לגמרי מהגנת-הסטייה/N1
+// הקיימת (מספר קרטונים/משטחים מול תעודה) — לא נוגע בה.
+function itemUnitBlocksAutoDeduct(item) {
+  const unit = String(item?.['יחידת מידה'] || '').trim();
+  if (!unit) return false;
+  return unit !== 'יחידות' && unit !== 'קרטון';
+}
+
 async function deductOne(item, d) {
   // "ממתין לנתון" — לעולם לא כותבים שום דבר ל-Airtable (לא שינוי מלאי,
   // לא תגית, לא אזהרה). זה בדיוק מה שמאפשר לניסיון החוזר (אוטומטי או
@@ -231,10 +246,16 @@ export async function analyzeLogisticsInventory(table, recordId) {
 
   const { cartonsCrossCheck, deductions } = deriveDeductions({ note, invoice, weekNoteCartonsTotal, weekInvoiceCartonsTotal, weekNoteNumbers });
   const results = [];
-  for (const d of deductions) {
-    if (d.pending) { results.push({ ...d }); continue; }
-    const item = inventoryItems.find((it) => it['קטגוריה'] === d.category);
-    if (!item) { results.push({ ...d, skipped: 'אין פריט מלאי בקטגוריה הזו' }); continue; }
+  for (const raw of deductions) {
+    if (raw.pending) { results.push({ ...raw }); continue; }
+    const item = inventoryItems.find((it) => it['קטגוריה'] === raw.category);
+    if (!item) { results.push({ ...raw, skipped: 'אין פריט מלאי בקטגוריה הזו' }); continue; }
+    // סעיף Z: יחידת-מידה לא-תואמת לפריט לוגיסטי חוסמת הורדה אוטומטית
+    // (ר' itemUnitBlocksAutoDeduct למעלה) — guard קטן ועצמאי, לא נוגע
+    // בשאר הלוגיקה (סטייה/N1 וכו').
+    const d = itemUnitBlocksAutoDeduct(item)
+      ? { ...raw, needsApproval: true, softWarning: true, reason: `הפריט מנוהל ביחידת-מידה "${item['יחידת מידה']}" — ${raw.category} לא יורד אוטומטית מיחידה זו, דורש אישור ידני` }
+      : raw;
     results.push(await deductOne(item, d));
   }
   return { weekCode, cartonsCrossCheck, results };

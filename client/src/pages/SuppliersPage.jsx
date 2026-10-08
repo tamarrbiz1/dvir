@@ -19,6 +19,7 @@ import { authFetch } from '../utils/authFetch.js';
 import { toast } from '../utils/ui.js';
 import { CHECKS_TABLE, CHECK_FIELDS, checkBelongsToSupplier, checkNumber, checkPayee, sortByDue } from '../utils/checks.js';
 import { StatusBadge } from '../components/ChecksTab.jsx';
+import { itemUnit } from './InventoryPage.jsx';
 
 const TABLE = 'ספקים';
 const SUPPLIER_TABS = ['פרטים', 'הוצאות', "צ'קים", 'מלאי קשור'];
@@ -355,7 +356,7 @@ function InventoryTab({ list, allInventory, supplierId, api, canEdit, onChanged 
                         aria-label={`קישור ${i['קטגוריה'] || 'פריט'} לספק זה`} />
                     </td>
                     <td><b>📦 {i['קטגוריה'] || 'פריט'}</b></td>
-                    <td>{formatNumber(cur)} / {formatNumber(min)}</td>
+                    <td>{formatNumber(cur)} / {formatNumber(min)} {itemUnit(i)}</td>
                     <td><span className={`badge ${low ? 'badge-error' : 'badge-ok'}`}>{low ? 'מלאי נמוך' : 'תקין'}</span></td>
                   </tr>
                 );
@@ -380,8 +381,8 @@ function InventoryTab({ list, allInventory, supplierId, api, canEdit, onChanged 
             return (
               <tr key={i.id}>
                 <td><b>📦 {i['קטגוריה'] || 'פריט'}</b></td>
-                <td>{formatNumber(cur)}</td>
-                <td>{formatNumber(min)}</td>
+                <td>{formatNumber(cur)} {itemUnit(i)}</td>
+                <td>{formatNumber(min)} {itemUnit(i)}</td>
                 <td><span className={`badge ${low ? 'badge-error' : 'badge-ok'}`}>{low ? 'מלאי נמוך' : 'תקין'}</span></td>
               </tr>
             );
