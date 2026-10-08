@@ -54,7 +54,7 @@ const CHECK_EDIT_FIELDS = [
   { name: 'הערות', label: 'הערות', type: 'textarea' },
 ];
 
-export default function ChecksTab({ checks, onRefresh }) {
+export default function ChecksTab({ checks, onRefresh, onRemoveLocal, onRestoreLocal }) {
   const app = useApp();
   const canEdit = (app.user?.role || 'owner') === 'owner'; // עריכה/מחיקה למנהל הראשי בלבד
   const navigate = useNavigate();
@@ -329,10 +329,16 @@ export default function ChecksTab({ checks, onRefresh }) {
           }}
           onEdit={() => setEditCheck(drawerCheck)}
           onDelete={async () => {
-            const ok = await removeRecord(app.api, CHECKS_TABLE, drawerCheck.id, checkTitle(drawerCheck));
+            // עדכון אופטימי (משימת "מחיקה בלי קפיצה", 2026-10-08): הצ'ק מוסר
+            // מהרשימה מיד; כישלון מחזיר אותו. onRefresh רץ ברקע (לא ממתינים
+            // לו) כדי לא לגרום לרענון-מלא/הבהוב.
+            const ok = await removeRecord(app.api, CHECKS_TABLE, drawerCheck.id, checkTitle(drawerCheck), {
+              onRemove: () => onRemoveLocal?.(drawerCheck.id),
+              onRestore: () => onRestoreLocal?.(drawerCheck),
+            });
             if (ok) {
               setDrawerId(null);
-              if (typeof onRefresh === 'function') await onRefresh();
+              if (typeof onRefresh === 'function') onRefresh();
             }
           }}
         />

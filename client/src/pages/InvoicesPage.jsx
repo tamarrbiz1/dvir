@@ -19,7 +19,7 @@ import { useApp } from '../App.jsx';
 import { useAutoRefresh } from '../utils/live.js';
 import { formatNumber, formatDate, formatWeight, formatPercent, formatMoney, kpiMoney, kpiValueClass } from '../utils/format.js';
 import PageHeader from '../components/PageHeader.jsx';
-import RecordForm from '../components/RecordForm.jsx';
+import RecordForm, { cascadeDeleteMessage } from '../components/RecordForm.jsx';
 import InvoiceDrawer, { ObjChip, StatusBadge, CheckBadgeValue } from '../components/InvoiceDrawer.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
@@ -252,23 +252,20 @@ export default function InvoicesPage() {
     setForm({ record: inv, fields: fields.length ? fields : EDIT_FIELDS, title: missingLabels ? `הוספת פרטים — ${invLabel(inv)}` : `עריכת ${invLabel(inv)}` });
   };
 
-  // מחיקה — רק אחרי אישור מפורש; הפריט לא נעלם מהמסך לפני אישור מ-Airtable
+  // מחיקה — רק אחרי אישור מפורש (DeleteConfirm, שנפתח רק בלחיצה על מחיקה).
+  // עדכון אופטימי (משימת "מחיקה בלי קפיצה", 2026-10-08): השורה מוסרת
+  // מהתצוגה מיד, בלי לחכות לשרת ובלי לטעון מחדש את כל הרשימה (שגרם
+  // ל"קפיצה" של האתר לכמה שניות). כישלון בשרת — השורה חוזרת למקומה.
   const doDelete = async (inv) => {
+    setItems((cur) => cur.filter((x) => x.id !== inv.id));
     try {
       const result = await app.api.remove(INVOICES_TABLE, inv.id);
-      await load();
       setConfirmDel(null);
       setDrawer(null);
-      const cascade = result?.cascade;
-      if (cascade?.inventory?.length || cascade?.week) {
-        const parts = [];
-        if (cascade.inventory.length) parts.push(`הוחזרו למלאי: ${cascade.inventory.map((r) => `${r.category || '?'} ${r.quantity}`).join(', ')}`);
-        if (cascade.week) parts.push(cascade.week.action === 'delete' ? `שבוע ${cascade.week.weekCode} נמחק` : `נותק משבוע ${cascade.week.weekCode}`);
-        setToast(`המסמך נמחק. ${parts.join(' · ')}`);
-      } else {
-        setToast('הפריט נמחק בהצלחה');
-      }
+      setToast(cascadeDeleteMessage(result?.cascade));
+      load(); // סנכרון ברקע מול Airtable — לא ממתינים לו, כדי שהרשימה לא תהבהב
     } catch {
+      setItems((cur) => (cur.some((x) => x.id === inv.id) ? cur : [...cur, inv]));
       setConfirmDel(null);
       setToast('לא ניתן היה למחוק את הפריט.');
     }

@@ -370,9 +370,16 @@ export default function DeliveryNotesPage() {
           canEdit={canEdit}
           onEdit={(n) => setForm(n)}
           onDelete={async (n) => {
-            if (await removeRecord(app.api, DELIVERY_TABLE, n.id, `תעודת המשלוח ${noteNumber(n) ?? ''}`)) {
+            // עדכון אופטימי (משימת "מחיקה בלי קפיצה", 2026-10-08): התעודה
+            // מוסרת מהרשימה מיד; כישלון בשרת מחזיר אותה. סנכרון הרשימה מול
+            // Airtable רץ ברקע (load לא ממתינים לו) כדי שלא יהיה רענון-מלא.
+            const ok = await removeRecord(app.api, DELIVERY_TABLE, n.id, `תעודת המשלוח ${noteNumber(n) ?? ''}`, {
+              onRemove: () => setItems((cur) => cur.filter((x) => x.id !== n.id)),
+              onRestore: () => setItems((cur) => (cur.some((x) => x.id === n.id) ? cur : [...cur, n])),
+            });
+            if (ok) {
               setDrawer(null);
-              await load();
+              load();
             }
           }}
           onClose={() => setDrawer(null)}

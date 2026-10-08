@@ -50,7 +50,7 @@ const EDIT_FIELDS = [
   { name: 'ידני?', label: 'הוזן ידנית? (כן/ריק)', type: 'text' },
 ];
 
-export default function ExpensesTab({ app, expenses, suppliers, onChanged, openId, onOpened }) {
+export default function ExpensesTab({ app, expenses, suppliers, onChanged, onRemoveLocal, onRestoreLocal, openId, onOpened }) {
   const navigate = useNavigate();
   const canEdit = (app.user?.role || 'owner') === 'owner';
   const [search, setSearch] = useState('');
@@ -195,7 +195,14 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged, openI
                             <button className="btn btn-sm btn-ghost" aria-label="מחיקה" title="מחיקה" style={{ color: 'var(--error)' }}
                               onClick={async (ev) => {
                                 ev.stopPropagation();
-                                if (await removeRecord(app.api, TABLE, e.id, 'ההוצאה')) await onChanged();
+                                // עדכון אופטימי (משימת "מחיקה בלי קפיצה", 2026-10-08): ההוצאה
+                                // מוסרת מהרשימה מיד; כישלון מחזיר אותה. onChanged רץ ברקע
+                                // (לא ממתינים לו) כדי לא לגרום לרענון-מלא/הבהוב.
+                                const ok = await removeRecord(app.api, TABLE, e.id, 'ההוצאה', {
+                                  onRemove: () => onRemoveLocal?.(e.id),
+                                  onRestore: () => onRestoreLocal?.(e),
+                                });
+                                if (ok) onChanged?.();
                               }}>🗑</button>
                           )}
                         </div>

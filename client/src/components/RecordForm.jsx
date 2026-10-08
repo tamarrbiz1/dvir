@@ -305,11 +305,31 @@ function cascadePreviewText(report) {
   return lines.join('\n');
 }
 
+/** הודעת-toast אחידה אחרי מחיקה מוצלחת, לפי תוצאת ה-cascade שמוחזרת מהשרת
+ *  (החזרת מלאי / ניתוק-מרשומת-שבוע). משמשת את removeRecord וגם מסכים עם
+ *  מחיקה מותאמת-אישית (חשבוניות, היסטוריית העלאות) כדי שלא תוכפל אותה
+ *  הרכבת-טקסט בכל מסך בנפרד (ר' משימת "מחיקה בלי קפיצה", 2026-10-08). */
+export function cascadeDeleteMessage(cascade) {
+  if (!cascade?.inventory?.length && !cascade?.week) return 'הפריט נמחק בהצלחה';
+  const parts = [];
+  if (cascade.inventory?.length) parts.push(`הוחזרו למלאי: ${cascade.inventory.map((r) => `${r.category || '?'} ${r.quantity}`).join(', ')}`);
+  if (cascade.week) parts.push(cascade.week.action === 'delete' ? `שבוע ${cascade.week.weekCode} נמחק` : `נותק משבוע ${cascade.week.weekCode}`);
+  return `המסמך נמחק. ${parts.join(' · ')}`;
+}
+
 /** מחיקה עם אישור (סעיף "ניהול מחיקה") — מחזירה true אם נמחק בפועל.
- *  הכפתור אדום, אין מחיקה בלחיצה ראשונה, ובכישלון הפריט אינו נעלם מהמסך.
+ *  הכפתור אדום, אין מחיקה בלחיצה ראשונה.
  *  לטבלאות עם מחיקה-מדורגת (CASCADE_TABLES) — מציג מראש מה יקרה למלאי/
- *  לסיכום-השבועי (dryRun), ואחרי מחיקה מוצלחת מראה תקציר-בפועל. */
-export async function removeRecord(api, table, id, label) {
+ *  לסיכום-השבועי (dryRun), ואחרי מחיקה מוצלחת מראה תקציר-בפועל.
+ *
+ *  opts.onRemove / opts.onRestore (משימת "מחיקה בלי קפיצה", 2026-10-08):
+ *  עדכון אופטימי — הקורא יכול להסיר את השורה מה-state המקומי *מיד* לאחר
+ *  האישור (onRemove), בלי לחכות לתשובת השרת ובלי לטעון מחדש את כל
+ *  הרשימה (שגרם ל"קפיצה" של כמה שניות). אם המחיקה בשרת נכשלת — onRestore
+ *  מוחזרת כדי שהקורא יחזיר את השורה למקומה. קריאות קיימות שלא מעבירות
+ *  opts ממשיכות להתנהג כפי שהתנהגו (בלי הסרה אופטימית). */
+export async function removeRecord(api, table, id, label, opts = {}) {
+  const { onRemove, onRestore } = opts;
   let previewText = '';
   if (CASCADE_TABLES.has(table)) {
     try {
@@ -324,21 +344,15 @@ export async function removeRecord(api, table, id, label) {
     danger: true,
   });
   if (!ok) return false;
+  onRemove?.();
   let result;
   try {
     result = await api.remove(table, id);
   } catch (e) {
+    onRestore?.();
     toast('לא ניתן היה למחוק את הפריט.', 'error');
     return false;
   }
-  const cascade = result?.cascade;
-  if (cascade?.inventory?.length || cascade?.week) {
-    const parts = [];
-    if (cascade.inventory.length) parts.push(`הוחזרו למלאי: ${cascade.inventory.map((r) => `${r.category || '?'} ${r.quantity}`).join(', ')}`);
-    if (cascade.week) parts.push(cascade.week.action === 'delete' ? `שבוע ${cascade.week.weekCode} נמחק` : `נותק משבוע ${cascade.week.weekCode}`);
-    toast(`המסמך נמחק. ${parts.join(' · ')}`);
-  } else {
-    toast('הפריט נמחק בהצלחה');
-  }
+  toast(cascadeDeleteMessage(result?.cascade));
   return true;
 }
