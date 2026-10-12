@@ -71,6 +71,49 @@ export class AnalysisUnavailableError extends Error {
   }
 }
 
+// ============================================================
+// משימה AD (12.10.2026) — סיווג הכשל: זמני מול קבוע
+// ------------------------------------------------------------
+// עד היום כל כשל נראה אותו דבר ("הניתוח לא זמין כרגע") ונשמר כ-failed,
+// כולל מכסה גמורה — שהיא זמנית בהגדרה ושווה לנסות שוב לבד. שלושה
+// סיווגים, לפי סדר-בדיקה קבוע (אימות ראשון: הודעת-מכסה ו-הודעת-אימות
+// יכולות להופיע באותו פלט, והאימות הוא הקובע כי בלעדיו שום ניסיון
+// חוזר לא יעזור):
+//   AUTH_EXPIRED    — צריך אדם (ר' RENEW-AUTH.md). אין ניסיון חוזר.
+//   QUOTA_EXCEEDED  — מכסה/קרדיטים/429/529/עומס. ניסיון חוזר בלי תקרה.
+//   TEMPORARY       — timeout/5xx/רשת. 3 ניסיונות ואז "נכשל".
+//   null            — כשל קבוע (קובץ פגום, פלט שאינו JSON, פרסינג).
+// ⚠️ הסיווג נעשה על **טקסט**, ולכן התבניות חייבות להישאר צרות: מילה
+// כמו "limit" לבדה מופיעה גם ב-maxRecords ובהודעות תקינות.
+// ============================================================
+export const FAIL_AUTH = 'AUTH_EXPIRED';
+export const FAIL_QUOTA = 'QUOTA_EXCEEDED';
+export const FAIL_TEMPORARY = 'TEMPORARY';
+
+const AUTH_RE = /not logged in|please run \/login|failed to authenticate|oauth session expired|oauth token revoked|invalid api key|authentication_error|unauthorized/i;
+const QUOTA_RE = /usage limit|rate.?limit|rate_limit|too many requests|\b429\b|\b529\b|overloaded|over_capacity|quota|credit balance|insufficient credit|out of credit|billing|payment required|\b402\b/i;
+const TEMPORARY_RE = /\b5(0[0-9]|1[0-9])\b|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENETUNREACH|EAI_AGAIN|socket hang up|network error|service unavailable|internal server error|api_error|חרג מ-/i;
+
+/** מחזירה FAIL_* לכשל שכדאי לנסות שוב, או null לכשל קבוע */
+export function classifyAnalysisFailure(text) {
+  const s = String(text ?? '');
+  if (!s) return null;
+  if (AUTH_RE.test(s)) return FAIL_AUTH;
+  if (QUOTA_RE.test(s)) return FAIL_QUOTA;
+  if (TEMPORARY_RE.test(s)) return FAIL_TEMPORARY;
+  return null;
+}
+
+/** מצרפת `code` (ו-`temporary`) לשגיאה לפי הטקסט — מקום אחד לכל המסלולים */
+function withFailureCode(err, text) {
+  const code = classifyAnalysisFailure(text);
+  if (code) {
+    err.code = code;
+    err.temporary = code !== FAIL_AUTH;
+  }
+  return err;
+}
+
 export function pickProvider() {
   if (process.env.STUB_DOCUMENT_ANALYSIS === '1') return 'stub';
   if (process.env.ANTHROPIC_API_KEY) return 'api';
@@ -219,7 +262,13 @@ function runCli(args, cwd) {
     let finished = false;
     const MAX = 20 * 1024 * 1024;
     const timer = setTimeout(() => {
-      if (!finished) { finished = true; child.kill('SIGKILL'); reject(new AnalysisUnavailableError(`הניתוח חרג מ-${Math.round(cliTimeoutMs() / 1000)} שניות`)); }
+      if (!finished) {
+        finished = true; child.kill('SIGKILL');
+        // משימה AD: timeout הוא כשל **זמני** — 3 ניסיונות ואז "נכשל"
+        const e = new AnalysisUnavailableError(`הניתוח חרג מ-${Math.round(cliTimeoutMs() / 1000)} שניות`);
+        e.code = FAIL_TEMPORARY; e.temporary = true;
+        reject(e);
+      }
     }, cliTimeoutMs());
 
     child.stdout.on('data', (d) => { if (stdout.length < MAX) stdout += d; });
@@ -236,7 +285,12 @@ function runCli(args, cwd) {
       finished = true; clearTimeout(timer);
       // יש מעטפת JSON? תמיד מעדיפים אותה — גם ביציאה לא-אפסית
       if (String(stdout).trim().startsWith('{')) return resolve(String(stdout));
-      if (code !== 0) return reject(new AnalysisUnavailableError('הפעלת כלי הניתוח נכשלה', String(stderr || `exit ${code}`).slice(0, 300)));
+      // משימה AD: אין מעטפת JSON — הסיבה היחידה שיש היא stderr. גם שם
+      // מופיעות הודעות-מכסה ("Claude usage limit reached") והודעות-אימות.
+      if (code !== 0) {
+        const detail = String(stderr || `exit ${code}`).slice(0, 300);
+        return reject(withFailureCode(new AnalysisUnavailableError('הפעלת כלי הניתוח נכשלה', detail), detail));
+      }
       resolve(String(stdout || ''));
     });
   });
@@ -261,14 +315,21 @@ function parseCliEnvelope(stdout) {
     // מפרידים אותו כדי שהלוג יגיד בדיוק מה חסר, במקום "נסו שוב מאוחר
     // יותר" שיחזור לנצח.
     // משימה AA: מצב-אימות מסומן ב-code:'AUTH_EXPIRED' כדי שהלקוח יוכל
-    // להציג "לחצי חדש אימות" במקום "נסו שוב מאוחר יותר" — ולהבדיל
-    // אותו מ-timeout/מכסה, ששם "נסו שוב" הוא כן העצה הנכונה.
-    if (/not logged in|please run \/login|failed to authenticate|oauth session expired|invalid api key|authentication_error/i.test(String(envelope?.result || ''))) {
-      const err = new AnalysisUnavailableError('האימות של הניתוח האוטומטי פג — יש לחדש אותו');
-      err.code = 'AUTH_EXPIRED';
-      throw err;
+    // להציג מה לעשות במקום "נסו שוב מאוחר יותר" — ולהבדיל אותו
+    // מ-timeout/מכסה, ששם "נסו שוב" הוא כן העצה הנכונה.
+    // משימה AD: אותו סיווג מורחב למכסה (`QUOTA_EXCEEDED`) ולכשל זמני
+    // אחר — ושם "נסו שוב" נעשה **לבד** ע"י analysis-retry.js. מסווגים
+    // את כל מה שה-CLI אמר (result + api_error_status + subtype), כי
+    // הודעת-המכסה מופיעה פעם ב-result ופעם רק בקוד ה-HTTP.
+    const text = `${envelope?.result ?? ''} ${envelope?.api_error_status ?? ''} ${envelope?.subtype ?? ''} ${envelope?.terminal_reason ?? ''}`;
+    const code = classifyAnalysisFailure(text);
+    if (code === FAIL_AUTH) {
+      throw withFailureCode(new AnalysisUnavailableError('האימות של הניתוח האוטומטי פג — יש לחדש אותו'), text);
     }
-    throw new AnalysisUnavailableError('הניתוח לא הושלם', String(why).slice(0, 200));
+    if (code === FAIL_QUOTA) {
+      throw withFailureCode(new AnalysisUnavailableError('מכסת הניתוח נגמרה — יושלם אוטומטית כשהמכסה תתחדש', String(why).slice(0, 200)), text);
+    }
+    throw withFailureCode(new AnalysisUnavailableError('הניתוח לא הושלם', String(why).slice(0, 200)), text);
   }
   return parseJsonLoose(envelope.result); // לא-JSON → זורק (ולא "0 פריטים")
 }
@@ -405,7 +466,10 @@ export async function analyzeExpenseDocument(buffer, mimeType, inventoryItems) {
     try {
       return normalizeResult(await callAnthropic(FALLBACK_MODEL, buffer, mimeType));
     } catch (fallbackErr) {
-      throw new AnalysisUnavailableError('ניתוח המסמך נכשל', `ראשי: ${primaryErr.message}; גיבוי: ${fallbackErr.message}`);
+      // משימה AD: גם במסלול ה-API — 429/529/credit balance הם זמניים.
+      // מסווגים לפי **שתי** ההודעות: די בכך שאחד המודלים נחסם על מכסה.
+      const detail = `ראשי: ${primaryErr.message}; גיבוי: ${fallbackErr.message}`;
+      throw withFailureCode(new AnalysisUnavailableError('ניתוח המסמך נכשל', detail), detail);
     }
   }
 }

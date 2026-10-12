@@ -22,7 +22,7 @@ import PeriodSelect from './PeriodSelect.jsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { authFetch } from '../utils/authFetch.js';
-import { readInventoryAiState, inventoryAiSummary, stripInventoryAiMarker } from '../utils/inventoryAi.js';
+import { readInventoryAiState, inventoryAiSummary, stripInventoryAiMarker, waitingText } from '../utils/inventoryAi.js';
 
 const TABLE = 'הוצאות';
 
@@ -184,8 +184,10 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged, onRem
                       <td>{doc ? <a href={doc.url} target="_blank" rel="noopener noreferrer" onClick={(ev) => ev.stopPropagation()} aria-label="פתיחת המסמך">📎</a> : <span className="badge badge-warn">חסר</span>}</td>
                       <td>
                         {aiSummary ? (
-                          <span className={`badge ${aiSummary.kind === 'ok' ? 'badge-ok' : aiSummary.kind === 'warn' ? 'badge-warn' : aiSummary.kind === 'error' ? 'badge-error' : ''}`} title={aiSummary.text}>
-                            📦 {aiSummary.kind === 'ok' ? '✓' : aiSummary.kind === 'warn' ? '⚠' : aiSummary.kind === 'error' ? '✕' : '—'}
+                          // משימה AD: 'pending' (ממתין לחידוש המכסה) מקבל שעון
+                          // ולא ✕ — זה לא כשל, והטקסט המלא ב-title.
+                          <span className={`badge ${aiSummary.kind === 'ok' ? 'badge-ok' : (aiSummary.kind === 'warn' || aiSummary.kind === 'pending') ? 'badge-warn' : aiSummary.kind === 'error' ? 'badge-error' : ''}`} title={aiSummary.text}>
+                            📦 {aiSummary.kind === 'ok' ? '✓' : aiSummary.kind === 'pending' ? '⏳' : aiSummary.kind === 'warn' ? '⚠' : aiSummary.kind === 'error' ? '✕' : '—'}
                           </span>
                         ) : <span className="muted" style={{ fontSize: 12 }}>—</span>}
                       </td>
@@ -552,7 +554,19 @@ function InventoryAiSection({ expense, onChanged }) {
           <span className="muted"> — אפשר ללחוץ "נתח מחדש"</span>
         </div>
       )}
-      {state && state.status !== 'failed' && !results.length && (
+      {/* משימה AD: מכסה גמורה/תקלה זמנית — המערכת תשלים לבד, ולכן זו
+          אזהרה עם שעה ולא שגיאה. "נסה עכשיו" הוא קיצור-דרך בלבד
+          (הכרטיס כולו מוצג למנהל-ראשי בלבד). flex-wrap: ב-390px
+          הכפתור יורד שורה מתחת לטקסט ולא גולש. */}
+      {state?.status === 'waiting' && (
+        <div className="badge badge-warn" style={{ width: '100%', marginBottom: 10, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
+          <span>⏳ {waitingText(state)}</span>
+          <button type="button" className="btn btn-sm btn-ghost" disabled={busy} onClick={run}>
+            {busy ? 'מנסה…' : '🔄 נסה עכשיו'}
+          </button>
+        </div>
+      )}
+      {state && state.status !== 'failed' && state.status !== 'waiting' && !results.length && (
         <div className="muted" style={{ marginBottom: 10 }}>לא נמצאו פריטי מלאי במסמך.</div>
       )}
 

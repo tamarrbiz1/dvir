@@ -35,10 +35,11 @@ import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggest
 import { parseSummary, parseDateRange, parseDosage, markerOf, isTestRecord as isSprayTestRecord } from './spray-report-import.js';
 import { cascadeDocumentDelete } from './document-cascade.js';
 import { parseInventoryLedger, resolveExpenseLinks, documentLink } from '../../client/src/utils/inventoryLedger.js';
-import { stripInventoryAiMarker, withPreservedInventoryTags } from '../../client/src/utils/inventoryAi.js';
+import { stripInventoryAiMarker, withPreservedInventoryTags, inventoryAiSummary } from '../../client/src/utils/inventoryAi.js';
 import { yearFromWeekValue, dateFromWeekValue, invoiceDate } from '../../client/src/utils/weekYear.js';
 import { shouldResetOption } from '../../client/src/utils/selectGuard.js';
-import { pickProvider } from './document-analysis.js';
+import { pickProvider, classifyAnalysisFailure } from './document-analysis.js';
+import { nextRetryAt, retryDecision, resumeCandidateReason, sweepStalledAnalyses, BACKOFF_MINUTES } from './analysis-retry.js';
 import { writeFile as writeFileAsync, chmod as chmodAsync, mkdtemp as mkdtempAsync } from 'node:fs/promises';
 import nodePath from 'node:path';
 
@@ -3325,6 +3326,144 @@ await test('AC: redactSecrets מסתיר טוקן ו-code בכתובת (הגנת
   const pasted = authRedact('abcdefghijklmnopqrstuvwx#yzABCDEF');
   if (/abcdefghijklmnopqrstuvwx/.test(pasted)) throw new Error('קוד-ההדבקה לא הוסתר');
   return 'טוקן/קוד/code=... מוסתרים';
+});
+
+// ============================================================
+// משימה AD (12.10.2026) — ניתוח שנעצר משלים את עצמו.
+// ⚠️ כל הבדיקות כאן **טהורות**: אין קריאה ל-CLI, אין יצירת רשומה
+// בטבלת "הוצאות" (שיש עליה אוטומציית Make — ר' CLAUDE.md) ואין צריכת
+// מכסה אמיתית. הניתוח מוזרק כפונקציה מדומה דרך `analyze`.
+// ============================================================
+await test('AD: סיווג כשל — מכסה/429/קרדיטים זמני, אימות קבוע, קובץ פגום קבוע', () => {
+  const quota = [
+    'Claude usage limit reached',
+    'API Error: 429 rate_limit_error',
+    'api_error_status: 529',
+    'Overloaded',
+    'Your credit balance is too low',
+    'quota exceeded for this organization',
+  ];
+  const temporary = ['API Error 500 internal server error', 'socket hang up', 'ETIMEDOUT', 'הניתוח חרג מ-120 שניות'];
+  const auth = ['Failed to authenticate: OAuth token revoked', 'Not logged in', 'invalid api key', 'authentication_error'];
+  const permanent = ['פלט כלי הניתוח אינו JSON תקני', 'תשובת המודל אינה JSON תקני', 'הקובץ אינו PDF/JPEG/PNG', ''];
+  const bad = [];
+  for (const s of quota) if (classifyAnalysisFailure(s) !== 'QUOTA_EXCEEDED') bad.push(`מכסה לא זוהתה: "${s}" → ${classifyAnalysisFailure(s)}`);
+  for (const s of temporary) if (classifyAnalysisFailure(s) !== 'TEMPORARY') bad.push(`זמני לא זוהה: "${s}" → ${classifyAnalysisFailure(s)}`);
+  for (const s of auth) if (classifyAnalysisFailure(s) !== 'AUTH_EXPIRED') bad.push(`אימות לא זוהה: "${s}" → ${classifyAnalysisFailure(s)}`);
+  for (const s of permanent) if (classifyAnalysisFailure(s) !== null) bad.push(`כשל קבוע סווג כזמני: "${s}" → ${classifyAnalysisFailure(s)}`);
+  // אימות **גובר** על מכסה כששתי ההודעות באותו פלט: בלי טוקן תקף שום
+  // ניסיון חוזר לא יעזור, ואסור שהוא ייכנס ללופ-המתנה למכסה.
+  if (classifyAnalysisFailure('rate limit; Failed to authenticate') !== 'AUTH_EXPIRED') bad.push('אימות לא גבר על מכסה');
+  // תבנית צרה: "limit" לבדה (maxRecords=400 וכו') אינה מכסה
+  if (classifyAnalysisFailure('maxRecords limit 400 reached in table') === 'QUOTA_EXCEEDED') bad.push('"limit" לבדה סווגה כמכסה');
+  if (bad.length) throw new Error(bad.join('; '));
+  return `${quota.length} מכסה · ${temporary.length} זמני · ${auth.length} אימות · ${permanent.length} קבוע · אימות>מכסה · בלי זיהוי-שקר`;
+});
+
+await test('AD: backoff — 10→20→40→60 דק\' ואז שעה קבועה', () => {
+  const t0 = 1_700_000_000_000;
+  const mins = [0, 1, 2, 3, 4, 9].map((a) => Math.round((nextRetryAt(a, t0) - t0) / 60_000));
+  const expected = [10, 20, 40, 60, 60, 60];
+  if (JSON.stringify(mins) !== JSON.stringify(expected)) throw new Error(`backoff שגוי: ${mins} (צפוי ${expected})`);
+  if (BACKOFF_MINUTES[0] !== 10) throw new Error('מדרגה ראשונה אינה 10 דקות');
+  return `ניסיונות 0..9 → ${mins.join('/')} דק'`;
+});
+
+await test('AD: החלטת-מתזמן — מכסה בלי תקרה, זמני-אחר 3 ואז ויתור, done/manual לא נוגעים', () => {
+  const now = 1_700_000_000_000;
+  const w = (code, attempts, nextAt) => ({ status: 'waiting', retry: { code, attempts, nextAt } });
+  const bad = [];
+  const expect = (state, opts, action, label) => {
+    const got = retryDecision(state, { now, ...opts });
+    if (got.action !== action) bad.push(`${label}: צפוי ${action}, התקבל ${got.action} (${got.reason})`);
+  };
+
+  // מכסה: גם אחרי 50 ניסיונות — ממשיכים (המכסה *תחזור*)
+  expect(w('QUOTA_EXCEEDED', 50, now - 1), {}, 'retry', 'מכסה אחרי 50 ניסיונות');
+  expect(w('QUOTA_EXCEEDED', 1, now + 60_000), {}, 'wait', 'מכסה לפני זמן הניסיון');
+  // זמני-אחר: 3 ניסיונות ואז ויתור
+  expect(w('TEMPORARY', 2, now - 1), {}, 'retry', 'זמני ניסיון 3');
+  expect(w('TEMPORARY', 3, now - 1), {}, 'give-up', 'זמני אחרי 3');
+  // ריצה שנקטעה — מיד, בלי קשר לשעה (אין קריאה ל-AI בהמשך הזה)
+  expect({ status: 'processing', results: [] }, {}, 'retry', 'processing');
+  expect({ status: 'partial', results: [] }, {}, 'retry', 'partial');
+  // מה שלא נוגעים בו
+  expect({ status: 'done', results: [] }, {}, 'skip', 'done');
+  expect({ status: 'manual' }, {}, 'skip', 'manual');
+  expect(null, {}, 'skip', 'בלי מצב');
+  // כשל-אימות: רק בעלייה, ועד 3 עליות
+  expect({ status: 'failed', errorCode: 'AUTH_EXPIRED' }, {}, 'skip', 'אימות בטיק רגיל');
+  expect({ status: 'failed', errorCode: 'AUTH_EXPIRED' }, { onBoot: true }, 'retry', 'אימות בעלייה');
+  expect({ status: 'failed', errorCode: 'AUTH_EXPIRED', retry: { bootRetries: 3 } }, { onBoot: true }, 'skip', 'אימות אחרי 3 עליות');
+  // כשל קבוע אחר נשאר failed לנצח (קובץ פגום — ניסיון חוזר לא יעזור)
+  expect({ status: 'failed', error: 'קובץ פגום' }, { onBoot: true }, 'skip', 'כשל קבוע');
+  // בעלייה מתעלמים מ-nextAt (ה-restart עצמו הוא שינוי-מצב)
+  expect(w('QUOTA_EXCEEDED', 1, now + 3_600_000), { onBoot: true }, 'retry', 'מכסה בעלייה לפני הזמן');
+  if (bad.length) throw new Error(bad.join('; '));
+  return '14 תרחישי-החלטה נכונים (מכסה ללא תקרה, זמני 3→ויתור, אימות רק בעלייה×3, done/manual/קבוע לא נוגעים)';
+});
+
+await test('AD: הסריקה מריצה הוצאה אחת בכל פעם, פעם אחת, ולא כופלת הורדות', async () => {
+  const mk = (id, state, num) => ({ id, 'מספר הוצאה': num, 'הערות': `טקסט חופשי\n[מלאי-AI]${JSON.stringify(state)}` });
+  const now = 1_700_000_000_000;
+  const expenses = [
+    mk('recDONE', { status: 'done', results: [{ deducted: true }] }, 1),
+    mk('recQ1', { status: 'waiting', retry: { code: 'QUOTA_EXCEEDED', attempts: 1, nextAt: now - 1000 } }, 2),
+    mk('recQ2', { status: 'waiting', retry: { code: 'QUOTA_EXCEEDED', attempts: 1, nextAt: now - 1000 } }, 3),
+    mk('recWAIT', { status: 'waiting', retry: { code: 'QUOTA_EXCEEDED', attempts: 1, nextAt: now + 600_000 } }, 4),
+    mk('recGIVE', { status: 'waiting', retry: { code: 'TEMPORARY', attempts: 3, nextAt: now - 1000 } }, 5),
+  ];
+  const analyzed = [];
+  const gaveUp = [];
+  const lockKeys = [];
+  const r = await sweepStalledAnalyses({
+    lock: (key, fn) => { lockKeys.push(key); return fn(); },
+    analyze: async (id) => { analyzed.push(id); },
+    markGaveUp: async (id) => { gaveUp.push(id); },
+    fetchExpenses: async () => expenses,
+    now: () => now,
+  });
+  if (analyzed.length !== 1) throw new Error(`הורצו ${analyzed.length} ניתוחים, צפוי 1 (${analyzed})`);
+  if (analyzed[0] !== 'recQ1') throw new Error(`הורצה ${analyzed[0]} במקום recQ1 (הראשונה שבשלה)`);
+  if (JSON.stringify(gaveUp) !== JSON.stringify(['recGIVE'])) throw new Error(`ויתור שגוי: ${gaveUp}`);
+  if (r.candidates !== 2) throw new Error(`מועמדים ${r.candidates}, צפוי 2 (recQ1+recQ2)`);
+  if (r.waiting !== 1) throw new Error(`ממתינים ${r.waiting}, צפוי 1`);
+  if (!lockKeys.includes('expense:recQ1')) throw new Error(`הניתוח רץ מחוץ לנעילה (${lockKeys})`);
+  // אותה סריקה פעם שנייה על אותו קלט: עדיין הוצאה אחת, ו**אותה** אחת —
+  // כלומר הסריקה אינה "מתקדמת" ברשימה ואינה מפזרת הורדות כפולות.
+  const r2 = await sweepStalledAnalyses({
+    lock: (key, fn) => fn(), analyze: async (id) => { analyzed.push(id); },
+    markGaveUp: async () => {}, fetchExpenses: async () => expenses, now: () => now,
+  });
+  if (r2.processed !== 1 || analyzed.length !== 2) throw new Error('הסריקה השנייה לא הריצה בדיוק אחת');
+  if (new Set(analyzed).size !== 1) throw new Error(`הסריקה בחרה הוצאות שונות בין ריצות: ${analyzed}`);
+  return 'done מדולגת · 2 מועמדים → הורצה 1 · ממתין-לזמנו לא נוגע · ויתור אחרי 3 · הכול תחת נעילת-מלאי';
+});
+
+await test('AD: resumeCandidateReason קורא את התגית מתוך "הערות" ולא נבהל מטקסט חופשי/JSON פגום', () => {
+  const now = 1_700_000_000_000;
+  const withTag = { 'הערות': `הערה של תמר\n[מלאי-AI]${JSON.stringify({ status: 'waiting', retry: { code: 'QUOTA_EXCEEDED', attempts: 1, nextAt: now - 1 } })}\nעוד שורה` };
+  if (!resumeCandidateReason(withTag, { now })) throw new Error('תגית תקינה בתוך טקסט חופשי לא זוהתה');
+  if (resumeCandidateReason({ 'הערות': 'סתם טקסט בלי תגית' }, { now })) throw new Error('הוצאה בלי תגית נכנסה לתור');
+  if (resumeCandidateReason({ 'הערות': '[מלאי-AI]{שבור' }, { now })) throw new Error('JSON פגום נכנס לתור');
+  if (resumeCandidateReason({}, { now })) throw new Error('הוצאה בלי "הערות" נכנסה לתור');
+  return 'תגית בתוך טקסט חופשי נתפסת · בלי-תגית/JSON-פגום/שדה-חסר נדחים בשקט';
+});
+
+await test('AD: תצוגת-הלקוח — "ממתין" אינו "נכשל", והשעה מוצגת HH:MM', () => {
+  const at = new Date('2026-10-12T14:35:00Z').getTime();
+  const state = { status: 'waiting', retry: { code: 'QUOTA_EXCEEDED', attempts: 1, nextAt: at } };
+  const s = inventoryAiSummary(state);
+  if (s.kind !== 'pending') throw new Error(`kind=${s.kind}, צפוי pending (לא error)`);
+  if (!/ממתין לחידוש מכסת הניתוח/.test(s.text)) throw new Error(`טקסט שגוי: ${s.text}`);
+  if (!/~\d{1,2}:\d{2}/.test(s.text)) throw new Error(`שעת-הניסיון לא מוצגת: ${s.text}`);
+  const noTime = inventoryAiSummary({ status: 'waiting', retry: { code: 'QUOTA_EXCEEDED' } });
+  if (/~/.test(noTime.text) || noTime.kind !== 'pending') throw new Error('בלי nextAt — אמור להציג טקסט בלי שעה');
+  const temp = inventoryAiSummary({ status: 'waiting', retry: { code: 'TEMPORARY', nextAt: at } });
+  if (!/לא זמין כרגע/.test(temp.text)) throw new Error(`נוסח כשל-זמני שגוי: ${temp.text}`);
+  // failed נשאר error (רגרסיה)
+  if (inventoryAiSummary({ status: 'failed', error: 'x' }).kind !== 'error') throw new Error('failed הפסיק להיות error');
+  return `pending · "${s.text}" · בלי-שעה נסבל · failed נשאר error`;
 });
 
 // ============ 4. ניקוי מלא ============
