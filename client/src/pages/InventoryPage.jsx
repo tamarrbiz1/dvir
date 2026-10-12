@@ -485,6 +485,10 @@ function ItemDrawer({ item, canEdit, onClose, onAdd, onEdit, onOpenLedger, escap
             </div>
           </div>
 
+          {/* משימה AB (12.10.2026) — מק"טים לפי ספק, מתחת לפרטי-הפריט (שבהם
+              מוצגת שורת "ספקים"). כרטיס נפרד כי הוא טוען נתונים משלו. */}
+          <SkuSection item={item} canEdit={canEdit} />
+
           {/* תוספת 2026-10-08 ("מחיקת הערות"): הכפתור חייב להיות נגיש גם כשיש
               רק הערות-חופשיות בלי תנועה אחת (לא היה כך קודם — התנאי היה
               movements.length > 0 בלבד, כך שלפריט עם הערה ידנית אחת ובלי
@@ -499,6 +503,169 @@ function ItemDrawer({ item, canEdit, onClose, onAdd, onEdit, onOpenLedger, escap
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ============================================================
+// מק"טים לפי ספק (משימה AB, 12.10.2026) — אותו פריט מקבל מק"ט אחר
+// אצל כל ספק. המק"טים נשמרים בטבלת Airtable נפרדת (`מק"טים`, ר'
+// server/src/skus.js) ולא בשדה על הפריט, כדי שניתוח-מסמכים יוכל
+// לחפש מק"ט → פריט בוודאות.
+//
+// ⚠️ הטבלה **אופציונלית**: ל-PAT שבשרת אין הרשאת schema.bases:write,
+// ולכן היא נוצרת ידנית ב-Airtable (ר' PROGRESS.md). כל עוד היא
+// חסרה — השרת מחזיר available:false, הכרטיס מציג הודעה ולא נופל,
+// ושום דבר אחר במסך לא נפגע.
+//
+// בורר-הספק מציע **רק את הספקים שמקושרים לפריט** (זה המצב הנפוץ:
+// תמר מקשרת ספק לפריט בטופס העריכה); אם לפריט אין ספקים מקושרים
+// בכלל — נטענת רשימת כל הספקים, כדי שהמסך לא יהיה תקוע.
+// ============================================================
+function SkuSection({ item, canEdit }) {
+  const [state, setState] = useState({ loading: true, available: true, skus: [], loadError: '' });
+  const [adding, setAdding] = useState(false);
+  const [supplierId, setSupplierId] = useState('');
+  const [sku, setSku] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [allSuppliers, setAllSuppliers] = useState(null);
+
+  const linked = useMemo(() => (Array.isArray(item['ספקים']) ? item['ספקים'] : [])
+    .map((s) => (s && typeof s === 'object' ? { id: s.id, name: s.name || 'ספק' } : null))
+    .filter((s) => s && s.id), [item]);
+
+  const load = useCallback(() => {
+    authFetch(`/api/inventory/${item.id}/skus`)
+      .then(async (r) => ({ ok: r.ok, d: await r.json().catch(() => ({})) }))
+      .then(({ ok, d }) => setState({
+        loading: false,
+        available: ok ? d.available !== false : true,
+        skus: Array.isArray(d.skus) ? d.skus : [],
+        loadError: ok ? '' : (d.error || 'טעינת המק"טים נכשלה'),
+      }))
+      .catch(() => setState({ loading: false, available: true, skus: [], loadError: 'טעינת המק"טים נכשלה' }));
+  }, [item.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const options = linked.length ? linked : (allSuppliers || []);
+
+  const startAdd = () => {
+    setError(''); setSku('');
+    setSupplierId(linked.length === 1 ? linked[0].id : '');
+    setAdding(true);
+    if (!linked.length && allSuppliers === null) {
+      authFetch(`/api/${encodeURIComponent('ספקים')}?fields=${encodeURIComponent('שם ספק')}`)
+        .then((r) => (r.ok ? r.json() : []))
+        .then((rows) => setAllSuppliers((Array.isArray(rows) ? rows : [])
+          .map((r) => ({ id: r.id, name: r['שם ספק'] || 'ספק' }))
+          .sort((a, b) => a.name.localeCompare(b.name, 'he'))))
+        .catch(() => setAllSuppliers([]));
+    }
+  };
+
+  const save = async () => {
+    if (busy) return;
+    // ולידציית-לקוח באותן הודעות כמו השרת (שהוא מקור-האמת — ר' createItemSku)
+    if (!sku.trim()) { setError('יש להזין מק"ט'); return; }
+    if (!supplierId) { setError('יש לבחור ספק'); return; }
+    setBusy(true); setError('');
+    try {
+      const r = await authFetch(`/api/inventory/${item.id}/skus`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ supplierId, sku }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'שגיאה');
+      setAdding(false); setSku(''); setSupplierId('');
+      load();
+      toast('המק"ט נשמר');
+    } catch (e) {
+      setError(e.message || String(e));
+    }
+    setBusy(false);
+  };
+
+  const remove = async (row) => {
+    if (busy) return;
+    const ok = await confirmDialog({
+      title: 'מחיקת מק"ט',
+      message: `למחוק את המק"ט "${row.sku}"${row.supplierName ? ` של ${row.supplierName}` : ''}?`,
+      confirmLabel: 'מחק',
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const r = await authFetch(`/api/inventory/${item.id}/skus/${row.id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'שגיאה');
+      setState((s) => ({ ...s, skus: s.skus.filter((x) => x.id !== row.id) }));
+      toast('המק"ט נמחק');
+    } catch (e) {
+      toast(`מחיקת המק"ט נכשלה: ${e.message || e}`, 'error');
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="card">
+      <div className="section-title" style={{ marginTop: 0 }}>🏷️ מק"טים</div>
+      {state.loading ? <div className="skeleton skeleton-card" style={{ height: 48 }} /> : !state.available ? (
+        <div className="muted">טבלת מק"טים עוד לא הוגדרה ב-Airtable</div>
+      ) : (
+        <>
+          {state.loadError && <div className="badge badge-error" style={{ width: '100%', marginBottom: 10 }}>⚠️ {state.loadError}</div>}
+          {state.skus.length === 0 ? (
+            <div className="muted">אין מק"טים לפריט הזה</div>
+          ) : (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead><tr><th>ספק</th><th>מק"ט</th>{canEdit && <th></th>}</tr></thead>
+                <tbody>
+                  {state.skus.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.supplierName || <span className="muted">לא זמין</span>}</td>
+                      <td>{row.sku}</td>
+                      {canEdit && (
+                        <td>
+                          <button type="button" className="btn btn-sm btn-ghost" aria-label="מחיקת מק״ט" title="מחיקת מק״ט"
+                            style={{ color: 'var(--error)' }} disabled={busy} onClick={() => remove(row)}>🗑</button>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {canEdit && !adding && (
+            <button type="button" className="btn btn-sm btn-ghost" style={{ marginTop: 10 }} onClick={startAdd}>+ הוסף מק"ט</button>
+          )}
+
+          {canEdit && adding && (
+            <div style={{ marginTop: 10 }}>
+              {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 8 }}>⚠️ {error}</div>}
+              {/* flex-wrap: במסך 390px הבורר, השדה והכפתורים יורדים שורה ולא גולשים */}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <select className="select" aria-label="ספק" style={{ flex: '1 1 140px' }}
+                  value={supplierId} disabled={busy} onChange={(e) => { setSupplierId(e.target.value); setError(''); }}>
+                  <option value="">בחרי ספק...</option>
+                  {options.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+                <input className="input" aria-label="מק״ט" placeholder='מק"ט' style={{ flex: '1 1 140px' }}
+                  value={sku} disabled={busy} onChange={(e) => { setSku(e.target.value); setError(''); }} />
+                <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={save}>{busy ? 'שומר...' : 'שמירה'}</button>
+                <button type="button" className="btn btn-sm btn-ghost" disabled={busy} onClick={() => { setAdding(false); setError(''); }}>ביטול</button>
+              </div>
+              {!linked.length && allSuppliers !== null && (
+                <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>לפריט הזה אין ספקים מקושרים — מוצגים כל הספקים</div>
+              )}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
