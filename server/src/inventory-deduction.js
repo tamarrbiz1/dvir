@@ -14,6 +14,7 @@
 import { fetchRecords, updateRecord, getBase } from './airtable.js';
 import { analyzeExpenseDocument } from './document-analysis.js';
 import { matchLinesToInventory } from './inventory-matching.js';
+import { loadSkuIndex, findItemIdBySku } from './skus.js';
 
 const EXPENSES_TABLE = 'הוצאות';
 const INVENTORY_TABLE = 'מלאי בסיסי';
@@ -266,7 +267,9 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
   if (!fields['סכום כולל-AI'] && analysis.total != null) extraFields['סכום כולל-AI'] = String(analysis.total);
   if (Object.keys(extraFields).length) await updateRecord(EXPENSES_TABLE, expenseId, extraFields);
 
-  const matched = matchLinesToInventory(analysis.lines, inventoryItems);
+  // משימה AB: שלב-מק"ט מקדים לפני ההתאמה-לפי-שם. הספק של המסמך (קישור
+  // אמיתי לרשומת "ספקים", לא הטקסט החופשי של ספק-AI) מצמצם את החיפוש.
+  const matched = await matchLinesWithSkus(analysis.lines, inventoryItems, { supplierId: firstLinkId(fields['ספקים']) });
   const expenseNum = fields['מספר הוצאה'];
   const supplierLabel = analysis.supplier || fields['ספק-AI'] || '';
   const dateLabel = analysis.date || fields['תאריך חשבונית-AI'] || '';
@@ -276,6 +279,60 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
     { supplier: analysis.supplier, date: analysis.date, total: analysis.total, expenseNum, supplierLabel, dateLabel }
   );
   return { status: finalStatus, analyzedAt: new Date().toISOString(), supplier: analysis.supplier, date: analysis.date, total: analysis.total, results, notes };
+}
+
+/** מזהה-הרשומה הראשון בשדה-קישור (מערך של ids, או של {id} אחרי העשרה) */
+function firstLinkId(value) {
+  if (!Array.isArray(value) || !value.length) return null;
+  const v = value[0];
+  return v && typeof v === 'object' ? v.id || null : String(v);
+}
+
+// ============================================================
+// שלב-מק"ט בהתאמה לפריט-מלאי (משימה AB, 12.10.2026)
+// ------------------------------------------------------------
+// מק"ט שמופיע בשורת-המסמך ורשום בטבלת `מק"טים` לאותו ספק מזהה את
+// הפריט **בוודאות** — אין צורך בהתאמת-שם מטושטשת ואין צורך בהשוואת
+// יחידות (שתי הסיבות העיקריות ל"דורש אישור" היום), ולכן
+// needsApproval=false ו-matchedBy:'sku'.
+//
+// ⚠️ מה שכן נשמר גם במסלול-המק"ט, בכוונה: שני חסמי-הכמות שאינם קשורים
+// לזהות-הפריט אלא לסבירות-הכמות —
+//  (1) כמות חסרה/לא-חיובית → נופלים ללוגיקה הרגילה (שתסמן "דורש
+//      אישור" עם ההסבר המדויק), כי מק"ט נכון לא הופך כמות-0 לתקינה.
+//  (2) חסם-השפיות "לא מורידים מעבר למלאי" (ר' exceedsStock
+//      ב-inventory-matching.js) — זה השומר שתפס את תקרית 8.10 שבה
+//      3 שורות ב-מ"ר הורידו את "רשתות" ל-1932.5-. מק"ט מזהה *איזה*
+//      פריט, לא *באיזו יחידה* נמדדה השורה; בלי החסם הזה אותה תקרית
+//      הייתה חוזרת דווקא במסלול ה"ודאי".
+// שלב המק"ט מדולג בשקט כשהטבלה עוד לא הוגדרה ב-Airtable (loadSkuIndex
+// מחזיר null) — ההתנהגות אז זהה בתו לקוד שלפני משימה AB.
+// ============================================================
+async function matchLinesWithSkus(lines, inventoryItems, { supplierId } = {}) {
+  const index = await loadSkuIndex();
+  const itemsById = new Map((inventoryItems || []).map((it) => [it.id, it]));
+  const out = [];
+  for (const line of lines || []) {
+    const itemId = index && line?.sku ? findItemIdBySku(index, line.sku, supplierId) : null;
+    const item = itemId ? itemsById.get(itemId) : null;
+    const qty = Number(line?.quantity);
+    if (item && Number.isFinite(qty) && qty > 0) {
+      const current = Number(item['מלאי נוכחי']);
+      const exceedsStock = Number.isFinite(current) && qty > current;
+      out.push({
+        line, item, category: item['קטגוריה'], confidence: 1, quantity: qty,
+        matchedBy: 'sku',
+        needsApproval: exceedsStock,
+        why: exceedsStock ? 'exceedsStock' : 'sku',
+        reason: exceedsStock ? `הכמות (${qty}) גדולה מהמלאי הקיים (${current}) — דורש אישור` : null,
+      });
+      continue;
+    }
+    // אין מק"ט מתאים (או שאין כמות תקינה) — ההתאמה הקיימת לפי שם, בלי שינוי
+    const [m] = matchLinesToInventory([line], inventoryItems);
+    if (m) out.push({ ...m, matchedBy: 'name' });
+  }
+  return out;
 }
 
 /**
@@ -302,6 +359,9 @@ async function deductMatchedLines(expenseId, startNotes, matched, meta) {
     // הוכרעה ב-matchLinesToInventory).
     itemUnit: m.item['יחידת מידה'] || null,
     category: m.category, itemId: m.item.id, confidence: m.confidence,
+    // משימה AB: 'sku' = הפריט זוהה בוודאות לפי מק"ט, 'name' = התאמה
+    // לפי שם/כינוי. נשמר ב-state כדי שהמסך (וההיסטוריה) יידעו להבדיל.
+    ...(m.matchedBy ? { matchedBy: m.matchedBy } : {}),
     deducted: false,
     ...(m.needsApproval ? { needsApproval: true, reason: m.reason } : { pendingRun: true }),
   }));
@@ -707,6 +767,25 @@ export async function runManualExpenseInventoryDeduction(expenseId, { supplier, 
   return { status, analyzedAt: new Date().toISOString(), supplier, date, total, results, notes: finalNotes };
 }
 
+/**
+ * ולידציה + הורדה בפועל לשורה אחת שסומנה "דורש אישור". משותפת
+ * בכוונה לאישור-שורה-בודדת ולאישור-המרוכז (משימה AB דורשת במפורש
+ * "אותה ולידציה ואותה תגית-יומן") — שתי עותקות של הלוגיקה הזו היו
+ * מתפצלות בעדכון הבא.
+ *
+ * הגנה-בעומק (סעיף E3): שורה שהגיעה מ-state היסטורי/מוזרק יכולה
+ * להכיל כמות שלילית או Infinity — אישור בקליק אחד היה **מגדיל** את
+ * המלאי (או מוחק את הערך לגמרי, כי Infinity נכתב כ-null).
+ */
+async function approveOneLine(line, { expenseNum, supplier, date }) {
+  const approveQty = Number(line.quantity);
+  if (!Number.isFinite(approveQty) || approveQty <= 0) {
+    throw new Error(`לא ניתן לאשר שורה עם כמות לא חוקית (${line.quantity}) — יש לתקן את ההוצאה`);
+  }
+  await deductFromInventoryItem(line.itemId, approveQty, `↓ ${qtyWithUnit(approveQty, line.itemUnit)} · הוצאה #${expenseNum ?? '?'} · ${supplier || 'ספק לא ידוע'} · ${date || new Date().toISOString().slice(0, 10)} · אושר ידנית`);
+  return { ...line, deducted: true, needsApproval: false, deductedAt: new Date().toISOString(), approvedManually: true };
+}
+
 /** אישור הורדה ידני לשורה שסומנה "דורש אישור" (lineIndex לפי מיקום ב-results) */
 export async function approvePendingDeduction(expenseId, lineIndex) {
   const base = getBase();
@@ -719,21 +798,77 @@ export async function approvePendingDeduction(expenseId, lineIndex) {
   const line = state.results[lineIndex];
   if (line.deducted) return state; // אידמפוטנטי — כבר אושרה/ירדה בעבר
   if (!line.needsApproval) throw new Error('השורה הזו לא מסומנת כדורשת אישור');
-  // הגנה-בעומק (סעיף E3): שורה שהגיעה מ-state היסטורי/מוזרק יכולה
-  // להכיל כמות שלילית או Infinity — אישור בקליק אחד היה **מגדיל** את
-  // המלאי (או מוחק את הערך לגמרי, כי Infinity נכתב כ-null).
-  const approveQty = Number(line.quantity);
-  if (!Number.isFinite(approveQty) || approveQty <= 0) {
-    throw new Error(`לא ניתן לאשר שורה עם כמות לא חוקית (${line.quantity}) — יש לתקן את ההוצאה`);
-  }
 
-  const expenseNum = rec.fields['מספר הוצאה'];
-  await deductFromInventoryItem(line.itemId, approveQty, `↓ ${qtyWithUnit(approveQty, line.itemUnit)} · הוצאה #${expenseNum ?? '?'} · ${state.supplier || 'ספק לא ידוע'} · ${state.date || new Date().toISOString().slice(0, 10)} · אושר ידנית`);
-
-  state.results[lineIndex] = { ...line, deducted: true, needsApproval: false, deductedAt: new Date().toISOString(), approvedManually: true };
+  state.results[lineIndex] = await approveOneLine(line, {
+    expenseNum: rec.fields['מספר הוצאה'], supplier: state.supplier, date: state.date,
+  });
   state.status = state.results.every((r) => r.deducted || r.error) ? 'done' : 'partial';
   await saveState(expenseId, currentNotes, state);
   return state;
+}
+
+// ============================================================
+// "אשר את כל ההורדות" (משימה AB, 12.10.2026) — כפתור אחד במקום
+// קליק לכל שורה. קריאה אחת של ה-state, אותה ולידציה ואותה תגית-יומן
+// (`· אושר ידנית`) כמו באישור-שורה-בודדת, ושמירה **אחת** בסוף.
+//
+// ⚠️ הקריאה חייבת לרוץ תחת withInventoryLock(`expense:<id>`) — אותו
+// מפתח-נעילה של הניתוח עצמו (ר' הקריאה ב-server.js). בלעדיו ניתוח
+// מקביל היה דורס את ה-state שנשמר כאן (או להפך), ושורות היו מורידות
+// מלאי פעמיים.
+//
+// ⚠️ שורה שנכשלה מסומנת `error` ו-`needsApproval:false` — בדיוק כמו
+// כשל-הורדה בנתיב האוטומטי (ר' deductMatchedLines). המשמעות: קריאה
+// שנייה לא תנסה אותה שוב (היא תיספר ב-skipped), והדרך לנסות שוב היא
+// "נתח מחדש" — זהה להתנהגות הקיימת, לא התנהגות חדשה.
+// ============================================================
+export async function approveAllPendingDeductions(expenseId) {
+  const base = getBase();
+  let rec;
+  try {
+    rec = await base(EXPENSES_TABLE).find(expenseId);
+  } catch (e) {
+    if (e?.statusCode === 404) {
+      const err = new Error('ההוצאה לא נמצאה');
+      err.statusCode = 404;
+      throw err;
+    }
+    throw e;
+  }
+  const currentNotes = rec.fields['הערות'] || '';
+  const state = readState(currentNotes);
+  if (!state || !Array.isArray(state.results)) {
+    const err = new Error('להוצאה הזו אין ניתוח מלאי — יש להריץ "נתח מלאי" תחילה');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const meta = { expenseNum: rec.fields['מספר הוצאה'], supplier: state.supplier, date: state.date };
+  const pending = state.results
+    .map((r, i) => i)
+    .filter((i) => state.results[i].needsApproval && !state.results[i].deducted);
+
+  let approved = 0;
+  let failed = 0;
+  for (const i of pending) {
+    try {
+      state.results[i] = await approveOneLine(state.results[i], meta);
+      approved += 1;
+    } catch (e) {
+      state.results[i] = { ...state.results[i], deducted: false, needsApproval: false, error: e.message };
+      failed += 1;
+    }
+  }
+  // skipped = שורות שלא נגענו בהן בקריאה הזו (כבר ירדו / כבר נכשלו /
+  // לא היו מסומנות כדורשות אישור). אידמפוטנטיות: קריאה שנייה מחזירה
+  // approved=0, failed=0 ו-skipped=מספר השורות כולו.
+  const skipped = state.results.length - pending.length;
+
+  if (approved || failed) {
+    state.status = state.results.every((r) => r.deducted || r.error) ? 'done' : 'partial';
+    await saveState(expenseId, currentNotes, state); // שמירה אחת בסוף, לא פר-שורה
+  }
+  return { approved, failed, skipped, state };
 }
 
 // ============================================================

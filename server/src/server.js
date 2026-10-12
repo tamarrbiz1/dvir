@@ -12,7 +12,8 @@ import {
 } from './auth.js';
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
-import { analyzeExpenseInventory, approvePendingDeduction, readState, createManualExpense, runManualExpenseInventoryDeduction, validateManualExpenseInput, manualExpenseSubmitKey, claimManualExpenseSubmission, updateExpenseFreeNotes, updateInventoryFreeNotes, hideInventoryLedgerLine } from './inventory-deduction.js';
+import { analyzeExpenseInventory, approvePendingDeduction, approveAllPendingDeductions, readState, createManualExpense, runManualExpenseInventoryDeduction, validateManualExpenseInput, manualExpenseSubmitKey, claimManualExpenseSubmission, updateExpenseFreeNotes, updateInventoryFreeNotes, hideInventoryLedgerLine } from './inventory-deduction.js';
+import { listItemSkus, createItemSku, deleteItemSku, SKU_TABLE } from './skus.js';
 import { analyzeLogisticsInventory, shouldRetryLogistics, MAX_LOGISTICS_ATTEMPTS } from './logistics-deduction.js';
 import { cascadeDocumentDelete, summarizeCascade } from './document-cascade.js';
 import { fixFilenameEncoding } from './filename-utils.js';
@@ -505,6 +506,20 @@ app.post('/api/expenses/:id/analyze-inventory/approve', authenticate, requireOwn
   }
 });
 
+// "אשר את כל ההורדות" (משימה AB) — אותו מנעול בדיוק כמו הניתוח עצמו
+// (`expense:<id>`), כדי שאישור-מרוכז וניתוח-מקביל לא ידרסו זה את ה-state
+// של זה. ר' ההערה המפורטת ליד approveAllPendingDeductions.
+app.post('/api/expenses/:id/analyze-inventory/approve-all', authenticate, requireOwner, async (req, res) => {
+  try {
+    const result = await withInventoryLock(`expense:${req.params.id}`, () => approveAllPendingDeductions(req.params.id));
+    invalidateReads('הוצאות');
+    invalidateReads('מלאי בסיסי');
+    res.json(result);
+  } catch (e) {
+    sendApiError(res, e);
+  }
+});
+
 // ============================================================
 // עריכת הטקסט החופשי של "הערות" בהוצאה (ליל-חיזוק 2026-10-07, סעיף E4).
 // נקודת-קצה נפרדת מה-PATCH הגנרי בכוונה: שדה "הערות" של הוצאה מחזיק
@@ -579,6 +594,50 @@ app.post('/api/inventory/:id/ledger-line/hide', authenticate, requireInventoryWr
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// מק"טים לפי ספק לפריט-מלאי (משימה AB, 12.10.2026) — ר' skus.js.
+// נתיבים ייעודיים ולא ה-API הגנרי `/api/מק"טים` בשתי סיבות:
+//  1. הרשאות — עריכת מק"ט היא חלק מכרטיס פריט-המלאי, ולכן מותרת
+//     ל-owner **וגם** למנהל-עבודה (canWriteTable(role,'מלאי בסיסי'),
+//     אותו requireInventoryWrite של ההערות/התנועות למעלה). דרך
+//     ה-API הגנרי הטבלה החדשה הייתה owner-בלבד (ר' MANAGER_WRITE).
+//  2. ולידציה — "אותו ספק לאותו פריט פעמיים" היא בדיקת read-then-write
+//     שחייבת לרוץ בתוך נעילה (ר' createItemSku); ה-API הגנרי לא יודע עליה.
+// הטבלה אופציונלית: כל עוד היא לא נוצרה ב-Airtable, ה-GET מחזיר
+// available:false (המסך מציג הודעה ולא נופל) והכתיבות מחזירות 503.
+// ============================================================
+app.get('/api/inventory/:id/skus', authenticate, async (req, res) => {
+  if (!canReadTable(req.auth.role, 'מלאי בסיסי')) return res.status(403).json({ error: 'אין הרשאה לצפות במלאי' });
+  try {
+    const result = await listItemSkus(req.params.id);
+    res.json({ ...result, tableName: SKU_TABLE });
+  } catch (e) {
+    console.error(`[skus] GET /api/inventory/${req.params.id}/skus: ${e.message}`);
+    sendApiError(res, e);
+  }
+});
+
+app.post('/api/inventory/:id/skus', authenticate, requireInventoryWrite, async (req, res) => {
+  try {
+    const { supplierId, sku } = req.body || {};
+    const created = await createItemSku({ itemId: req.params.id, supplierId, sku });
+    invalidateReads(SKU_TABLE);
+    res.status(201).json(created);
+  } catch (e) {
+    sendApiError(res, e);
+  }
+});
+
+app.delete('/api/inventory/:id/skus/:skuId', authenticate, requireInventoryWrite, async (req, res) => {
+  try {
+    const result = await deleteItemSku(req.params.skuId);
+    invalidateReads(SKU_TABLE);
+    res.json(result);
+  } catch (e) {
+    sendApiError(res, e);
   }
 });
 

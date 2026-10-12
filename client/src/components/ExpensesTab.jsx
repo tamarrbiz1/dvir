@@ -13,7 +13,7 @@ import { pick, num, expenseCategory } from '../utils/field.js';
 import { firstId } from '../utils/resolve.js';
 import RecordForm from '../components/RecordForm.jsx';
 import { removeRecord } from '../components/RecordForm.jsx';
-import { toast } from '../utils/ui.js';
+import { toast, confirmDialog } from '../utils/ui.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 
@@ -503,10 +503,50 @@ function InventoryAiSection({ expense, onChanged }) {
     setBusy(false);
   };
 
+  // משימה AB: "אשר את כל ההורדות" — מוצג רק כששתי שורות ממתינות או יותר
+  // (לשורה אחת הכפתור הבודד עושה בדיוק את זה). הכפתורים הבודדים נשארים —
+  // זו תוספת, לא החלפה.
+  const pendingCount = results.filter((r) => r.needsApproval && !r.deducted && !r.error).length;
+
+  const approveAll = async () => {
+    if (busy) return;
+    const ok = await confirmDialog({
+      title: 'אישור כל ההורדות',
+      message: `לאשר הורדה של ${pendingCount} שורות מהמלאי?\nהפעולה תירשם ביומן המלאי.`,
+      confirmLabel: 'אשר הורדה',
+    });
+    if (!ok) return;
+    setBusy(true); setError('');
+    try {
+      const r = await authFetch(`/api/expenses/${expense.id}/analyze-inventory/approve-all`, { method: 'POST' });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'שגיאה');
+      const approved = Number(data.approved) || 0;
+      const failed = Number(data.failed) || 0;
+      if (approved) toast(`ירדו ${approved} שורות`);
+      else if (!failed) toast('אין שורות שממתינות לאישור');
+      if (failed) setError(`${failed} שורות נכשלו, ראו פירוט למטה`);
+      await onChanged?.();
+    } catch (e) {
+      setError(`האישור המרוכז נכשל: ${e.message || e}`);
+    }
+    setBusy(false);
+  };
+
   return (
     <div className="card">
       <div className="section-title" style={{ marginTop: 0 }}>📦 ניתוח מלאי אוטומטי</div>
       {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 10 }}>⚠️ {error}</div>}
+
+      {pendingCount >= 2 && (
+        // flex-wrap: במסך 390px הכפתור וההסבר שלידו יורדים שורה ולא גולשים
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+          <button type="button" className="btn btn-success" disabled={busy} onClick={approveAll}>
+            ✓ אשר את כל ההורדות ({pendingCount})
+          </button>
+          <span className="muted" style={{ fontSize: 12 }}>או אשרי שורה-שורה למטה</span>
+        </div>
+      )}
 
       {!state && <div className="muted" style={{ marginBottom: 10 }}>המסמך עדיין לא נותח למלאי.</div>}
       {state?.status === 'failed' && (
@@ -524,6 +564,8 @@ function InventoryAiSection({ expense, onChanged }) {
           {r.deducted ? (
             <div className="badge badge-ok" style={{ width: '100%' }}>
               📦 המסמך גרם להורדה של: {r.quantity} ממלאי: {r.category}
+              {/* משימה AB: הפריט זוהה בוודאות לפי מק"ט-ספק ולא לפי התאמת-שם */}
+              {r.matchedBy === 'sku' && <span className="muted"> (זוהה לפי מק"ט)</span>}
               {r.approvedManually && <span className="muted"> (אושר ידנית)</span>}
             </div>
           ) : r.error ? (
