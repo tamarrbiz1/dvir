@@ -56,9 +56,35 @@ export function withPreservedInventoryTags(originalNotes, newFreeText) {
   return free ? `${free}\n${tagLines.join('\n')}` : tagLines.join('\n');
 }
 
+// ============================================================
+// משימה AD (12.10.2026) — "ממתין להשלמה"
+// ------------------------------------------------------------
+// שעת-הניסיון-הבא מוצגת כשעה מקומית בלבד (HH:MM) ולא כ"בעוד N דקות":
+// הכרטיס אינו מתרענן מעצמו, ולכן "בעוד 10 דקות" היה הופך לשקר אחרי
+// רגע, בעוד ש-"~14:35" נשאר נכון.
+// ============================================================
+export function retryTimeLabel(state) {
+  const at = Number(state?.retry?.nextAt);
+  if (!Number.isFinite(at) || at <= 0) return '';
+  const d = new Date(at);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+}
+
+/** הטקסט המלא של מצב-ההמתנה — אותו נוסח בכרטיס ובתג הקומפקטי */
+export function waitingText(state) {
+  const when = retryTimeLabel(state);
+  const base = state?.retry?.code === 'TEMPORARY'
+    ? 'הניתוח לא זמין כרגע — ינסה שוב אוטומטית'
+    : 'ממתין לחידוש מכסת הניתוח — ינסה שוב אוטומטית';
+  return when ? `${base} (~${when})` : base;
+}
+
 /** תיאור קצר למצב (לתג קומפקטי בטבלה) */
 export function inventoryAiSummary(state) {
   if (!state) return null;
+  // משימה AD: המתנה אינה כשל — לכן kind 'pending' ולא 'error'.
+  if (state.status === 'waiting') return { kind: 'pending', text: waitingText(state) };
   // סעיף V2 (8.10.2026): כשל-ניתוח אינו "לא נמצאו פריטים" — מוצגת הודעה
   // ידידותית שמבהירה שזו תקלה זמנית ושכדאי לנסות שוב ("נתח מחדש").
   if (state.status === 'failed') return { kind: 'error', text: state.error || 'הניתוח לא זמין כרגע — נסו שוב מאוחר יותר' };

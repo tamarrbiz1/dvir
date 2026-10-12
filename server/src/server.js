@@ -12,7 +12,8 @@ import {
 } from './auth.js';
 import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
-import { analyzeExpenseInventory, approvePendingDeduction, approveAllPendingDeductions, readState, createManualExpense, runManualExpenseInventoryDeduction, validateManualExpenseInput, manualExpenseSubmitKey, claimManualExpenseSubmission, updateExpenseFreeNotes, updateInventoryFreeNotes, hideInventoryLedgerLine } from './inventory-deduction.js';
+import { analyzeExpenseInventory, approvePendingDeduction, approveAllPendingDeductions, readState, createManualExpense, runManualExpenseInventoryDeduction, validateManualExpenseInput, manualExpenseSubmitKey, claimManualExpenseSubmission, updateExpenseFreeNotes, updateInventoryFreeNotes, hideInventoryLedgerLine, markAnalysisGaveUp } from './inventory-deduction.js';
+import { startAnalysisRetrySweep } from './analysis-retry.js';
 import { listItemSkus, createItemSku, deleteItemSku, SKU_TABLE } from './skus.js';
 import { analyzeLogisticsInventory, shouldRetryLogistics, MAX_LOGISTICS_ATTEMPTS } from './logistics-deduction.js';
 import { cascadeDocumentDelete, summarizeCascade } from './document-cascade.js';
@@ -1613,6 +1614,15 @@ app.listen(PORT, () => {
   startLogisticsSweep({
     lock: withInventoryLock,
     onResult: (table, id, result) => { recordLogisticsStatus(table, id, result, 'sweep'); invalidateReads('מלאי בסיסי'); },
+  });
+  // משימה AD: ניתוח-הוצאה שנעצר (מכסה גמורה, 429, או restart באמצע)
+  // משלים את עצמו — סריקה ראשונה ~2 דק' אחרי העלייה (שם גם נתפסות
+  // הוצאות שנפלו על טוקן שבוטל, אחרי חידוש) ואז כל 5 דקות, הוצאה אחת
+  // בכל פעם. ר' analysis-retry.js.
+  startAnalysisRetrySweep({
+    lock: withInventoryLock,
+    analyze: async (id) => { await analyzeExpenseInventory(id); invalidateReads('מלאי בסיסי'); invalidateReads(EXPENSES_TABLE); },
+    markGaveUp: markAnalysisGaveUp,
   });
 });
 

@@ -16,6 +16,12 @@ import { analyzeExpenseDocument } from './document-analysis.js';
 import { matchLinesToInventory } from './inventory-matching.js';
 import { loadSkuIndex, findItemIdBySku } from './skus.js';
 import { redactSecrets } from './cli-token.js';
+// ⚠️ ייבוא מחזורי במתכוון ובטוח: analysis-retry.js מייבא מכאן את
+// `readState`. שני הכיוונים משתמשים זה בפונקציות של זה **בזמן-ריצה
+// בלבד** (אין קריאה בזמן-טעינת-המודול), ושתיהן הצהרות-פונקציה
+// מורמות — ולכן ESM פותר את המחזור נכון. אל תוסיפו כאן קריאה
+// ל-nextRetryAt בתוך גוף-המודול (מחוץ לפונקציה) — זה כן ישבור.
+import { nextRetryAt } from './analysis-retry.js';
 
 const EXPENSES_TABLE = 'הוצאות';
 const INVENTORY_TABLE = 'מלאי בסיסי';
@@ -175,6 +181,25 @@ async function resumeUnresolvedLines(expenseId, currentNotes, existingState) {
 }
 
 /**
+ * משימה AD: "ממתין להשלמה" שנגמרו לו הניסיונות (כשל זמני שאינו מכסה)
+ * עובר ל-`failed` סופי — אחרת הוא היה נשאר "ינסה שוב אוטומטית" לנצח
+ * והמסך היה משקר. נקרא מהסריקה (analysis-retry.js), לא מהניתוח עצמו.
+ * שומר את מניין-הניסיונות כדי שיהיה מה לדווח בלוג/בכרטיס.
+ */
+export async function markAnalysisGaveUp(expenseId, state, reason) {
+  const attempts = Number(state?.retry?.attempts) || 0;
+  const next = {
+    ...state,
+    status: 'failed',
+    error: `${state?.retry?.lastError || 'הניתוח לא זמין'} (${attempts} ניסיונות אוטומטיים נכשלו — אפשר ללחוץ "נתח מחדש")`,
+    retry: { ...(state?.retry || {}), gaveUpAt: new Date().toISOString(), gaveUpReason: reason },
+  };
+  await saveState(expenseId, '', next);
+  console.log(`[analysis-retry] הוצאה ${expenseId}: ויתור אחרי ${attempts} ניסיונות — ${reason}`);
+  return next;
+}
+
+/**
  * מבצע ניתוח מלא להוצאה אחת: קריאה, אידמפוטנטיות, הורדת קובץ,
  * ניתוח AI, התאמה למלאי, הורדה בפועל לפריטים בטוחים מספיק.
  * safe מול כשל: status 'failed' נשמר, המלאי לא נוגע כשיש כשל.
@@ -257,8 +282,38 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
       : (e?.analysisUnavailable ? 'הניתוח לא זמין כרגע — נסו שוב מאוחר יותר' : (e?.message || 'שגיאה לא ידועה'));
     // פלט ה-CLI יכול להכיל טוקן — כל מה שנרשם עובר ב-redactSecrets
     console.error(redactSecrets(`[inventory-ai] ניתוח הוצאה ${expenseId} נכשל: ${e?.message}${e?.detail ? ` | ${e.detail}` : ''}`));
+
+    // ============================================================
+    // משימה AD (12.10.2026) — כשל **זמני** אינו "נכשל"
+    // ------------------------------------------------------------
+    // מכסה גמורה/429/עומס (`QUOTA_EXCEEDED`) ו-timeout/5xx
+    // (`TEMPORARY`) נשמרים כ-`waiting` עם זמן-הניסיון-הבא, ו-
+    // analysis-retry.js מריץ אותם שוב מעצמו עד שהם מצליחים (מכסה:
+    // בלי תקרת-ניסיונות; זמני-אחר: 3). כך סוף-מכסה או restart באמצע
+    // ניתוח אינו מאבד אותו, ותמר לא צריכה לזכור ללחוץ "נתח מחדש".
+    // ============================================================
+    const prevRetry = existingState?.retry || {};
+    if (e?.code === 'QUOTA_EXCEEDED' || e?.code === 'TEMPORARY') {
+      const attempts = (Number(prevRetry.attempts) || 0) + 1;
+      const state = {
+        status: 'waiting',
+        analyzedAt: new Date().toISOString(),
+        error: e.code === 'QUOTA_EXCEEDED'
+          ? 'ממתין לחידוש מכסת הניתוח — ינסה שוב אוטומטית'
+          : 'הניתוח לא זמין כרגע — ינסה שוב אוטומטית',
+        errorCode: e.code,
+        retry: { code: e.code, attempts, nextAt: nextRetryAt(attempts), lastError: friendly },
+        results: [],
+      };
+      await saveState(expenseId, currentNotes, state);
+      return state;
+    }
+
     const state = { status: 'failed', analyzedAt: new Date().toISOString(), error: friendly, results: [] };
     if (authExpired) state.errorCode = 'AUTH_EXPIRED';
+    // מניין ניסיונות-העלייה נשמר, אחרת כל restart היה מתחיל למנות
+    // מאפס ו-AUTH_EXPIRED היה מנסה בלי סוף (ר' MAX_BOOT_RETRIES_ON_AUTH).
+    if (prevRetry.bootRetries) state.retry = { bootRetries: prevRetry.bootRetries };
     await saveState(expenseId, currentNotes, state);
     return state;
   }
