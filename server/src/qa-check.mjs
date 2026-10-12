@@ -28,7 +28,7 @@ import {
 } from './inventory-deduction.js';
 import { deriveDeductions, computeDeviation, findCounterpart, DEVIATION_THRESHOLD, planLogisticsReversal, unitBlockReason, shouldRetryLogistics, MAX_LOGISTICS_ATTEMPTS } from './logistics-deduction.js';
 import { sweepFloor, sweepCandidateReason } from './logistics-sweep.js';
-import { redactSecrets as authRedact, __internals as authInternals } from './cli-auth.js';
+import { redactSecrets as authRedact } from './cli-token.js';
 import { fixFilenameEncoding } from './filename-utils.js';
 import { weekCodeFromDate, WEEK_CODE_RE } from './weekly-sync.js';
 import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggestions, summarizeSuggestions, AUTO_THRESHOLD } from './supplier-linking.js';
@@ -40,7 +40,6 @@ import { yearFromWeekValue, dateFromWeekValue, invoiceDate } from '../../client/
 import { shouldResetOption } from '../../client/src/utils/selectGuard.js';
 import { pickProvider } from './document-analysis.js';
 import { writeFile as writeFileAsync, chmod as chmodAsync, mkdtemp as mkdtempAsync } from 'node:fs/promises';
-import { tmpdir as osTmpdir } from 'node:os';
 import nodePath from 'node:path';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
@@ -3314,183 +3313,18 @@ await test('תיקון "task Y": תיחום האיסוף — רצפת-דיפלו
 
 
 // ============================================================
-// משימה AA (8.10.2026) — חידוש אימות הניתוח מתוך האפליקציה.
-// ⚠️ אף בדיקה כאן **אינה** מנפיקה טוקן אמיתי ואינה נוגעת בטוקן הפעיל
-// או ב-.env: ה-CLI מוחלף ב-pty מדומה (סקריפט תחת /var/tmp — /tmp
-// מותקן noexec), ו-CLAUDE_CLI_HOME מופנה ל-HOME זמני, כך שקובץ
-// token.json שנכתב בבדיקה נוצר שם ונמחק.
+// משימה AC (12.10.2026) — פיצ'ר "חידוש אימות מהאפליקציה" (AA) הוסר.
+// בדיקות ה-pty-המדומה, הסשן (409/410), token.json והרשאות שלושת
+// נתיבי `/api/cli-auth/*` נמחקו יחד איתו. נשארה בדיקת ההסתרה: היא
+// שומרת שסוד לא ידלוף ללוג מפלט ה-CLI (ר' inventory-deduction.js).
 // ============================================================
-await test('AA: redactSecrets מסתיר טוקן, קוד-הדבקה ו-code בכתובת', () => {
+await test('AC: redactSecrets מסתיר טוקן ו-code בכתובת (הגנת-לוג)', () => {
   const out = authRedact('token=sk-ant-oat01-AAAABBBBCCCCDDDDEEEEFFFF url=https://claude.com/x?code=SUPERSECRET&y=1');
   if (/sk-ant-oat01-AAAA/.test(out)) throw new Error('הטוקן לא הוסתר');
   if (/SUPERSECRET/.test(out)) throw new Error('ה-code בכתובת לא הוסתר');
   const pasted = authRedact('abcdefghijklmnopqrstuvwx#yzABCDEF');
   if (/abcdefghijklmnopqrstuvwx/.test(pasted)) throw new Error('קוד-ההדבקה לא הוסתר');
   return 'טוקן/קוד/code=... מוסתרים';
-});
-
-await test('AA: תבנית הקוד — מקבלת קוד תקין, דוחה קצר/ארוך/תווים אסורים', () => {
-  const re = authInternals.CODE_RE;
-  const ok = ['a'.repeat(20), 'abc#def-ghi_jkl012345', 'A1#b2-c3_'.padEnd(25, 'x')];
-  const bad = ['short', '', 'a'.repeat(201), 'has space here xxxxxxxxxx', 'ok$chars%bad!!!!!!!!!!'];
-  for (const v of ok) if (!re.test(v)) throw new Error(`נדחה קוד תקין: ${v.slice(0, 12)}…`);
-  for (const v of bad) if (re.test(v)) throw new Error('התקבל קוד לא-תקין');
-  return `${ok.length} תקינים עברו, ${bad.length} פסולים נדחו`;
-});
-
-/** pty מדומה: מדפיס URL, ואחרי קלט מדפיס "טוקן" מזויף (לא אמיתי!) */
-async function fakeSetupTokenCli({ printUrl = true, token = 'sk-ant-oat01-FAKEFAKEFAKEFAKEFAKEFAKE0123', hang = false } = {}) {
-  const dir = await mkdtempAsync(nodePath.join('/var/tmp', 'qa-cliauth-'));
-  const file = nodePath.join(dir, 'claude');
-  const body = [
-    '#!/bin/sh',
-    printUrl ? 'echo "Open this URL: https://claude.com/cai/oauth/authorize?client=x&state=y"' : 'echo "starting"',
-    hang ? 'sleep 300' : '',
-    'read CODE',
-    printUrl ? `echo "Your token: ${token}"` : 'echo "no url was printed"',
-  ].filter(Boolean).join('\n') + '\n';
-  await writeFileAsync(file, body);
-  await chmodAsync(file, 0o755);
-  return { cliFile: file, dir };
-}
-
-async function withFakeAuthCli(opts, fn) {
-  const { cliFile } = await fakeSetupTokenCli(opts);
-  const home = await mkdtempAsync(nodePath.join('/var/tmp', 'qa-cliauth-home-'));
-  const saved = { p: process.env.CLAUDE_CLI_PATH, h: process.env.CLAUDE_CLI_HOME, t: process.env.CLAUDE_CODE_OAUTH_TOKEN };
-  process.env.CLAUDE_CLI_PATH = cliFile;
-  process.env.CLAUDE_CLI_HOME = home;
-  // מודול cli-auth קורא את TOKEN_DIR בזמן-טעינה, ולכן נטען טרי לכל בדיקה
-  const mod = await import(`./cli-auth.js?t=${Date.now()}_${Math.random()}`);
-  try { return await fn(mod, home); } finally {
-    mod.__resetSessionForTests?.();
-    if (saved.p === undefined) delete process.env.CLAUDE_CLI_PATH; else process.env.CLAUDE_CLI_PATH = saved.p;
-    if (saved.h === undefined) delete process.env.CLAUDE_CLI_HOME; else process.env.CLAUDE_CLI_HOME = saved.h;
-    if (saved.t === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN; else process.env.CLAUDE_CODE_OAUTH_TOKEN = saved.t;
-  }
-}
-
-await test('AA: start מחזיר קישור-אישור; complete שומר token.json במצב 600 ו-status מחזיר תאריך', async () => {
-  return withFakeAuthCli({}, async (mod, home) => {
-    const started = await mod.startAuth();
-    if (!/^https:\/\/claude\.com\//.test(started.url || '')) throw new Error(`לא חולץ קישור: ${started.url}`);
-    if (!started.sessionId || !started.expiresAt) throw new Error('חסר sessionId/expiresAt');
-    const done = await mod.completeAuth('a'.repeat(24));
-    if (!done.ok || !done.expiresAt) throw new Error(`complete לא הצליח: ${JSON.stringify(done)}`);
-    if (JSON.stringify(done).includes('sk-ant')) throw new Error('הטוקן חזר בתשובה — אסור');
-    const { stat, readFile } = await import('node:fs/promises');
-    const st = await stat(nodePath.join(home, 'token.json'));
-    const mode = (st.mode & 0o777).toString(8);
-    if (mode !== '600') throw new Error(`הרשאות token.json הן ${mode}, צפוי 600`);
-    const saved = JSON.parse(await readFile(nodePath.join(home, 'token.json'), 'utf8'));
-    if (!saved.token || !saved.expiresAt) throw new Error('הקובץ לא מכיל token/expiresAt');
-    const status = await mod.authStatus();
-    if (!status.configured || status.source !== 'file' || status.daysLeft < 360) throw new Error(`status שגוי: ${JSON.stringify(status)}`);
-    return `קישור חולץ · token.json 600 · תוקף ${status.daysLeft} ימים · הטוקן לא בתשובה`;
-  });
-});
-
-await test('AA: קוד לא-תקין → 400, והקוד עצמו לא מופיע בהודעת-השגיאה', async () => {
-  return withFakeAuthCli({}, async (mod) => {
-    await mod.startAuth();
-    try {
-      await mod.completeAuth('short');
-      throw new Error('היה אמור להידחות');
-    } catch (e) {
-      if (e.statusCode !== 400) throw new Error(`צפוי 400, התקבל ${e.statusCode}`);
-      if (/short/.test(e.message)) throw new Error('הקוד הודלף להודעת השגיאה');
-      return `400 ללא הדלפת הקוד: "${e.message}"`;
-    }
-  });
-});
-
-await test('AA: סשן כפול → 409; complete בלי start → 410', async () => {
-  return withFakeAuthCli({}, async (mod) => {
-    await mod.startAuth();
-    let dup = null;
-    try { await mod.startAuth(); } catch (e) { dup = e.statusCode; }
-    if (dup !== 409) throw new Error(`סשן כפול: צפוי 409, התקבל ${dup}`);
-    mod.__resetSessionForTests();
-    let none = null;
-    try { await mod.completeAuth('a'.repeat(24)); } catch (e) { none = e.statusCode; }
-    if (none !== 410) throw new Error(`complete בלי start: צפוי 410, התקבל ${none}`);
-    return '409 על כפול, 410 בלי סשן';
-  });
-});
-
-await test('AA: ה-CLI לא מדפיס קישור → כשל נקי (לא תקיעה), והסשן נסגר', async () => {
-  const savedWait = process.env.CLI_AUTH_URL_WAIT_MS;
-  process.env.CLI_AUTH_URL_WAIT_MS = '3000'; // שלא נאריך את הסוויטה ב-60 שנ'
-  try {
-  return await withFakeAuthCli({ printUrl: false }, async (mod) => {
-    const t0 = Date.now();
-    try {
-      await mod.startAuth();
-      throw new Error('היה אמור להיכשל');
-    } catch (e) {
-      if (!e.statusCode || e.statusCode < 400) throw new Error(`צפוי כשל עם statusCode, התקבל: ${e.message}`);
-      const st = await mod.authStatus();
-      if (st.sessionOpen) throw new Error('הסשן נשאר פתוח אחרי כשל');
-      return `נכשל נקי תוך ${Math.round((Date.now() - t0) / 1000)} שנ' (${e.statusCode}), הסשן נסגר`;
-    }
-  });
-  } finally {
-    if (savedWait === undefined) delete process.env.CLI_AUTH_URL_WAIT_MS; else process.env.CLI_AUTH_URL_WAIT_MS = savedWait;
-  }
-});
-
-await test('AA: token.json פגום/ריק/לא-JSON → נופלים ל-.env בלי לקרוס', async () => {
-  return withFakeAuthCli({}, async (mod, home) => {
-    const { writeFile } = await import('node:fs/promises');
-    for (const bad of ['', 'not json at all', '{"no":"token"}', '{broken']) {
-      await writeFile(nodePath.join(home, 'token.json'), bad);
-      const stored = await mod.readStoredToken();
-      if (stored !== null) throw new Error(`קובץ פגום (${bad.slice(0, 10)}) לא נדחה`);
-      process.env.CLAUDE_CODE_OAUTH_TOKEN = 'sk-ant-oat01-ENVFALLBACKFAKE000000';
-      const r = await mod.loadTokenIntoEnv();
-      if (r.source !== 'env') throw new Error(`צפוי מקור env, התקבל ${r.source}`);
-    }
-    return '4 גלגולי-קובץ פגומים → נפילה-לאחור ל-env, בלי קריסה';
-  });
-});
-
-await test('AA: טוקן שמור שפג → לא גובר על .env', async () => {
-  return withFakeAuthCli({}, async (mod, home) => {
-    const { writeFile } = await import('node:fs/promises');
-    await writeFile(nodePath.join(home, 'token.json'), JSON.stringify({
-      token: 'sk-ant-oat01-EXPIREDFAKE0000000000', createdAt: '2020-01-01T00:00:00Z', expiresAt: '2020-12-31T00:00:00Z',
-    }));
-    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'sk-ant-oat01-LIVEENVFAKE0000000000';
-    const r = await mod.loadTokenIntoEnv();
-    if (r.source !== 'env' || !r.expired) throw new Error(`צפוי env+expired, התקבל ${JSON.stringify(r)}`);
-    if (process.env.CLAUDE_CODE_OAUTH_TOKEN !== 'sk-ant-oat01-LIVEENVFAKE0000000000') throw new Error('טוקן פג דרס את הסביבה');
-    return 'טוקן פג לא גובר על הסביבה';
-  });
-});
-
-await test('AA: הרשאות — worker ו-manager נדחים ב-403 בשלושת הנתיבים', async () => {
-  const problems = [];
-  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
-  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
-  const paths = [['POST', 'cli-auth/start'], ['POST', 'cli-auth/complete'], ['GET', 'cli-auth/status']];
-  if (w) {
-    const wl = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
-    for (const [m, p] of paths) {
-      try { await apiAs(wl.token, m, p, m === 'POST' ? { code: 'x'.repeat(24) } : undefined); problems.push(`worker עבר ${p}`); }
-      catch (e) { if (!/^40[13]/.test(String(e.message))) problems.push(`worker ${p}: ${e.message}`); }
-    }
-  }
-  if (manager) {
-    const ml = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
-    for (const [m, p] of paths) {
-      try { await apiAs(ml.token, m, p, m === 'POST' ? { code: 'x'.repeat(24) } : undefined); problems.push(`manager עבר ${p}`); }
-      catch (e) { if (!/^403/.test(String(e.message))) problems.push(`manager ${p}: ${e.message}`); }
-    }
-  }
-  try { await apiAs(null, 'GET', 'cli-auth/status'); problems.push('בלי טוקן עבר'); }
-  catch (e) { if (!/^401/.test(String(e.message))) problems.push(`בלי טוקן: ${e.message}`); }
-  if (problems.length) throw new Error(problems.join('; '));
-  return `${w ? 'worker' : '(אין עובד)'} + ${manager ? 'manager' : '(אין מנהל-עבודה)'} נדחו, בלי-טוקן 401`;
 });
 
 // ============ 4. ניקוי מלא ============
