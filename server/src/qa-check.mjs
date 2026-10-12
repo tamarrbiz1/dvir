@@ -3466,6 +3466,103 @@ await test('AD: תצוגת-הלקוח — "ממתין" אינו "נכשל", וה
   return `pending · "${s.text}" · בלי-שעה נסבל · failed נשאר error`;
 });
 
+// ============================================================
+// משימה AE (12.10.2026) — צילום דרכון לעובד.
+// ⚠️ PNG סינתטי מותר כאן **במתכוון**, בניגוד לכלל ב-CLAUDE.md:
+// הכלל ההוא מגן על קרדיטי-Make בטבלאות עם אוטומציית ניתוח-מסמכים
+// (הוצאות/חשבוניות/תעודות משלוח/צ׳קים). לטבלת `עובדים` אין אוטומציה
+// כזו, והנתיב החדש **אינו** מפעיל Make/ניתוח/מלאי — ולכן אין כאן
+// קרדיטים לשרוף ואין מה לנתח. ר' worker-documents.js.
+// ============================================================
+await test('AE: צילום דרכון — העלאה → החלפה → מחיקה → ריק (עובד QA, מנוקה בסוף)', async () => {
+  const png = (seed) => Buffer.concat([
+    Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'),
+    Buffer.from(String(seed)), // משנה את הגודל, כדי להבדיל בין הקבצים
+  ]);
+  const send = (id, buf, name) => {
+    const fd = new FormData();
+    fd.append('file', new Blob([buf], { type: 'image/png' }), name);
+    return api('POST', `workers/${id}/passport`, fd, true);
+  };
+
+  const worker = await create('עובדים', { 'שם פרטי': 'QA', 'שם משפחה': MARK, 'מספר דרכון': `${MARK}-P` });
+  if (!worker?.id) throw new Error('לא נוצר עובד QA');
+
+  const empty = await api('GET', `workers/${worker.id}/passport`);
+  if (empty.passport) throw new Error('עובד חדש כבר מגיע עם צילום דרכון');
+
+  const up = await send(worker.id, png('aaa'), 'qa-passport.png');
+  if (!up?.passport?.url) throw new Error(`ההעלאה לא החזירה קובץ: ${JSON.stringify(up)}`);
+  if (up.replaced) throw new Error('העלאה ראשונה סומנה כ"החלפה"');
+  const firstId = up.passport.id;
+
+  const back = await api('GET', `workers/${worker.id}/passport`);
+  if (!back?.passport?.url) throw new Error('GET לא מחזיר את הקובץ שהועלה');
+  if (!/^https?:\/\//.test(back.passport.url)) throw new Error(`URL לא תקין: ${back.passport.url}`);
+
+  // החלפה: נשאר **קובץ אחד** (לא שניים) והוא החדש
+  const rep = await send(worker.id, png('bbbbbbbb'), 'qa-passport-2.png');
+  if (!rep.replaced) throw new Error('החלפה לא סומנה כ-replaced');
+  if (rep.passport.id === firstId) throw new Error('ההחלפה השאירה את הקובץ הישן');
+  const rec = await api('GET', `${enc('עובדים')}/${worker.id}?includeTest=1`);
+  const list = Array.isArray(rec['צילום דרכון']) ? rec['צילום דרכון'] : [];
+  if (list.length !== 1) throw new Error(`אחרי החלפה יש ${list.length} קבצים, צפוי 1`);
+
+  const del = await api('DELETE', `workers/${worker.id}/passport`);
+  if (!del.deleted) throw new Error('המחיקה לא דיווחה deleted');
+  const after = await api('GET', `workers/${worker.id}/passport`);
+  if (after.passport) throw new Error('הקובץ שרד את המחיקה');
+  // אידמפוטנטיות: מחיקה שנייה לא נכשלת
+  const del2 = await api('DELETE', `workers/${worker.id}/passport`);
+  if (del2.deleted !== false) throw new Error('מחיקה כשאין קובץ אמורה להחזיר deleted:false');
+
+  return 'ריק → הועלה → GET מחזיר URL → החלפה (קובץ אחד, החדש) → נמחק → ריק → מחיקה כפולה אידמפוטנטית';
+});
+
+await test('AE: צילום דרכון — txt בסיומת .jpg נדחה ב-400, עובד לא קיים 404', async () => {
+  const worker = await create('עובדים', { 'שם פרטי': 'QA', 'שם משפחה': `${MARK}b` });
+  const fd = new FormData();
+  fd.append('file', new Blob([Buffer.from('זה בכלל לא תמונה, רק טקסט')], { type: 'image/jpeg' }), 'fake.jpg');
+  let got = null;
+  try { await api('POST', `workers/${worker.id}/passport`, fd, true); } catch (e) { got = String(e.message); }
+  if (!got || !got.startsWith('400')) throw new Error(`txt-בסיומת-jpg: צפוי 400, התקבל ${got}`);
+  if (!/PDF, JPG או PNG/.test(got)) throw new Error(`הודעת-השגיאה לא מסבירה מה מותר: ${got}`);
+
+  const fd2 = new FormData();
+  fd2.append('file', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' }), 'x.png');
+  let missing = null;
+  try { await api('POST', 'workers/recDOESNOTEXIST9/passport', fd2, true); } catch (e) { missing = String(e.message); }
+  if (!missing || !missing.startsWith('404')) throw new Error(`עובד לא קיים: צפוי 404, התקבל ${missing}`);
+
+  let missingGet = null;
+  try { await api('GET', 'workers/recDOESNOTEXIST9/passport'); } catch (e) { missingGet = String(e.message); }
+  if (!missingGet || !missingGet.startsWith('404')) throw new Error(`GET לעובד לא קיים: צפוי 404, התקבל ${missingGet}`);
+  return 'txt-בסיומת-jpg → 400 עם הסבר · עובד לא קיים → 404 ב-POST וב-GET';
+});
+
+await test('AE: הרשאות — worker נדחה ב-403 גם על GET, בלי טוקן 401', async () => {
+  const problems = [];
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  const target = workers[0];
+  if (w && target) {
+    const wl = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    const fd = () => { const f = new FormData(); f.append('file', new Blob([Buffer.from('x')], { type: 'image/png' }), 'a.png'); return f; };
+    // ⚠️ GET **חייב** להיות חסום גם-כן: צילום דרכון של עובד אחר הוא
+    // מסמך מזהה. הבדיקה המפורשת כאן היא מה שמוודא שהנתיב לא "נפל"
+    // לברירת-המחדל של authenticate בלבד.
+    for (const [m, body, isForm] of [['GET', undefined, false], ['POST', fd(), true], ['DELETE', undefined, false]]) {
+      try {
+        await apiAs(wl.token, m, `workers/${target.id}/passport`, body, isForm);
+        problems.push(`worker עבר ${m}`);
+      } catch (e) { if (!/^403/.test(String(e.message))) problems.push(`worker ${m}: ${e.message}`); }
+    }
+  }
+  try { await apiAs(null, 'GET', `workers/${(target || { id: 'recX' }).id}/passport`); problems.push('בלי טוקן עבר'); }
+  catch (e) { if (!/^401/.test(String(e.message))) problems.push(`בלי טוקן: ${e.message}`); }
+  if (problems.length) throw new Error(problems.join('; '));
+  return `${w ? 'worker נדחה ב-403 ב-GET/POST/DELETE' : '(אין עובד עם מייל+דרכון לבדיקה)'} · בלי-טוקן 401`;
+});
+
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
 // שרדה את הניקוי בריצה קודמת ונשארה בטבלה החיה עד שאותרה ידנית למחרת —

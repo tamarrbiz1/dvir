@@ -18,7 +18,8 @@ import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import PageHeader from '../components/PageHeader.jsx';
 import HebrewNote from '../components/HebrewNote.jsx';
 import { PERIOD_PRESETS, periodRange, inPeriod, periodDisclosure } from '../utils/period.js';
-import { toast } from '../utils/ui.js';
+import { toast, confirmDialog } from '../utils/ui.js';
+import { authFetch } from '../utils/authFetch.js';
 
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, PieChart, Pie, Cell } from 'recharts';
 import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
@@ -199,7 +200,17 @@ export default function WorkersPage() {
         </div>
       )}
 
-      {drawer && <WorkerDetails worker={drawer} records={recordsFor(drawer)} onClose={() => setDrawer(null)} />}
+      {drawer && (
+        <WorkerDetails
+          worker={drawer}
+          records={recordsFor(drawer)}
+          onClose={() => setDrawer(null)}
+          /* משימה AE: מסמכי עובד זמינים גם למנהל-עבודה (ולא רק ל-owner
+             כמו שאר העריכה כאן) — ר' canManageWorkerDocuments בשרת */
+          canManageDocs={['owner', 'manager'].includes(app.user?.role || 'owner')}
+          onChanged={load}
+        />
+      )}
 
       {form !== null && (
         <RecordForm
@@ -540,9 +551,113 @@ function WorkForm({ api, workers, record, onClose, onSaved }) {
 }
 
 // ============================================================
+// מסמכי עובד — צילום דרכון (משימה AE, 12.10.2026)
+// ------------------------------------------------------------
+// ההעלאה עוברת ב-POST /api/workers/:id/passport (ר'
+// server/src/worker-documents.js) — **לא** דרך /api/upload-document,
+// שיוצר רשומה חדשה בטבלה ומפעיל טריגרים של Make/ניתוח. כאן אין
+// ניתוח, אין Make ואין נגיעה במלאי: זה מסמך מזהה, לא חשבונית.
+//
+// קישורי-attachment של Airtable פגים אחרי ~2 שעות, ולכן ה-URL אינו
+// נשמר בשום state מתמשך — הוא מגיע מרשומת-העובד בכל רענון, ואחרי כל
+// שינוי קוראים ל-onChanged() שמביא רשומה טרייה.
+// ============================================================
+function isPdfAttachment(att) {
+  if (!att) return false;
+  return /pdf/i.test(att.type || '') || /\.pdf$/i.test(att.filename || '');
+}
+
+function WorkerPassportCard({ worker, photo, canManage, onZoom, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const inputId = `passport-file-${worker.id}`;
+  const isPdf = isPdfAttachment(photo);
+
+  const upload = async (file) => {
+    if (!file || busy) return;
+    setBusy(true); setError('');
+    try {
+      const body = new FormData();
+      body.append('file', file);
+      const r = await authFetch(`/api/workers/${worker.id}/passport`, { method: 'POST', body });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'ההעלאה נכשלה');
+      toast(`✓ ${t('m_passportUploaded')}`);
+      await onChanged?.();
+    } catch (e) {
+      setError(e.message || String(e));
+    }
+    setBusy(false);
+  };
+
+  const remove = async () => {
+    if (busy) return;
+    const ok = await confirmDialog({
+      title: t('m_passportDeleteTitle'),
+      message: t('m_passportDeleteMsg'),
+      confirmLabel: t('m_passportDelete'),
+    });
+    if (!ok) return;
+    setBusy(true); setError('');
+    try {
+      const r = await authFetch(`/api/workers/${worker.id}/passport`, { method: 'DELETE' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'המחיקה נכשלה');
+      toast(`✓ ${t('m_passportDeleted')}`);
+      await onChanged?.();
+    } catch (e) {
+      setError(e.message || String(e));
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="card">
+      <div className="section-title" style={{ marginTop: 0 }}>🛂 {t('m_docsTitle')}</div>
+      {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 10 }}>⚠️ {error}</div>}
+      {/* flex-wrap: ב-390px הממוזערת, הפרטים והכפתורים נערמים ולא גולשים */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+        {photo && !isPdf ? (
+          <img src={photo.thumbnail || photo.thumbnails?.large?.url || photo.url} alt={t('m_docsTitle')} onClick={onZoom}
+            style={{ width: 84, height: 84, borderRadius: 10, objectFit: 'cover', cursor: 'zoom-in', flexShrink: 0 }} />
+        ) : (
+          <div style={{ width: 84, height: 84, borderRadius: 10, background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, flexShrink: 0 }}>
+            {photo ? '📄' : '🛂'}
+          </div>
+        )}
+        <div style={{ minWidth: 0, flex: '1 1 160px' }}>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('m_passportNo')}</div>
+          <div style={{ fontWeight: 700, direction: 'ltr', textAlign: 'right' }}>{worker['מספר דרכון'] || t('c_notAvailable')}</div>
+          {!photo && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>{t('m_passportNone')}</div>}
+          {photo?.filename && <div className="muted" style={{ fontSize: 12, marginTop: 4, wordBreak: 'break-all' }}>{photo.filename}</div>}
+        </div>
+      </div>
+
+      {canManage && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 12 }}>
+          {/* input מוסתר + label-ככפתור: אותה תבנית כמו העלאת מסמך במסכים האחרים */}
+          <input id={inputId} type="file" accept="image/jpeg,image/png,application/pdf" style={{ display: 'none' }}
+            disabled={busy} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; upload(f); }} />
+          <label htmlFor={inputId} className={`btn btn-sm ${photo ? 'btn-ghost' : 'btn-primary'}`} style={busy ? { opacity: 0.6, pointerEvents: 'none' } : undefined}>
+            {busy ? t('m_passportUploading') : (photo ? `🔄 ${t('m_passportReplace')}` : t('m_passportUpload'))}
+          </label>
+          {photo && (
+            <a className="btn btn-sm btn-ghost" href={photo.url} target="_blank" rel="noopener noreferrer">📎 {t('m_passportOpen')}</a>
+          )}
+          {photo && (
+            <button type="button" className="btn btn-sm btn-ghost" disabled={busy} onClick={remove}>🗑 {t('m_passportDelete')}</button>
+          )}
+          <span className="muted" style={{ fontSize: 12 }}>{t('m_passportHint')}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
 // כרטיס עובד מפורט — KPI + פילטר + 6 גרפים (סעיף 12)
 // ============================================================
-function WorkerDetails({ worker, records, onClose }) {
+function WorkerDetails({ worker, records, onClose, canManageDocs, onChanged }) {
   useEscapeClose(onClose); // סגירה במקש Escape
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -655,21 +770,16 @@ function WorkerDetails({ worker, records, onClose }) {
         </div>
         <div className="drawer-body">
 
-          {/* צילום דרכון */}
-          <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            {passportPhoto ? (
-              <img src={passportPhoto.thumbnails?.large?.url || passportPhoto.url} alt="צילום דרכון" onClick={() => setZoomPassport(true)}
-                style={{ width: 84, height: 84, borderRadius: 10, objectFit: 'cover', cursor: 'zoom-in', flexShrink: 0 }} />
-            ) : (
-              <div style={{ width: 84, height: 84, borderRadius: 10, background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, flexShrink: 0 }}>🛂</div>
-            )}
-            <div>
-              <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>מספר דרכון</div>
-              <div style={{ fontWeight: 700, direction: 'ltr', textAlign: 'right' }}>{worker['מספר דרכון'] || t('c_notAvailable')}</div>
-              {!passportPhoto && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>לא הועלה צילום דרכון</div>}
-            </div>
-          </div>
-          {zoomPassport && passportPhoto && (
+          {/* מסמכים — צילום דרכון (משימה AE) */}
+          <WorkerPassportCard
+            worker={worker}
+            photo={passportPhoto}
+            canManage={canManageDocs}
+            onZoom={() => setZoomPassport(true)}
+            onChanged={onChanged}
+          />
+          {/* PDF לא נפתח ב-lightbox (אין לו ממוזערת) — נפתח בכרטיס דרך "פתיחה" */}
+          {zoomPassport && passportPhoto && !isPdfAttachment(passportPhoto) && (
             <div className="modal-overlay lightbox" onClick={() => setZoomPassport(false)}>
               <img src={passportPhoto.url} alt="צילום דרכון — תצוגה מלאה" onClick={(e) => e.stopPropagation()} />
               <button type="button" className="drawer-close lightbox-close" onClick={() => setZoomPassport(false)} aria-label="סגירה">✕</button>
