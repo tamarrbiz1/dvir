@@ -14,6 +14,7 @@ import { notifyMakeWebhook } from './make-webhooks.js';
 import { scheduleFridaysCheck } from './fridays.js';
 import { analyzeExpenseInventory, approvePendingDeduction, approveAllPendingDeductions, readState, createManualExpense, runManualExpenseInventoryDeduction, validateManualExpenseInput, manualExpenseSubmitKey, claimManualExpenseSubmission, updateExpenseFreeNotes, updateInventoryFreeNotes, hideInventoryLedgerLine, markAnalysisGaveUp } from './inventory-deduction.js';
 import { startAnalysisRetrySweep } from './analysis-retry.js';
+import { getWorkerPassport, setWorkerPassport, deleteWorkerPassport, WORKERS_TABLE } from './worker-documents.js';
 import { listItemSkus, createItemSku, deleteItemSku, SKU_TABLE } from './skus.js';
 import { analyzeLogisticsInventory, shouldRetryLogistics, MAX_LOGISTICS_ATTEMPTS } from './logistics-deduction.js';
 import { cascadeDocumentDelete, summarizeCascade } from './document-cascade.js';
@@ -1102,7 +1103,7 @@ function invalidateReads(table) {
 // טבלה שאינה קיימת ב-Base → 404 עם הודעה ברורה בעברית
 // (Airtable מחזיר לזה 403 עמום: "You are not authorized...")
 // ============================================================
-const RESERVED_PATHS = new Set(['tables', 'meta', 'select-options', 'upload-document', 'spray-reports', 'documents']);
+const RESERVED_PATHS = new Set(['tables', 'meta', 'select-options', 'upload-document', 'spray-reports', 'documents', 'workers']);
 let tableNamesCache = { at: 0, names: null };
 async function knownTableNames() {
   if (tableNamesCache.names && Date.now() - tableNamesCache.at < 5 * 60 * 1000) return tableNamesCache.names;
@@ -1170,7 +1171,37 @@ function sendApiError(res, e) {
 // סגמנטים, ולכן כל `/api/<משהו>/<משהו>` חייב להיות מוגדר *מעל* כאן
 // וגם להופיע ב-RESERVED_PATHS — אחרת הוא יגיע אליהם וייכשל ב-404/500
 // ("הטבלה ... אינה קיימת"). כך נתפס בעבר `/api/cli-auth/status`
-// (הוסר ב-AC) וכך מוגן `documents`.
+// (הוסר ב-AC), כך מוגן `documents`, וכך מוגן `workers` למטה.
+// ============================================================
+// מסמכי עובד — צילום דרכון (משימה AE, 12.10.2026)
+// ------------------------------------------------------------
+// בלוק נתיבים נפרד, עם `authenticate` משלו: `workers` נמצא
+// ב-RESERVED_PATHS ולכן ה-middleware הגנרי של `/api/:table` (כולל
+// האימות שלו) **אינו** רץ כאן. הרשאה: מנהל-ראשי/מנהל בלבד, גם על
+// GET — ר' canManageWorkerDocuments ב-worker-documents.js.
+// שום טריגר Make/ניתוח/מלאי אינו מופעל מכאן, במתכוון.
+// ============================================================
+app.get('/api/workers/:id/passport', authenticate, async (req, res) => {
+  try {
+    res.json(await getWorkerPassport(req.params.id, req.auth.role));
+  } catch (e) { sendApiError(res, e); }
+});
+
+app.post('/api/workers/:id/passport', authenticate, upload.single('file'), async (req, res) => {
+  try {
+    const result = await setWorkerPassport(req.params.id, req.auth.role, req.file, { isValidFile: isValidDocumentFile });
+    invalidateReads(WORKERS_TABLE);
+    res.status(201).json(result);
+  } catch (e) { sendApiError(res, e); }
+});
+
+app.delete('/api/workers/:id/passport', authenticate, async (req, res) => {
+  try {
+    const result = await deleteWorkerPassport(req.params.id, req.auth.role);
+    invalidateReads(WORKERS_TABLE);
+    res.json(result);
+  } catch (e) { sendApiError(res, e); }
+});
 
 // רשומות מטבלה (עם filters / sort / limit)
 app.get('/api/:table', authorizeRead, async (req, res) => {
