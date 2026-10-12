@@ -41,7 +41,7 @@ const TOKEN_VALID_DAYS = 365;
 
 // תבנית הקוד שהלקוחה מדביקה מהדפדפן. ולידציה הדוקה לפני שנוגעים
 // ב-stdin של התהליך — קלט לא-תקין נדחה ב-400 ולא נכתב לשום מקום.
-const CODE_RE = /^[A-Za-z0-9_#-]{20,200}$/;
+const CODE_RE = /^[A-Za-z0-9_#.~-]{20,400}$/;
 const OAUTH_URL_RE = /(https:\/\/claude\.com\/[^\s"']*oauth[^\s"']*)/i;
 const TOKEN_RE = /(sk-ant-oat\d{2}-[A-Za-z0-9_-]{20,})/;
 
@@ -217,14 +217,22 @@ export async function completeAuth(code) {
   if (!session.url) {
     throw Object.assign(new Error('תהליך האימות עדיין לא מוכן — נסו עוד רגע'), { statusCode: 409 });
   }
-  if (typeof code !== 'string' || !CODE_RE.test(code.trim())) {
+  // ניקוי הדבקה גסה מהטרמינל/דפדפן: תווי-בקרה של צבע ואחריהם כתובת
+  // או רווח — נשאר רק הקוד עצמו. אם אחרי הניקוי אין קוד תקין, נדחה.
+  const cleaned = typeof code === 'string'
+    ? (code.replace(/\[[0-9;]*[A-Za-z]/g, '').replace(/\[[0-9;]*m/g, '').trim().split(/[\s"'<>]|https?:\/\//)[0] || '')
+    : '';
+  if (!CODE_RE.test(cleaned)) {
+    // אבחון בלי לחשוף את הקוד: אורך, ואילו תווים *מחוץ* לתבנית הופיעו
+    const bad = [...new Set((cleaned.match(/[^A-Za-z0-9_#.~-]/g) || []).map((c) => 'U+' + c.codePointAt(0).toString(16).padStart(4, '0')))];
+    log(`complete: קוד נדחה — אורך-גולמי ${typeof code === 'string' ? code.length : 'לא-מחרוזת'}, אורך-אחרי-ניקוי ${cleaned.length}, תווים-חורגים: ${bad.join(' ') || 'אין'}`);
     // הקוד עצמו לא נרשם ולא מוחזר — רק העובדה שנדחה
     throw Object.assign(new Error('הקוד שהוזן אינו בפורמט הנכון — העתיקו אותו שוב מהדפדפן'), { statusCode: 400 });
   }
 
   const mine = session;
   const before = mine.buffer.length;
-  mine.child.stdin.write(`${code.trim()}\n`);
+  mine.child.stdin.write(`${cleaned}\n`);
 
   const deadline = Date.now() + TOKEN_WAIT_MS;
   while (Date.now() < deadline) {

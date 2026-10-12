@@ -238,6 +238,10 @@ function isValidDocumentFile(buffer) {
   if (!buffer || buffer.length < 4) return false;
   const b = buffer;
   if (b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46) return true; // "%PDF"
+  // PDF עם תווי-רווח/שורה לפני הכותרת (סורקים וכלי-הנפקה מסוימים — נתפס
+  // חי 12.10.2026, "רשת.pdf" עם 4×LF לפני %PDF). מפרט PDF מתיר לכותרת להופיע
+  // בתוך 1024 הבתים הראשונים, וכל קורא PDF פותח קובץ כזה.
+  if (b.subarray(0, Math.min(b.length, 1024)).indexOf('%PDF-') !== -1) return true;
   if (b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return true; // JPEG
   if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return true; // PNG
   return false;
