@@ -828,7 +828,12 @@ export async function approveAllPendingDeductions(expenseId) {
   try {
     rec = await base(EXPENSES_TABLE).find(expenseId);
   } catch (e) {
-    if (e?.statusCode === 404) {
+    // ⚠️ אומת בבדיקה (12.10): על מזהה-רשומה שאינו קיים Airtable מחזיר
+    // **403** עם "You are not authorized to perform this operation" ולא
+    // 404 — כלומר בדיקת 404 לבדה הייתה מחזירה ללקוחה 403 באנגלית.
+    // שני הקודים ממופים ל-404 בעברית; 429/5xx/כשל-רשת נזרקים כמו שהם
+    // כדי שלא "ייעלמו" כ-"ההוצאה לא נמצאה".
+    if (e?.statusCode === 404 || e?.statusCode === 403) {
       const err = new Error('ההוצאה לא נמצאה');
       err.statusCode = 404;
       throw err;

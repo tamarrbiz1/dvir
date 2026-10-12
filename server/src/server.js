@@ -609,6 +609,13 @@ app.post('/api/inventory/:id/ledger-line/hide', authenticate, requireInventoryWr
 // הטבלה אופציונלית: כל עוד היא לא נוצרה ב-Airtable, ה-GET מחזיר
 // available:false (המסך מציג הודעה ולא נופל) והכתיבות מחזירות 503.
 // ============================================================
+// "הטבלה עוד לא הוגדרה" הוא 503 (שירות-עזר חסר), אבל sendApiError מעביר
+// הלאה רק 4xx ולכן היה הופך אותו ל-500 גנרי — אומת בבדיקה (12.10).
+function sendSkuError(res, e) {
+  if (e?.statusCode === 503) return res.status(503).json({ error: e.message, tableMissing: true });
+  sendApiError(res, e);
+}
+
 app.get('/api/inventory/:id/skus', authenticate, async (req, res) => {
   if (!canReadTable(req.auth.role, 'מלאי בסיסי')) return res.status(403).json({ error: 'אין הרשאה לצפות במלאי' });
   try {
@@ -627,7 +634,7 @@ app.post('/api/inventory/:id/skus', authenticate, requireInventoryWrite, async (
     invalidateReads(SKU_TABLE);
     res.status(201).json(created);
   } catch (e) {
-    sendApiError(res, e);
+    sendSkuError(res, e);
   }
 });
 
@@ -637,7 +644,7 @@ app.delete('/api/inventory/:id/skus/:skuId', authenticate, requireInventoryWrite
     invalidateReads(SKU_TABLE);
     res.json(result);
   } catch (e) {
-    sendApiError(res, e);
+    sendSkuError(res, e);
   }
 });
 
