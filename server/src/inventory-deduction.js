@@ -15,6 +15,7 @@ import { fetchRecords, updateRecord, getBase } from './airtable.js';
 import { analyzeExpenseDocument } from './document-analysis.js';
 import { matchLinesToInventory } from './inventory-matching.js';
 import { loadSkuIndex, findItemIdBySku } from './skus.js';
+import { redactSecrets } from './cli-token.js';
 
 const EXPENSES_TABLE = 'הוצאות';
 const INVENTORY_TABLE = 'מלאי בסיסי';
@@ -246,14 +247,16 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
     // סעיף V2 (8.10.2026): להבדיל בין "הניתוח **נכשל**" לבין "נותח ובאמת
     // אין פריטים". כשל נשמר כ-`failed` (לא `done`), עם הודעה ידידותית
     // למשתמשת; הפירוט הטכני נרשם ללוג השרת בלבד ולא נדחף לכרטיס.
-    // משימה AA: כשל-אימות הוא מצב שהלקוחה **יכולה לתקן בעצמה** (כפתור
-    // "חדש אימות"), ולכן הוא מקבל הודעה אחרת וקוד שהלקוח מזהה — ולא
-    // "נסו שוב מאוחר יותר", שבמצב הזה יחזור לנצח.
+    // כשל-אימות נשאר מסווג בנפרד (`AUTH_EXPIRED`) כי העצה שונה: לא
+    // "נסו שוב מאוחר יותר" (שיחזור לנצח) אלא פעולה אנושית חד-פעמית.
+    // משימה AC (12.10.2026): החידוש אינו נעשה יותר מהאפליקציה אלא
+    // ידנית ע"י המפתחת (ר' RENEW-AUTH.md), ולכן ההודעה מפנה אליה.
     const authExpired = e?.code === 'AUTH_EXPIRED';
     const friendly = authExpired
-      ? 'האימות של הניתוח האוטומטי פג — לחצו "חדש אימות" למעלה'
+      ? 'האימות של הניתוח האוטומטי פג — יש לפנות למפתחת'
       : (e?.analysisUnavailable ? 'הניתוח לא זמין כרגע — נסו שוב מאוחר יותר' : (e?.message || 'שגיאה לא ידועה'));
-    console.error(`[inventory-ai] ניתוח הוצאה ${expenseId} נכשל: ${e?.message}${e?.detail ? ` | ${e.detail}` : ''}`);
+    // פלט ה-CLI יכול להכיל טוקן — כל מה שנרשם עובר ב-redactSecrets
+    console.error(redactSecrets(`[inventory-ai] ניתוח הוצאה ${expenseId} נכשל: ${e?.message}${e?.detail ? ` | ${e.detail}` : ''}`));
     const state = { status: 'failed', analyzedAt: new Date().toISOString(), error: friendly, results: [] };
     if (authExpired) state.errorCode = 'AUTH_EXPIRED';
     await saveState(expenseId, currentNotes, state);

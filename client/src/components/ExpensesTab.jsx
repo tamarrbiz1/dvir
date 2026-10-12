@@ -22,7 +22,6 @@ import PeriodSelect from './PeriodSelect.jsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { authFetch } from '../utils/authFetch.js';
-import CliAuthBanner from './CliAuthBanner.jsx';
 import { readInventoryAiState, inventoryAiSummary, stripInventoryAiMarker } from '../utils/inventoryAi.js';
 
 const TABLE = 'הוצאות';
@@ -121,14 +120,12 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged, onRem
 
   const hasFilters = search || fSupplier || fCategory || preset !== 'month' || from || to;
 
-  // משימה AA: אם ניתוח של אחת ההוצאות נכשל בגלל אימות שפג — הבאנר
-  // למעלה עובר למצב-שגיאה, כדי שהלקוחה תראה מה לעשות במקום לנסות שוב.
-  const authExpired = (expenses || []).some((e) => readInventoryAiState(e['הערות'])?.errorCode === 'AUTH_EXPIRED');
+  // משימה AC (12.10.2026): באנר "חידוש אימות" הוסר. כשל-אימות מוצג
+  // בכרטיס ההוצאה עצמו (ההודעה מגיעה מהשרת, ר' inventory-deduction.js);
+  // החידוש הוא נוהל ידני של המפתחת — RENEW-AUTH.md.
 
   return (
     <div>
-      <CliAuthBanner isOwner={canEdit} authExpired={authExpired} onRenewed={onChanged} />
-
       {/* KPI (סעיף 25) */}
       <div className="kpi-grid">
         <Kpi icon="🧾" soft="var(--expense-soft)" color="var(--expense)" label="סה&quot;כ הוצאות" value={filtered.length ? kpiMoney(total) : 'אין נתונים'} sub={periodSub} />
