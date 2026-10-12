@@ -38,6 +38,7 @@ import { parseInventoryLedger, resolveExpenseLinks, documentLink } from '../../c
 import { stripInventoryAiMarker, withPreservedInventoryTags, inventoryAiSummary } from '../../client/src/utils/inventoryAi.js';
 import { yearFromWeekValue, dateFromWeekValue, invoiceDate } from '../../client/src/utils/weekYear.js';
 import { shouldResetOption } from '../../client/src/utils/selectGuard.js';
+import { groupWeeksByMonth, totalsOfWeeks } from '../../client/src/utils/planSummary.js';
 import { pickProvider, classifyAnalysisFailure } from './document-analysis.js';
 import { nextRetryAt, retryDecision, resumeCandidateReason, sweepStalledAnalyses, BACKOFF_MINUTES } from './analysis-retry.js';
 import { writeFile as writeFileAsync, chmod as chmodAsync, mkdtemp as mkdtempAsync } from 'node:fs/promises';
@@ -3561,6 +3562,40 @@ await test('AE: הרשאות — worker נדחה ב-403 גם על GET, בלי ט
   catch (e) { if (!/^401/.test(String(e.message))) problems.push(`בלי טוקן: ${e.message}`); }
   if (problems.length) throw new Error(problems.join('; '));
   return `${w ? 'worker נדחה ב-403 ב-GET/POST/DELETE' : '(אין עובד עם מייל+דרכון לבדיקה)'} · בלי-טוקן 401`;
+});
+
+// ============================================================
+// משימה AF (12.10.2026) — שורות הסיכום בתחתית הגיליון השנתי.
+// הבאג היה שקט: הקיבוץ החודשי השתמש ב-`new Date()`, ולכן כל השורות
+// נקראו בשם החודש הנוכחי ("אוקטובר") ובשנה הנוכחית. הבדיקה טהורה —
+// על הפונקציה שהוצאה מ-ExcelTable ל-utils/planSummary.js.
+// ============================================================
+await test('AF: סיכום חודשי — לפי החודש של השבוע, לא לפי "עכשיו"', () => {
+  const wk = (year, month, expectedKg, expectedRevenue, actualRevenue = null) => ({ year, month, expectedKg, actualKg: 0, expectedRevenue, actualRevenue });
+  const rows = groupWeeksByMonth([
+    wk(2026, 11, 100, 300),   // דצמבר 2026
+    wk(2026, 11, 50, 150),    // אותו חודש — מתאחד
+    wk(2026, 9, 20, 60),      // אוקטובר 2026
+    wk(2027, 11, 7, 21),      // דצמבר **2027** — חייב להיות שורה נפרדת
+  ]);
+  if (rows.length !== 3) throw new Error(`${rows.length} שורות-חודש, צפוי 3`);
+  if (rows.map((r) => r.key).join(',') !== '2026-10,2026-12,2027-12') throw new Error(`מפתחות/סדר שגויים: ${rows.map((r) => r.key)}`);
+  const dec = rows.find((r) => r.key === '2026-12');
+  if (!/2026/.test(dec.label)) throw new Error(`תווית בלי שנה: "${dec.label}"`);
+  if (dec.expectedKg !== 150 || dec.expectedRevenue !== 450) throw new Error(`צבירה שגויה: ${JSON.stringify(dec)}`);
+  // הבאג המקורי: כל התוויות קיבלו את שם החודש של *היום*
+  const currentMonthName = new Date().toLocaleDateString('he-IL', { month: 'long' });
+  if (rows.every((r) => r.label.includes(currentMonthName))) {
+    throw new Error(`כל התוויות קיבלו את שם החודש הנוכחי ("${currentMonthName}") — הבאג חזר`);
+  }
+  // "טרם בוצע" (null) אינו 0
+  if (rows.find((r) => r.key === '2026-10').hasActual) throw new Error('null סומן כ"יש ביצוע"');
+  if (!groupWeeksByMonth([wk(2026, 0, 10, 30, 0)])[0].hasActual) throw new Error('ביצוע של 0 אמיתי סומן כ"טרם בוצע"');
+  // שבוע בלי תאריך תקין לא מייצר שורת-"חודש לא ידוע"
+  if (groupWeeksByMonth([{ expectedKg: 5 }, { year: NaN, month: 3 }]).length !== 0) throw new Error('שבוע בלי תאריך יצר שורת-חודש');
+  const t = totalsOfWeeks([wk(2026, 11, 100, 300, 5), wk(2026, 9, 20, 60)]);
+  if (t.expectedKg !== 120 || t.expectedRevenue !== 360 || t.actualRevenue !== 5) throw new Error(`סה"כ שנתי שגוי: ${JSON.stringify(t)}`);
+  return '3 שורות (אוקטובר/דצמבר 2026 + דצמבר 2027 בנפרד) · תווית עם שנה · null≠0 · שבוע-בלי-תאריך נדחה · סה"כ שנתי';
 });
 
 // ============ 4. ניקוי מלא ============

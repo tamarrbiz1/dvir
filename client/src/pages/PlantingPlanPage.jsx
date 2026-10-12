@@ -14,6 +14,7 @@ import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 import { useAutoRefresh } from '../utils/live.js';
+import { groupWeeksByMonth, totalsOfWeeks } from '../utils/planSummary.js';
 import {
   CHART_MARGIN, CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE,
   xAxisProps, yAxisProps, yCategoryProps,
@@ -2082,6 +2083,9 @@ function ExcelTable({ weeks, weekTotals }) {
     return {
       key: w.key,
       month: w.start.getMonth(),
+      // משימה AF (12.10.2026): השנה והחודש של השבוע **עצמו**, לא של
+      // "עכשיו" — ר' הקיבוץ-החודשי למטה.
+      year: w.start.getFullYear(),
       label: formatDate(w.start).slice(0, 5),
       expectedKg: t.expected,
       actualKg: actualKgSum,
@@ -2093,30 +2097,12 @@ function ExcelTable({ weeks, weekTotals }) {
     };
   });
 
-  // ---- קיבוץ לסיכום חודשי ----
-  const byMonth = new Map();
-  const now = new Date();
-  for (const r of weekRows) {
-    const key = `${r.month}-${now.getFullYear()}`;
-    if (!byMonth.has(key)) byMonth.set(key, {
-      label: now.toLocaleDateString('he-IL', { month: 'long' }),
-      expectedKg: 0, actualKg: 0, expectedRevenue: 0, actualRevenue: 0, hasActual: false,
-    });
-    const m = byMonth.get(key);
-    m.expectedKg += r.expectedKg;
-    m.actualKg += r.actualKg;
-    m.expectedRevenue += r.expectedRevenue;
-    if (r.actualRevenue !== null) { m.actualRevenue += r.actualRevenue; m.hasActual = true; }
-  }
-
-  // ---- סה"כ שנתי ----
-  const totals = weekRows.reduce((acc, r) => {
-    acc.expectedKg += r.expectedKg;
-    acc.actualKg += r.actualKg;
-    acc.expectedRevenue += r.expectedRevenue;
-    if (r.actualRevenue !== null) acc.actualRevenue += r.actualRevenue;
-    return acc;
-  }, { expectedKg: 0, actualKg: 0, expectedRevenue: 0, actualRevenue: 0 });
+  // ---- קיבוץ לסיכום חודשי + סה"כ שנתי ----
+  // משימה AF (12.10.2026): החישוב עבר ל-utils/planSummary.js כדי שיהיה
+  // נבדק — הבאג שהיה כאן (קיבוץ לפי `new Date()` במקום לפי השבוע) היה
+  // שקט לחלוטין ולא היה מכוסה בשום בדיקה. ר' ההסבר המלא שם.
+  const monthRows = groupWeeksByMonth(weekRows);
+  const totals = totalsOfWeeks(weekRows);
 
   const showActual = weekRows.some((r) => r.hasActual);
   const actualCell = (val, has) => (has ? fmt(val) : 'טרם בוצע');
@@ -2151,8 +2137,8 @@ function ExcelTable({ weeks, weekTotals }) {
             ))}
 
             {/* סיכום חודשי */}
-            {[...byMonth.entries()].map(([key, m]) => (
-              <tr key={key} style={{ background: 'var(--bg-secondary)', fontWeight: 700 }}>
+            {monthRows.map((m) => (
+              <tr key={m.key} style={{ background: 'var(--bg-secondary)', fontWeight: 700 }}>
                 <td>{m.label}</td>
                 <td>{fmt(m.expectedKg)}</td>
                 <td style={{ color: m.hasActual ? ACTUAL_COLOR : 'var(--text-muted)' }}>
