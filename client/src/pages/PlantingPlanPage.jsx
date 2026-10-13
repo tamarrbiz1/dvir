@@ -167,6 +167,66 @@ function actualKg(row) {
   return { received: true, value };
 }
 
+/**
+ * סימון "מוערך" (משימה AJ) — ≈ ליד ערך שלא נמדד ישירות אלא נגזר
+ * מקרטונים לפי משקל-ברירת-מחדל. ה-tooltip מסביר **מאיפה** בדיוק
+ * הגיע הנתון, שורה-שורה, כדי שתמר תדע מה מדויק ומה הערכה.
+ */
+function EstimateMark({ row }) {
+  if (!row?.estimated) return null;
+  const detail = (row.parts || []).map((p) => `${p.ref} (${p.date}): ${p.detail}`).join('\n');
+  return (
+    <span title={`ערך מוערך\n${detail}`} style={{ color: 'var(--text-muted)', marginInlineStart: 4, cursor: 'help' }}>≈</span>
+  );
+}
+
+/**
+ * פירוט ה"בפועל" לשבוע — דיווח-דיווח, עם התאריך, הקרטונים והמשקל
+ * שלפיו הומרו לק"ג. זה מה שהיה כתוב עד היום "פירוט יומי ל'קג בפועל'
+ * אינו זמין": עכשיו הוא כן זמין, כי המנוע שומר את שרשרת-החישוב.
+ */
+function HarvestReportDetail({ row }) {
+  if (!row?.parts?.length) return null;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>דיווחי הקטיף שמהם חושב ה"בפועל"</div>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>דיווח</th><th>תאריך</th><th>קרטונים</th><th>ק"ג לקרטון</th><th>ק"ג</th></tr></thead>
+          <tbody>
+            {row.parts.map((p, i) => (
+              <tr key={`${p.ref}-${i}`}>
+                <td>{p.ref}</td>
+                <td>{formatDate(p.date)}</td>
+                <td>{formatNumber(p.cartons, 0)}</td>
+                <td title={p.detail}>{formatNumber(p.kgPerCarton)}{p.estimated ? ' ≈' : ''}</td>
+                <td style={{ color: ACTUAL_COLOR, fontWeight: 600 }}>{formatNumber(p.kg, 1)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** תגית-מקור קטנה ("דיווחי קטיף" / "טרם דווח קטיף") */
+function SourceChip({ row }) {
+  if (!row?.source) return null;
+  const reported = row.actualKg !== null && row.actualKg !== undefined;
+  return (
+    <span
+      className="badge"
+      title={reported
+        ? (row.parts || []).map((p) => `${p.ref} (${p.date}): ${p.detail}`).join('\n')
+        : 'לא נמצא דיווח קטיף של עובד (עבודה מסוג "קטיף סוג א\'/ב\'" ביחידת קרטון) לשבוע הזה'}
+      style={{ background: reported ? '#E7F6EC' : 'var(--bg-secondary)', color: reported ? '#1C7C45' : 'var(--text-muted)', fontSize: 11 }}
+    >
+      {row.source}
+    </span>
+  );
+}
+
 const CHART_COLORS = ['#3578E5', '#2E9B62', '#E8B20B', '#7C4DFF', '#09A7B2', '#F04444', '#F79009', '#8B5CF6'];
 
 // מתי לרענן (עם עקיפת-מטמון) אחרי פעולה שמפעילה אוטומציה ב-Airtable.
@@ -229,6 +289,9 @@ export default function PlantingPlanPage() {
   const [crops, setCrops] = useState([]);
   const [nonWorkDays, setNonWorkDays] = useState([]);
   const [weeklySummaries, setWeeklySummaries] = useState([]); // ל"בפועל" יומי כלל-חוותי, מ"סיכום שבועי"
+  // דוח ה"בפועל" מהשרת (משימה AJ) — ר' ההסבר ליד actualsByRow למטה
+  const [actuals, setActuals] = useState(null);
+  const [actualsBusy, setActualsBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
@@ -289,6 +352,26 @@ export default function PlantingPlanPage() {
   //
   // מחזיר את הנתונים שנטענו (ולא רק קובע state) כדי שהפולינג למטה יוכל
   // לבדוק את תנאי-העצירה על הערך הטרי מיד, בלי לחכות לרינדור ובלי ref.
+  // ============================================================
+  // דוח ה"בפועל" (משימה AJ, 13.10.2026)
+  // ------------------------------------------------------------
+  // `קג בפועל` עצמו נקרא מהטבלה כמו תמיד (השרת כותב אליו) — אבל לכל
+  // *שאר* נתוני הביצוע אין שדה ב-Airtable, כי ל-PAT אין הרשאת-סכמה
+  // (Meta API החזיר 403 על יצירת `הכנסה בפועל`, `מקור בפועל`
+  // ו-`תחילת/סוף קטיף בפועל` — ר' כותרת server/src/actuals-sync.js).
+  // לכן הם מגיעים מ-`GET /api/actuals/report`, שמחשב אותם בשרת מאותם
+  // נתוני-מקור בדיוק. כשל כאן אינו מפיל את המסך — ר' הקריאה ב-load.
+  // ============================================================
+  const loadActuals = useCallback(async ({ fresh = false } = {}) => {
+    try {
+      const res = await authFetch(`/api/actuals/report${fresh ? '?fresh=1' : ''}`);
+      if (!res.ok) throw new Error(String(res.status));
+      setActuals(await res.json());
+    } catch {
+      setActuals(null);
+    }
+  }, []);
+
   const load = useCallback(async ({ silent = false, fresh = false } = {}) => {
     if (!silent) setLoading(true);
     setLoadError('');
@@ -304,6 +387,10 @@ export default function PlantingPlanPage() {
         app.api.get('ימי אי עבודה', '?maxRecords=500'),
         app.api.get('סיכום שבועי', `?maxRecords=300&raw=1&fields=${weekFields}`).catch(() => []),
       ]);
+      // דוח ה"בפועל" — לא חוסם ולא מפיל את המסך אם נכשל (המסך מציג
+      // "קג בפועל" מהטבלה גם בלעדיו; מה שחסר בלעדיו הוא רק המטא-נתונים:
+      // מקור, סימון-הערכה, הכנסה-בפועל ותאריכי-קטיף-בפועל).
+      loadActuals({ fresh });
       const data = {
         plans: Array.isArray(p) ? p : [],
         periods: Array.isArray(pe) ? pe : [],
@@ -323,11 +410,50 @@ export default function PlantingPlanPage() {
       setLoading(false);
       return null;
     }
-  }, [app.api]);
+  }, [app.api, loadActuals]);
 
   useEffect(() => { load(); }, [load]);
   const silentLoad = useCallback(() => load({ silent: true }), [load]);
   useAutoRefresh(silentLoad);
+
+  /** מזהה שורת-תחזית → שורת הדוח (מקור, הערכה, הכנסה בפועל) */
+  const actualsByRow = useMemo(() => {
+    const map = new Map();
+    for (const r of actuals?.rows || []) map.set(r.forecastId, r);
+    return map;
+  }, [actuals]);
+
+  /** מזהה תוכנית → סיכום הביצוע שלה (כולל תאריכי קטיף בפועל) */
+  const actualsByPlan = useMemo(() => {
+    const map = new Map();
+    for (const p of actuals?.plans || []) map.set(p.planId, p);
+    return map;
+  }, [actuals]);
+
+  // "🔄 עדכן בפועל" — מנהלת ראשית בלבד (הנתיב עצמו requireOwner).
+  // אחרי הכתיבה טוענים מחדש עם fresh=1, בדיוק כמו אחרי אוטומציית
+  // Airtable (ר' pollAfterAutomation) — הכתיבה עברה בשרת שלנו ולכן
+  // המטמון כבר נוקה, אבל fresh=1 מבטיח את זה גם מול תזמון-מרוץ.
+  const runActualsSync = useCallback(async () => {
+    if (actualsBusy) return;
+    setActualsBusy(true);
+    try {
+      const res = await authFetch('/api/actuals/sync', { method: 'POST' });
+      const report = await res.json();
+      if (!res.ok) throw new Error(report?.error || `שגיאה ${res.status}`);
+      const bits = [`עודכנו ${report.kgUpdated || 0} שבועות`];
+      if (report.kgCleared) bits.push(`${report.kgCleared} נוקו`);
+      bits.push(`${report.totals?.harvestReportsAssigned || 0} מתוך ${report.totals?.harvestReports || 0} דיווחי קטיף שויכו`);
+      if (report.needsDecision?.length) bits.push(`${report.needsDecision.length} דורשים החלטה`);
+      if (report.conflicts?.length) bits.push(`${report.conflicts.length} ערכים שמולאו ביד לא נדרסו`);
+      toast(bits.join(' · '), report.needsDecision?.length ? 'warn' : 'ok');
+      await load({ silent: true, fresh: true });
+    } catch (e) {
+      toast(`עדכון ה"בפועל" נכשל: ${e.message}`, 'error');
+    } finally {
+      setActualsBusy(false);
+    }
+  }, [actualsBusy, load]);
 
   // ============================================================
   // אינדקסים ונגזרות
@@ -1110,8 +1236,28 @@ export default function PlantingPlanPage() {
       {/* ---------- כותרת, שנה ופילטרים (סעיף 46) ---------- */}
       <PageHeader icon="🌱" title={`תוכנית שתילה — ${year}`}>
         {canEdit && <button className="btn btn-primary" onClick={() => openNewPlan(null)}>+ תוכנית חדשה</button>}
+        {/* משימה AJ: המנוע רץ גם לבד (בעלייה, כל 15 דק', ואחרי כל שמירת
+            דיווח-קטיף/תעודה) — הכפתור הוא ל"עכשיו, ושתראה לי מה יצא". */}
+        {canEdit && (
+          <button className="btn btn-ghost" onClick={runActualsSync} disabled={actualsBusy}
+            title="מחשב מחדש את ק״ג בפועל מדיווחי הקטיף של העובדים ומעדכן את שורות התחזית">
+            {actualsBusy ? '⏳ מעדכן…' : '🔄 עדכן בפועל'}
+          </button>
+        )}
         <button className="btn btn-ghost" onClick={() => setShowNonWork(true)}>🗓️ ימי אי עבודה</button>
       </PageHeader>
+
+      {/* "דורש החלטה" — דיווחי קטיף שלא ניתן לשייך לתוכנית. בלי הבאנר
+          הזה דיווח כזה פשוט לא נספר, בשקט, ואין שום סימן לכך במסך. */}
+      {canEdit && actuals?.needsDecision?.length > 0 && (
+        <div className="badge badge-warn" style={{ marginBottom: 14, display: 'block', textAlign: 'start', padding: '10px 12px', lineHeight: 1.6 }}>
+          ⚠️ {actuals.needsDecision.length} דיווחי קטיף לא שויכו לתוכנית ולכן אינם נספרים ב"בפועל":
+          <ul style={{ margin: '6px 0 0', paddingInlineStart: 18 }}>
+            {actuals.needsDecision.slice(0, 5).map((d) => <li key={d.id}>{d.question}</li>)}
+          </ul>
+          {actuals.needsDecision.length > 5 && <div>…ועוד {actuals.needsDecision.length - 5}</div>}
+        </div>
+      )}
 
       {loadError && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {loadError}</div>}
 
@@ -1296,7 +1442,7 @@ export default function PlantingPlanPage() {
 
       {/* ================= טבלת אקסל — תכנון מול ביצוע (סעיף 4.3) ================= */}
       {screen === 'dash' && weeks.length > 0 && (
-        <ExcelTable weeks={weeks} weekTotals={weekTotals} />
+        <ExcelTable weeks={weeks} weekTotals={weekTotals} actualsByRow={actualsByRow} />
       )}
 
       {/* ================= כרטיס תוכנית ================= */}
@@ -1307,6 +1453,8 @@ export default function PlantingPlanPage() {
           forecasts={forecasts.filter((f) => firstId(f['תוכנית שתילה']) === planDrawer.id)}
           periods={periods.filter((p) => firstId(p['תוכנית שתילה']) === planDrawer.id)}
           canWrite={canEdit}
+          planActual={actualsByPlan.get(planDrawer.id) || null}
+          actualsByRow={actualsByRow}
           computing={computing[planDrawer.id]}
           preflight={preflightByPlan[planDrawer.id]}
           onRefreshForecast={() => refreshForecast(planDrawer.id)}
@@ -1393,6 +1541,7 @@ export default function PlantingPlanPage() {
           planInfo={planInfo}
           onClose={() => setWeekDrawer(null)}
           onPlan={(id) => { setWeekDrawer(null); openPlanCard(id); }}
+          actualsByRow={actualsByRow}
         />
       )}
 
@@ -1673,7 +1822,7 @@ function ForecastReadinessChip({ preflight }) {
   );
 }
 
-function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate, onDeletePeriod, onDelete, onRefreshForecast, preflight, computing, canWrite = true }) {
+function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate, onDeletePeriod, onDelete, onRefreshForecast, preflight, computing, canWrite = true, planActual = null, actualsByRow = null }) {
   useEscapeClose(onClose, !busy); // סגירה במקש Escape
   const [openWeek, setOpenWeek] = useState(null); // מזהה רשומת תחזית שפתוחה לפירוט יומי
   const pairs = [
@@ -1734,6 +1883,52 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
             </div>
           </div>
 
+          {/* ---- קטיף בפועל (משימה AJ) ---------------------------------
+              "תחילת/סוף קטיף מעודכן" הוא **תכנון מוזז, לא ביצוע** — זו
+              בדיוק הנקודה שתמר העלתה. התאריכים כאן הם היום הראשון
+              והאחרון שבאמת דווח בהם קטיף (עבודה מסוג קטיף במבנה הזה
+              בתוך תקופת התוכנית), ולכן הם מוצגים בנפרד ולא מעורבבים
+              עם הטבלאות שלמעלה. ------------------------------------- */}
+          <div className="card" style={{ marginBottom: 14 }}>
+            <div className="section-title" style={{ marginTop: 0, display: 'flex', gap: 8, alignItems: 'center' }}>
+              קטיף בפועל
+              {planActual?.estimated && <span className="badge" style={{ background: 'var(--bg-secondary)', fontSize: 11 }}>כולל ערכים מוערכים ≈</span>}
+            </div>
+            {!planActual ? (
+              <div className="muted" style={{ fontSize: 12 }}>נתוני הביצוע אינם זמינים כרגע (דוח ה"בפועל" לא נטען).</div>
+            ) : planActual.harvestReportCount === 0 ? (
+              <div className="muted" style={{ fontSize: 12 }}>
+                טרם דווח קטיף לתוכנית זו. ה"בפועל" נבנה מדיווחי הקטיף של העובדים
+                (עבודה מסוג "קטיף סוג א'/ב'" ביחידת קרטון, עם מבנה ותאריך).
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', fontSize: 13 }}>
+                <div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>תחילת קטיף בפועל</div>
+                  <b style={{ color: ACTUAL_COLOR }}>{formatDate(planActual.actualHarvestStart)}</b>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>מתוכנן: {formatDate(planActual.plannedHarvestStart)}</div>
+                </div>
+                <div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>סוף קטיף בפועל</div>
+                  <b style={{ color: ACTUAL_COLOR }}>{formatDate(planActual.actualHarvestEnd)}</b>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>מתוכנן: {formatDate(planActual.plannedHarvestEnd)}</div>
+                </div>
+                <div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>דיווחי קטיף</div>
+                  <b>{formatNumber(planActual.harvestReportCount, 0)}</b>
+                </div>
+                <div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>ק"ג בפועל</div>
+                  <b style={{ color: ACTUAL_COLOR }}>{planActual.actualKg !== null ? formatNumber(planActual.actualKg, 0) : 'טרם דווח קטיף'}</b>
+                </div>
+                <div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>הכנסה בפועל</div>
+                  <b style={{ color: ACTUAL_COLOR }}>{planActual.actualRevenue !== null ? formatMoney(planActual.actualRevenue, 0) : '—'}</b>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="card" style={{ marginBottom: 14 }}>
             <div className="section-title" style={{ marginTop: 0 }}>תחזית וביצוע</div>
             {sorted.length === 0 ? (
@@ -1745,12 +1940,14 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
                     <tr>
                       <th />
                       <th>שבוע</th><th>רבעון</th><th>קג לדונם</th><th>שטח בדונם</th>
-                      <th>ימי קטיף</th><th>קג צפוי</th><th>קג בפועל</th><th>מחיר לקג</th><th>הכנסה צפויה</th>
+                      <th>ימי קטיף</th><th>קג צפוי</th><th>קג בפועל</th><th>מקור</th><th>מחיר לקג</th>
+                      <th>הכנסה צפויה</th><th>הכנסה בפועל</th>
                     </tr>
                   </thead>
                   <tbody>
                     {sorted.map((f) => {
                       const a = actualKg(f);
+                      const report = actualsByRow?.get(f.id) || null;
                       const isOpen = openWeek === f.id;
                       const days = isOpen ? splitWeekToDays(f['תחילת שבוע'], f['סוף שבוע'], num(f[KG_EXPECTED])) : [];
                       return (
@@ -1764,15 +1961,23 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
                             <td>{formatNumber(num(f['ימי קטיף פעילים']), 0)}</td>
                             <td style={{ color: PLANNED_COLOR, fontWeight: 600 }}>{formatNumber(num(f[KG_EXPECTED]), 0)}</td>
                             <td style={{ color: a.received ? ACTUAL_COLOR : 'var(--text-muted)', fontWeight: 600 }}>
-                              {a.received ? formatNumber(a.value, 0) : 'טרם'}
+                              {a.received ? <>{formatNumber(a.value, 0)}<EstimateMark row={report} /></> : 'טרם דווח קטיף'}
                             </td>
-                            <td>{formatMoney(num(f['מחיר לקג מעודכן']))}</td>
+                            <td><SourceChip row={report} /></td>
+                            <td title={report?.priceSource ? `מקור המחיר: ${report.priceSource}` : undefined}>
+                              {formatMoney(report?.pricePerKg ?? num(f['מחיר לקג מעודכן']))}
+                            </td>
                             <td>{formatMoney(num(f['הכנסה צפויה']))}</td>
+                            <td style={{ color: ACTUAL_COLOR, fontWeight: 600 }}>
+                              {report?.actualRevenue !== null && report?.actualRevenue !== undefined
+                                ? <>{formatMoney(report.actualRevenue)}<EstimateMark row={report} /></>
+                                : '—'}
+                            </td>
                           </tr>
                           {isOpen && (
                             <tr key={`${f.id}-days`}>
                               <td />
-                              <td colSpan={9} style={{ padding: '10px 14px', background: 'var(--bg-secondary)' }}>
+                              <td colSpan={12} style={{ padding: '10px 14px', background: 'var(--bg-secondary)' }}>
                                 {days.length === 0 ? (
                                   <div className="empty-state" style={{ padding: 0 }}>אין תאריכי התחלה/סוף שבוע כדי לפרק לימים.</div>
                                 ) : (
@@ -1795,8 +2000,9 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
                                     </div>
                                     <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
                                       חלוקה שווה של "קג צפוי" השבועי על-פני {days.length} הימים שבטווח {formatDate(f['תחילת שבוע'])}–{formatDate(f['סוף שבוע'])}.
-                                      פירוט יומי ל"קג בפועל" אינו זמין כרגע — הנתון הקיים הוא רק סך שבועי למבנה זה.
+                                      {!report?.parts?.length && ' ל"קג בפועל" אין פירוט יומי כאן כי טרם דווח קטיף לשבוע הזה.'}
                                     </div>
+                                    <HarvestReportDetail row={report} />
                                   </>
                                 )}
                               </td>
@@ -2004,7 +2210,7 @@ function ExecWeekView({ weeks, execWeek, execWeekIdx, mode, onMode, onStep, onPi
 // ============================================================
 // פרטי שבוע (סעיף 26)
 // ============================================================
-function WeekDetails({ week, totals, planById, planInfo, onClose, onPlan }) {
+function WeekDetails({ week, totals, planById, planInfo, onClose, onPlan, actualsByRow = null }) {
   useEscapeClose(onClose); // סגירה במקש Escape
   const [openRow, setOpenRow] = useState(null); // מזהה שורת תחזית שפתוחה לפירוט יומי
   return (
@@ -2047,6 +2253,7 @@ function WeekDetails({ week, totals, planById, planInfo, onClose, onPlan }) {
                   {week.rows.map((row) => {
                     const info = planInfo(planById.get(firstId(row['תוכנית שתילה'])));
                     const a = actualKg(row);
+                    const report = actualsByRow?.get(row.id) || null;
                     const cropName = displayName(row['גידול'], info?.crop || 'לא זמין');
                     const isOpen = openRow === row.id;
                     const days = isOpen ? splitWeekToDays(row['תחילת שבוע'], row['סוף שבוע'], num(row[KG_EXPECTED])) : [];
@@ -2066,7 +2273,7 @@ function WeekDetails({ week, totals, planById, planInfo, onClose, onPlan }) {
                           <td>{formatNumber(num(row['ימי קטיף פעילים']), 0)}</td>
                           <td style={{ color: PLANNED_COLOR, fontWeight: 600 }}>{formatNumber(num(row[KG_EXPECTED]), 0)}</td>
                           <td style={{ color: a.received ? ACTUAL_COLOR : 'var(--text-muted)', fontWeight: 600 }}>
-                            {a.received ? formatNumber(a.value, 0) : 'טרם'}
+                            {a.received ? <>{formatNumber(a.value, 0)}<EstimateMark row={report} /></> : 'טרם דווח קטיף'}
                           </td>
                           <td>{formatMoney(num(row['מחיר לקג מעודכן']))}</td>
                           <td>{formatMoney(num(row['הכנסה צפויה']))}</td>
@@ -2095,8 +2302,9 @@ function WeekDetails({ week, totals, planById, planInfo, onClose, onPlan }) {
                                   </div>
                                   <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
                                     חלוקה שווה של "קג צפוי" השבועי על-פני {days.length} הימים שבטווח {formatDate(row['תחילת שבוע'])}–{formatDate(row['סוף שבוע'])}.
-                                    פירוט יומי ל"קג בפועל" אינו זמין כרגע — הנתון הקיים הוא רק סך שבועי למבנה זה.
+                                    {!report?.parts?.length && ' ל"קג בפועל" אין פירוט יומי כאן כי טרם דווח קטיף לשבוע הזה.'}
                                   </div>
+                                  <HarvestReportDetail row={report} />
                                 </>
                               )}
                             </td>
@@ -2296,7 +2504,7 @@ function WeekTooltip({ active, payload, label }) {
     </div>
   );
 }
-function ExcelTable({ weeks, weekTotals }) {
+function ExcelTable({ weeks, weekTotals, actualsByRow }) {
   const fmt = (v) => formatNumber(v, 0);
   const money = (v) => formatMoney(v, 0);
 
@@ -2305,17 +2513,32 @@ function ExcelTable({ weeks, weekTotals }) {
     const t = weekTotals(w.rows);
     let actualRevenue = 0;
     let anyActual = false;
+    let anyEstimated = false;
     let actualKgSum = 0;
+    const parts = [];
     for (const row of w.rows) {
       const a = actualKg(row);
       if (!a.received) continue;
       actualKgSum += a.value;
-      const price = num(row['מחיר לקג מעודכן'])
-        ?? num(row['מחיר משוער לקג (from מחירי גידול משוערים)']) ?? 0;
-      actualRevenue += a.value * price;
+      // משימה AJ: ההכנסה בפועל מחושבת בשרת לפי **המחיר נטו לק"ג
+      // מהחשבוניות** של אותו שבוע וגידול, ורק בהיעדר חשבונית נופלת
+      // למחיר המתוכנן. עד עכשיו חושב כאן תמיד לפי המחיר המתוכנן —
+      // כלומר "הכנסה בפועל" שלא הכילה שום נתון בפועל חוץ מהק"ג.
+      const report = actualsByRow?.get(row.id);
+      if (report?.estimated) anyEstimated = true;
+      if (report?.parts?.length) parts.push(...report.parts);
+      if (report?.actualRevenue !== null && report?.actualRevenue !== undefined) {
+        actualRevenue += report.actualRevenue;
+      } else {
+        const price = num(row['מחיר לקג מעודכן'])
+          ?? num(row['מחיר משוער לקג (from מחירי גידול משוערים)']) ?? 0;
+        actualRevenue += a.value * price;
+      }
       anyActual = true;
     }
     return {
+      estimated: anyEstimated,
+      parts,
       key: w.key,
       month: w.start.getMonth(),
       // משימה AF (12.10.2026): השנה והחודש של השבוע **עצמו**, לא של
@@ -2360,14 +2583,14 @@ function ExcelTable({ weeks, weekTotals }) {
                 <td>שבוע {r.label}</td>
                 <td style={{ color: PLANNED_COLOR, fontWeight: 600 }}>{fmt(r.expectedKg)}</td>
                 <td style={{ color: r.hasActual ? ACTUAL_COLOR : 'var(--text-muted)', fontWeight: 600 }}>
-                  {r.hasActual ? fmt(r.actualKg) : 'טרם'}
+                  {r.hasActual ? <>{fmt(r.actualKg)}<EstimateMark row={r} /></> : 'טרם דווח קטיף'}
                 </td>
                 <td>{fmt(r.expectedCartons)}</td>
                 <td style={{ color: r.hasActual ? ACTUAL_COLOR : 'var(--text-muted)' }}>
-                  {r.hasActual ? fmt(r.actualCartons) : 'טרם'}
+                  {r.hasActual ? fmt(r.actualCartons) : 'טרם דווח קטיף'}
                 </td>
                 <td>{money(r.expectedRevenue)}</td>
-                <td>{r.actualRevenue !== null ? money(r.actualRevenue) : '—'}</td>
+                <td>{r.actualRevenue !== null ? <>{money(r.actualRevenue)}<EstimateMark row={r} /></> : '—'}</td>
               </tr>
             ))}
 
@@ -2377,10 +2600,10 @@ function ExcelTable({ weeks, weekTotals }) {
                 <td>{m.label}</td>
                 <td>{fmt(m.expectedKg)}</td>
                 <td style={{ color: m.hasActual ? ACTUAL_COLOR : 'var(--text-muted)' }}>
-                  {m.hasActual ? fmt(m.actualKg) : 'טרם'}
+                  {m.hasActual ? fmt(m.actualKg) : 'טרם דווח קטיף'}
                 </td>
                 <td>{fmt(m.expectedKg / KG_PER_CARTON)}</td>
-                <td>{m.hasActual ? fmt(m.actualKg / KG_PER_CARTON) : 'טרם'}</td>
+                <td>{m.hasActual ? fmt(m.actualKg / KG_PER_CARTON) : 'טרם דווח קטיף'}</td>
                 <td>{money(m.expectedRevenue)}</td>
                 <td>{m.hasActual ? money(m.actualRevenue) : '—'}</td>
               </tr>
@@ -2400,7 +2623,10 @@ function ExcelTable({ weeks, weekTotals }) {
         </table>
       </div>
       <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
-        קרטונים מחושבים: ק"ג ÷ {KG_PER_CARTON} (משקל ממוצע לקרטון). הכנסה בפועל = ק"ג בפועל × מחיר לק"ג.
+        קרטונים מחושבים: ק"ג ÷ {KG_PER_CARTON} (משקל ממוצע לקרטון). ק"ג בפועל מגיע מדיווחי הקטיף
+        של העובדים (קרטונים × משקל ממוצע לקרטון מתעודת המשלוח של אותו יום וזן; בהיעדר תעודה —
+        {' '}{KG_PER_CARTON} ק"ג, ואז הערך מסומן ≈). הכנסה בפועל = ק"ג בפועל × המחיר נטו לק"ג
+        מהחשבוניות של אותו שבוע, ובהיעדר חשבונית × המחיר המתוכנן.
       </div>
     </div>
   );

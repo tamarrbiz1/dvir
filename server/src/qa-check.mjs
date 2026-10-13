@@ -39,6 +39,7 @@ import { stripInventoryAiMarker, withPreservedInventoryTags, inventoryAiSummary 
 import { yearFromWeekValue, dateFromWeekValue, invoiceDate } from '../../client/src/utils/weekYear.js';
 import { shouldResetOption } from '../../client/src/utils/selectGuard.js';
 import { groupWeeksByMonth, totalsOfWeeks } from '../../client/src/utils/planSummary.js';
+import { computeActuals, dedupeDocuments, cartonWeightIndex, KG_PER_CARTON } from './actuals-sync.js';
 import { pickProvider, classifyAnalysisFailure } from './document-analysis.js';
 import { nextRetryAt, retryDecision, resumeCandidateReason, sweepStalledAnalyses, BACKOFF_MINUTES } from './analysis-retry.js';
 import { writeFile as writeFileAsync, chmod as chmodAsync, mkdtemp as mkdtempAsync } from 'node:fs/promises';
@@ -3730,6 +3731,371 @@ await test('AF: סיכום חודשי — לפי החודש של השבוע, ל�
   if (t.expectedKg !== 120 || t.expectedRevenue !== 360 || t.actualRevenue !== 5) throw new Error(`סה"כ שנתי שגוי: ${JSON.stringify(t)}`);
   return '3 שורות (אוקטובר/דצמבר 2026 + דצמבר 2027 בנפרד) · תווית עם שנה · null≠0 · שבוע-בלי-תאריך נדחה · סה"כ שנתי';
 });
+
+// ============================================================
+// חלק AJ (13.10.2026) — מנוע ה"בפועל" (server/src/actuals-sync.js)
+// ------------------------------------------------------------
+// מקור ה"בפועל" היחיד הוא דיווחי הקטיף של העובדים ב"עבודות עובדים"
+// (תמחור מסוג קטיף, יחידת קרטון). ק"ג = קרטונים × משקל-ממוצע-לקרטון
+// מתעודת המשלוח של אותו יום ואותו זן, ובהיעדרה 12.3 ק"ג + סימון
+// "מוערך". טבלת `קטיפים` **אינה נספרת** (מדווחת בלבד), ואין חלוקת
+// תעודות-משלוח לפי שטח.
+//
+// רוב הבדיקות כאן **טהורות** — על `computeActuals` עם נתונים בזיכרון.
+// זה לא קוצר-דרך אלא הדרך הנכונה: הענפים שצריך לכסות (תעודה כפולה,
+// שתי תוכניות חופפות, הגנה על קלט-יד, ניקוי ערך-שהתייתם) דורשים
+// **תעודות משלוח וחשבוניות** — וכל רשומת-בדיקה בטבלאות האלה מפעילה
+// את אוטומציית Make ושורפת קרדיטים אמיתיים של הלקוחה (שתי תקריות
+// השבתה אמיתיות, ר' הכותרת למעלה ו-CLAUDE.md). בזיכרון אין קרדיטים
+// לשרוף, אין תלות בתור-האוטומציות, והכיסוי רחב יותר.
+// הבדיקות החיות למטה נוגעות **רק** בטבלאות בלי Make (תוכניות שתילה/
+// תחזית/גידולים/עבודות עובדים), ובשנת 2035 שאין בה שום נתון אמיתי.
+// ============================================================
+const AJ_NOTE = (number, date, weight, cartons, marketer, products) => ({
+  id: `recNote${number}`, 'מספר תעודה': number, 'תאריך תעודה': date,
+  'משקל כולל': weight === null ? undefined : String(weight),
+  'כמות קרטונים': cartons === null ? undefined : String(cartons),
+  'שם משווק': marketer,
+  'סיכום יומי': products ? JSON.stringify({ days: [{ date, cartons, weight, products }] }) : undefined,
+});
+const AJ_INVOICE = (number, date, weight, netPrice, products) => ({
+  id: `recInv${number}`, 'מספר חשבונית': number, 'תאריך-AI': date, 'משקל': String(weight),
+  'מחיר נטו לק"ג': netPrice, 'שם משווק': 'משווק QA',
+  'סיכום יומי': JSON.stringify({ days: [{ date, weight, products }] }),
+});
+/** נתוני-בסיס לבדיקות הטהורות: מבנה 5 דונם, עגבניה, תוכנית אחת ב-2035 */
+function ajFixture(overrides = {}) {
+  return {
+    structures: [{ id: 'recS1', 'מספר מבנה': 'QA-1', 'שטח בדונם': 5 }, { id: 'recS2', 'מספר מבנה': 'QA-2', 'שטח בדונם': 10 }],
+    crops: [{ id: 'recCt', 'שם גידול': 'עגבניה' }, { id: 'recCp', 'שם גידול': 'פלפל' }],
+    plans: [{
+      id: 'recP1', 'מספר תוכנית': 9001, 'שנת תוכנית': 2035, 'מבנה': ['recS1'], 'גידולים': ['recCt'],
+      'תחילת קטיף מקורית': '2035-05-01', 'סוף קטיף מקורי': '2035-05-31',
+    }],
+    forecasts: [{
+      id: 'recF1', 'תוכנית שתילה': ['recP1'], 'תחילת שבוע': '2035-05-05', 'סוף שבוע': '2035-05-10',
+      'ק"ג צפוי': 100, 'הכנסה צפויה': 900, 'מחיר לקג מעודכן': 9, 'גידול': ['עגבניה'],
+    }],
+    // דיווח קטיף: 10 קרטון, 2035-05-06, מבנה QA-1, זן עגבניה
+    works: [{
+      id: 'recW1', 'מספר עבודה': 7001, 'תאריך': '2035-05-06', 'מבנה': ['recS1'], 'כמות': 10,
+      'סוג עבודה (from תמחור עבודות)': ["קטיף סוג א'"], 'יחידת תמחור (from תמחור עבודות)': ['קרטון'],
+      'זן (from תמחור עבודות)': ['עגבניה'],
+    }],
+    harvests: [],
+    notes: [],
+    invoices: [],
+    ...overrides,
+  };
+}
+const AJ_TODAY = '2035-06-01'; // אחרי השבוע שבבדיקות — כך "השבוע הסתיים"
+const ajRun = (data, opts = {}) => computeActuals(data, { today: AJ_TODAY, ...opts });
+const ajRow = (report) => report.rows.find((r) => r.forecastId === 'recF1');
+
+await test('AJ טהור: דיווח קטיף + תעודה מאותו יום וזן → ק"ג מדויק (קרטונים × ממוצע התעודה)', () => {
+  const data = ajFixture({
+    notes: [AJ_NOTE(900, '2035-05-06', 150, 10, 'משווק QA', [{ variety: 'עגבניה', weight: 150, cartons: 10 }])],
+  });
+  const row = ajRow(ajRun(data));
+  if (row.actualKg !== 150) throw new Error(`ק"ג בפועל ${row.actualKg}, צפוי 150 (10 קרטון × 15)`);
+  if (row.estimated) throw new Error('סומן "מוערך" למרות שיש תעודה לאותו יום וזן');
+  if (row.source !== 'דיווחי קטיף') throw new Error(`מקור "${row.source}"`);
+  if (row.parts.length !== 1 || row.parts[0].kgPerCarton !== 15) throw new Error(`פירוט שגוי: ${JSON.stringify(row.parts)}`);
+  return '10 קרטון × 15 ק"ג (ממוצע מתעודה #900 מאותו יום) = 150 ק"ג, בלי סימון-הערכה';
+});
+
+await test('AJ טהור: אין תעודה לאותו יום/זן → 12.3 ק"ג לקרטון ומסומן "מוערך"', () => {
+  const plain = ajRow(ajRun(ajFixture()));
+  if (plain.actualKg !== 123) throw new Error(`${plain.actualKg} במקום 123 (10 × 12.3)`);
+  if (!plain.estimated) throw new Error('לא סומן "מוערך"');
+  if (plain.source !== 'דיווחי קטיף (משקל מוערך)') throw new Error(`מקור "${plain.source}"`);
+  // תעודה מאותו יום אבל **זן אחר** לא נחשבת
+  const otherCrop = ajRow(ajRun(ajFixture({
+    notes: [AJ_NOTE(901, '2035-05-06', 500, 10, 'משווק QA', [{ variety: 'פלפל', weight: 500, cartons: 10 }])],
+  })));
+  if (otherCrop.actualKg !== 123) throw new Error(`זן אחר השפיע: ${otherCrop.actualKg}`);
+  // תעודה מאותו זן אבל **יום אחר** לא נחשבת
+  const otherDay = ajRow(ajRun(ajFixture({
+    notes: [AJ_NOTE(902, '2035-05-07', 500, 10, 'משווק QA', [{ variety: 'עגבניה', weight: 500, cartons: 10 }])],
+  })));
+  if (otherDay.actualKg !== 123) throw new Error(`יום אחר השפיע: ${otherDay.actualKg}`);
+  if (KG_PER_CARTON !== 12.3) throw new Error(`ברירת המחדל השתנתה: ${KG_PER_CARTON}`);
+  return '10 × 12.3 = 123 ק"ג ומסומן ≈ · זן אחר/יום אחר אינם משפיעים';
+});
+
+await test('AJ טהור: תעודה כפולה נספרת פעם אחת (ממוצע הקרטון לא מוכפל)', () => {
+  const products = [{ variety: 'עגבניה', weight: 150, cartons: 10 }];
+  const noteFields = { dateField: 'תאריך תעודה', weightField: 'משקל כולל', cartonsField: 'כמות קרטונים', numberField: 'מספר תעודה' };
+  const dup = [
+    AJ_NOTE(900, '2035-05-06', 150, 10, 'משווק QA', products),
+    AJ_NOTE(901, '2035-05-06', 150, 10, 'משווק  QA.', products), // אותו מסמך, רווח/נקודה בשם
+  ];
+  const { unique, duplicates } = dedupeDocuments(dup, noteFields);
+  if (unique.length !== 1) throw new Error(`${unique.length} מסמכים ייחודיים, צפוי 1`);
+  if (duplicates.length !== 1 || duplicates[0].number !== 901 || duplicates[0].keptNumber !== 900) {
+    throw new Error(`זיהוי הכפילות שגוי: ${JSON.stringify(duplicates)}`);
+  }
+  // הראיה שהכפילות לא נספרה: סך המשקל באינדקס הוא 150 ולא 300
+  const entry = cartonWeightIndex(unique, ['עגבניה', 'פלפל']).get('2035-05-06|עגבניה');
+  if (entry.kg !== 150 || entry.cartons !== 10) throw new Error(`האינדקס ספר פעמיים: ${JSON.stringify(entry)}`);
+  if (entry.docNumbers.length !== 1) throw new Error(`${entry.docNumbers.length} מסמכים באינדקס`);
+  const report = ajRun(ajFixture({ notes: dup }));
+  if (ajRow(report).actualKg !== 150) throw new Error(`ק"ג ${ajRow(report).actualKg}, צפוי 150`);
+  if (!report.dataIssues.some((i) => i.kind === 'תעודה כפולה' && /#901 זהה לתעודה #900/.test(i.detail))) {
+    throw new Error('הכפילות לא דווחה ל"בעיות נתונים"');
+  }
+  // מסמך שונה באמת (משקל אחר) **אינו** כפילות
+  const notDup = dedupeDocuments([dup[0], AJ_NOTE(902, '2035-05-06', 151, 10, 'משווק QA', products)], noteFields);
+  if (notDup.unique.length !== 2) throw new Error('משקל שונה סומן בטעות ככפילות');
+  return 'תעודה זהה → נספרת פעם אחת (150 ק"ג ולא 300), מדווחת · משקל שונה אינו כפילות';
+});
+
+await test('AJ טהור: שתי תוכניות חופפות — הזן מכריע, ובלי זן אין שיוך ונרשם "דורש החלטה"', () => {
+  const second = {
+    id: 'recP2', 'מספר תוכנית': 9002, 'שנת תוכנית': 2035, 'מבנה': ['recS1'], 'גידולים': ['recCp'],
+    'תחילת קטיף מקורית': '2035-05-01', 'סוף קטיף מקורי': '2035-05-31',
+  };
+  // הזן בתמחור (עגבניה) תואם לתוכנית אחת בלבד → משויך אליה
+  const base = ajFixture();
+  const byCrop = ajRun({ ...base, plans: [...base.plans, second] });
+  if (byCrop.needsDecision.length) throw new Error(`הוכרע לא נכון: ${JSON.stringify(byCrop.needsDecision)}`);
+  if (ajRow(byCrop).actualKg !== 123) throw new Error(`לא שויך לתוכנית הנכונה: ${ajRow(byCrop).actualKg}`);
+
+  // בלי זן בתמחור — אין במה להכריע: לא משויך, ונרשם "דורש החלטה"
+  const noCrop = ajFixture();
+  noCrop.plans = [...noCrop.plans, second];
+  noCrop.works[0]['זן (from תמחור עבודות)'] = [];
+  const amb = ajRun(noCrop);
+  if (ajRow(amb).actualKg !== null) throw new Error(`נספר למרות חפיפה: ${ajRow(amb).actualKg}`);
+  const d = amb.needsDecision.find((x) => x.kind === 'כמה תוכניות חופפות');
+  if (!d) throw new Error(`לא נרשם "דורש החלטה": ${JSON.stringify(amb.needsDecision)}`);
+  if (!/9001/.test(d.question) || !/9002/.test(d.question)) throw new Error(`השאלה לא מונה את המועמדות: ${d.question}`);
+  if (amb.kgWrites.length) throw new Error('נוצרה כתיבה לשורה שלא שויכה');
+
+  // דיווח שאין לו שום תוכנית — גם הוא "דורש החלטה", לא נעלם בשקט
+  const orphan = ajFixture();
+  orphan.works[0]['תאריך'] = '2035-09-09';
+  if (!ajRun(orphan).needsDecision.some((x) => x.kind === 'דיווח קטיף בלי תוכנית')) throw new Error('דיווח בלי תוכנית לא דווח');
+  return 'זן מכריע → שויך · בלי זן → לא שויך + שאלה עם שתי המועמדות · דיווח בלי תוכנית → דורש החלטה';
+});
+
+await test('AJ טהור: שבוע שהסתיים בלי דיווח נשאר ריק (לא 0), ושבוע עתידי כנ"ל', () => {
+  const past = ajFixture({ works: [] });
+  const pastRow = ajRow(ajRun(past));
+  if (pastRow.actualKg !== null) throw new Error(`שבוע שעבר קיבל ${pastRow.actualKg} במקום להישאר ריק`);
+  if (pastRow.source !== 'טרם דווח קטיף') throw new Error(`מקור "${pastRow.source}"`);
+  if (!pastRow.weekEnded) throw new Error('השבוע לא סומן כ"הסתיים"');
+  if (ajRun(past).kgWrites.length) throw new Error('נוצרה כתיבה של 0 לשבוע בלי דיווח');
+  const future = ajRow(ajRun(ajFixture({ works: [] }), { today: '2035-01-01' }));
+  if (future.actualKg !== null || future.weekEnded) throw new Error('שבוע עתידי לא טופל כריק');
+  return 'שבוע שהסתיים → ריק + "טרם דווח קטיף" ואפס כתיבות · שבוע עתידי → ריק';
+});
+
+await test('AJ טהור: טבלת "קטיפים" אינה נספרת — מדווחת בלבד', () => {
+  // 2035-05-08: אותו שבוע כמו הדיווח, אבל **יום אחר** — כלומר אין
+  // דיווח-עבודה מקביל, וזה בדיוק המצב שחייב להידווח (תוצרת שלא תיספר).
+  const data = ajFixture({
+    harvests: [{ id: 'recH1', 'מספר קטיף': 5001, 'תאריך': '2035-05-08', 'מבנה': ['recS1'], 'כמות ק"ג': 500, 'מספר קרטונים': 40, 'סוג קטיף': 'סוג א' }],
+  });
+  const report = ajRun(data);
+  // 123 = הדיווח בלבד. אם הקטיף היה נספר היינו מקבלים 623.
+  if (ajRow(report).actualKg !== 123) throw new Error(`הקטיף נספר: ${ajRow(report).actualKg} (צפוי 123)`);
+  if (!report.harvestTable.some((h) => h.number === 5001)) throw new Error('הקטיף לא הופיע בדוח');
+  const issue = report.dataIssues.find((i) => i.kind === 'קטיף בלי דיווח עבודה');
+  if (!issue || !/5001/.test(issue.detail)) throw new Error('לא דווח שהקטיף אינו נספר');
+  // קטיף שיש לו דיווח-עבודה מקביל לאותו מבנה+תאריך — לא מדווח כחסר
+  const withReport = ajRun(ajFixture({
+    harvests: [{ id: 'recH2', 'מספר קטיף': 5002, 'תאריך': '2035-05-06', 'מבנה': ['recS1'], 'כמות ק"ג': 100 }],
+  }));
+  if (withReport.dataIssues.some((i) => i.kind === 'קטיף בלי דיווח עבודה')) throw new Error('קטיף עם דיווח מקביל דווח כחסר');
+  if (ajRow(withReport).actualKg !== 123) throw new Error('הקטיף נספר בכל זאת');
+  // רשומת קטיף ריקה מדווחת כריקה
+  if (!ajRun(ajFixture({ harvests: [{ id: 'recH3', 'מספר קטיף': 5003 }] })).dataIssues.some((i) => i.kind === 'רשומה ריקה')) {
+    throw new Error('קטיף ריק לא דווח');
+  }
+  return '500 ק"ג בטבלת קטיפים לא נספרו (123 בלבד) · דווח "קטיף בלי דיווח עבודה" · קטיף ריק דווח';
+});
+
+await test('AJ טהור: הכנסה בפועל — מחיר נטו מהחשבונית, ובהיעדרה המחיר המתוכנן ומסומן מוערך', () => {
+  const withInv = ajRow(ajRun(ajFixture({
+    invoices: [AJ_INVOICE(800, '2035-05-07', 1000, 5, [{ variety: 'עגבניה', weight: 1000 }])],
+  })));
+  if (withInv.pricePerKg !== 5) throw new Error(`מחיר ${withInv.pricePerKg}, צפוי 5 (מהחשבונית)`);
+  if (withInv.priceSource !== 'חשבוניות') throw new Error(`מקור המחיר "${withInv.priceSource}"`);
+  if (withInv.actualRevenue !== 615) throw new Error(`הכנסה ${withInv.actualRevenue}, צפוי 615 (123 × 5)`);
+  const noInv = ajRow(ajRun(ajFixture()));
+  if (noInv.pricePerKg !== 9 || noInv.priceSource !== 'מחיר מתוכנן (מוערך)') throw new Error(`נפילה-לאחור שגויה: ${noInv.pricePerKg}/${noInv.priceSource}`);
+  if (noInv.actualRevenue !== 1107) throw new Error(`הכנסה ${noInv.actualRevenue}, צפוי 1107 (123 × 9)`);
+  // חשבונית של זן אחר באותו שבוע לא משפיעה על המחיר
+  const otherCrop = ajRow(ajRun(ajFixture({
+    invoices: [AJ_INVOICE(801, '2035-05-07', 1000, 5, [{ variety: 'פלפל', weight: 1000 }])],
+  })));
+  if (otherCrop.pricePerKg !== 9) throw new Error(`חשבונית של זן אחר השפיעה: ${otherCrop.pricePerKg}`);
+  return '123 × 5 (מחיר נטו מחשבונית) = 615 ₪ · בלי חשבונית 123 × 9 = 1107 ₪ "מוערך" · זן אחר לא משפיע';
+});
+
+await test('AJ טהור: ערך שמולא ביד לא נדרס; ערך של המנוע מתעדכן ומתנקה', () => {
+  const withValue = (kg) => {
+    const d = ajFixture();
+    d.forecasts[0]['קג בפועל'] = kg;
+    return d;
+  };
+  // 1. ערך זר (לא בפנקס) — התנגשות, אפס כתיבות
+  const manual = ajRun(withValue(77));
+  if (manual.kgWrites.length) throw new Error('ערך שמולא ביד נדרס');
+  if (manual.conflicts.length !== 1 || !/77/.test(manual.conflicts[0].detail)) throw new Error(`התנגשות לא דווחה: ${JSON.stringify(manual.conflicts)}`);
+  // 2. ערך שהפנקס מאשר שאנחנו כתבנו — מתעדכן
+  const ours = ajRun(withValue(100), { ledger: { rows: { recF1: 100 }, ok: true } });
+  if (ours.conflicts.length) throw new Error('ערך שלנו סומן כהתנגשות');
+  if (ours.kgWrites.length !== 1 || ours.kgWrites[0].to !== 123) throw new Error(`עדכון שגוי: ${JSON.stringify(ours.kgWrites)}`);
+  // 3. אידמפוטנטיות: הערך כבר נכון → אפס כתיבות
+  const same = ajRun(withValue(123), { ledger: { rows: { recF1: 123 }, ok: true } });
+  if (same.kgWrites.length || same.conflicts.length) throw new Error(`הרצה שנייה שינתה משהו: ${JSON.stringify(same.kgWrites)}`);
+  // 4. הדיווח נמחק → הערך שלנו מתנקה (null), ערך של אדם נשאר
+  const data = withValue(123);
+  data.works = [];
+  const cleared = ajRun(data, { ledger: { rows: { recF1: 123 }, ok: true } });
+  if (cleared.kgWrites.length !== 1 || cleared.kgWrites[0].to !== null) throw new Error(`ניקוי שגוי: ${JSON.stringify(cleared.kgWrites)}`);
+  const orphanManual = withValue(77);
+  orphanManual.works = [];
+  if (ajRun(orphanManual).kgWrites.length) throw new Error('ערך-יד נוקה');
+  // 5. פנקס לא קריא (ok=false) — fail closed: שום ערך קיים לא נדרס
+  const noLedger = ajRun(withValue(100), { ledger: { rows: { recF1: 100 }, ok: false } });
+  if (noLedger.kgWrites.length) throw new Error('בלי פנקס אמין בכל זאת נדרס ערך');
+  if (!noLedger.conflicts.length) throw new Error('בלי פנקס אמין לא דווחה התנגשות');
+  return 'ערך-יד → התנגשות · ערך-מנוע → מתעדכן ל-123 · כבר נכון → 0 כתיבות · דיווח נמחק → ניקוי · פנקס שבור → fail closed';
+});
+
+await test('AJ טהור: דיווח חסר נתון (לא קרטון / בלי כמות) מדווח ואינו נספר', () => {
+  const noUnit = ajFixture();
+  noUnit.works[0]['יחידת תמחור (from תמחור עבודות)'] = ['דונם'];
+  const r1 = ajRun(noUnit);
+  if (ajRow(r1).actualKg !== null) throw new Error('תמחור לפי דונם נספר בכל זאת');
+  if (!r1.dataIssues.some((i) => i.kind === 'דיווח קטיף חסר נתון' && /קרטון/.test(i.detail))) throw new Error('לא דווח');
+  const noQty = ajFixture();
+  delete noQty.works[0]['כמות'];
+  if (!ajRun(noQty).dataIssues.some((i) => i.kind === 'דיווח קטיף חסר נתון' && /כמות/.test(i.detail))) throw new Error('דיווח בלי כמות לא דווח');
+  // עבודה שאינה קטיף בכלל — לא נספרת ולא מדווחת (אין שום בעיה בה)
+  const notHarvest = ajFixture();
+  notHarvest.works[0]['סוג עבודה (from תמחור עבודות)'] = ['ניקיון עשבייה'];
+  const r3 = ajRun(notHarvest);
+  if (r3.totals.harvestReports !== 0) throw new Error('עבודה שאינה קטיף נכנסה לדיווחים');
+  if (r3.dataIssues.length) throw new Error(`עבודה רגילה יצרה "בעיית נתונים": ${JSON.stringify(r3.dataIssues)}`);
+  return 'יחידה≠קרטון ובלי "כמות" → מדווחים ולא נספרים · עבודה שאינה קטיף → מחוץ לתחום, בלי רעש';
+});
+
+await test('AJ טהור: תאריך מסמך שאינו בשבוע שהוא משויך אליו — מדווח', () => {
+  const note = AJ_NOTE(903, '2026-07-27', 4082, 328, 'ל.ש.', [{ variety: 'מלפפון', weight: 4082, cartons: 328 }]);
+  note['קוד שבוע'] = '20261003-20261008';
+  const issue = ajRun(ajFixture({ notes: [note] })).dataIssues.find((i) => i.kind === 'תאריך לא בשבוע שלו');
+  if (!issue || !/2026-07-27/.test(issue.detail)) throw new Error('לא דווח');
+  // ותעודה שהתאריך שלה כן בתוך השבוע — לא מדווחת
+  const ok = AJ_NOTE(904, '2026-10-05', 100, 10, 'ל.ש.', [{ variety: 'מלפפון', weight: 100, cartons: 10 }]);
+  ok['קוד שבוע'] = '20261003-20261008';
+  if (ajRun(ajFixture({ notes: [ok] })).dataIssues.some((i) => i.kind === 'תאריך לא בשבוע שלו')) throw new Error('תעודה תקינה דווחה');
+  return 'תעודת יולי בשבוע אוקטובר → מדווחת · תעודה בשבוע שלה → שקטה';
+});
+
+// ------------------------------------------------------------
+// בדיקות חיות — רשומות QA בלבד, שנת 2035, בלי שום טבלת-Make
+// ------------------------------------------------------------
+const ajHarvestPricing = (await get('תמחור עבודות', '?maxRecords=200&raw=1'))
+  .find((p) => /קטיף/.test(String(p['סוג עבודה'] || '')) && String(p['יחידת תמחור'] || '') === 'קרטון');
+
+/**
+ * תוכנית-QA ב-2035 עם שורת-תחזית אחת ודיווח-קטיף אחד בתוך השבוע.
+ *
+ * `month` חייב להיות **שונה בין קריאות**: כל תוכניות ה-QA יושבות על
+ * אותו מבנה אמיתי, ושתי תוכניות שתקופות-הקטיף שלהן חופפות הופכות כל
+ * דיווח באותו מבנה ל"דורש החלטה" (הגידולים הם גידולי-QA, ולכן הזן
+ * שבתמחור לא מכריע ביניהן) — וזה בדיוק מה שהפיל את הבדיקה הזו בפעם
+ * הראשונה. חודש נפרד לכל תוכנית = שיוך חד-משמעי.
+ */
+const makeAjPlan = async (suffix, { cartons = 4, month = '05' } = {}) => {
+  const crop = await create('גידולים', { 'שם גידול': `${MARK}-${suffix}` });
+  const plan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'גידולים': [crop.id], 'שנת תוכנית': 2035,
+    'תחילת קטיף מקורית': `2035-${month}-01`, 'סוף קטיף מקורי': `2035-${month}-28`, 'מספר ימי קטיף': 20,
+  });
+  const forecast = await create('תחזית שתילה שבועית', {
+    'תוכנית שתילה': [plan.id], 'תחילת שבוע': `2035-${month}-05`, 'סוף שבוע': `2035-${month}-10`,
+    'שבוע': `${MARK}-${suffix}`, 'מחיר לקג מעודכן': 9,
+  });
+  const workDate = `2035-${month}-06`;
+  const work = await create('עבודות עובדים', {
+    'תאריך': workDate, 'עובד': [wId], 'מבנה': [sId], 'תמחור עבודות': [ajHarvestPricing.id],
+    'כמות': cartons, 'הערות': `${MARK} דיווח קטיף לבדיקת בפועל`,
+  });
+  return { crop, plan, forecast, work, workDate, expectedKg: Math.round(cartons * 12.3 * 100) / 100 };
+};
+const ajForecastKg = async (id) => (await api('GET', `${enc('תחזית שתילה שבועית')}/${id}?includeTest=1`))['קג בפועל'] ?? null;
+
+await test('AJ חי: דיווח קטיף QA → sync כותב "קג בפועל", והרצה שנייה לא משנה כלום', async () => {
+  if (!sId || !wId) return 'דולג — אין מבנה/עובד אמיתי לקשר אליו';
+  if (!ajHarvestPricing) return 'דולג — אין רשומת תמחור מסוג קטיף ביחידת קרטון';
+  const { plan, forecast, workDate, expectedKg } = await makeAjPlan('aj-live');
+
+  if (await ajForecastKg(forecast.id) !== null) throw new Error('שורת-התחזית נוצרה עם "קג בפועל" מלא');
+
+  const first = await api('POST', 'actuals/sync');
+  const row = first.rows.find((r) => r.forecastId === forecast.id);
+  if (!row) throw new Error('שורת ה-QA לא הופיעה בדוח');
+  if (row.actualKg !== expectedKg) throw new Error(`הדוח אומר ${row.actualKg}, צפוי ${expectedKg}`);
+  if (!row.estimated) throw new Error('לא סומן "מוערך" (אין תעודה ל-2035, ולכן 12.3 ק"ג לקרטון)');
+  if (!row.parts.some((p) => p.date === workDate)) throw new Error(`הפירוט לא מצביע על הדיווח: ${JSON.stringify(row.parts)}`);
+  const written = await ajForecastKg(forecast.id);
+  if (written !== expectedKg) throw new Error(`ב-Airtable נכתב ${written}, צפוי ${expectedKg}`);
+
+  // התוכנית: תאריכי קטיף בפועל נגזרים מהדיווח
+  const planActual = first.plans.find((p) => p.planId === plan.id);
+  if (planActual?.actualHarvestStart !== workDate || planActual?.actualHarvestEnd !== workDate) {
+    throw new Error(`תאריכי קטיף בפועל שגויים: ${JSON.stringify(planActual)}`);
+  }
+  if (planActual.actualRevenue !== Math.round(expectedKg * 9 * 100) / 100) throw new Error(`הכנסה בפועל ${planActual.actualRevenue}`);
+
+  // אידמפוטנטיות
+  const second = await api('POST', 'actuals/sync');
+  if (second.kgUpdated !== 0 || second.kgCleared !== 0) throw new Error(`הרצה שנייה כתבה: ${second.kgUpdated}/${second.kgCleared}`);
+  if (await ajForecastKg(forecast.id) !== expectedKg) throw new Error('הערך השתנה בהרצה השנייה');
+  return `${expectedKg} ק"ג (4 קרטון × 12.3) נכתבו ומסומנים ≈ · תאריכי קטיף בפועל ${workDate} · הרצה שנייה 0 כתיבות`;
+}, 30000);
+
+await test('AJ חי: dryRun מחשב ולא כותב כלום', async () => {
+  if (!sId || !wId || !ajHarvestPricing) return 'דולג — אין נתוני-בסיס לקשר אליהם';
+  const { forecast, expectedKg } = await makeAjPlan('aj-dry', { cartons: 6, month: '07' });
+  const dry = await api('POST', 'actuals/sync?dryRun=1');
+  if (!dry.dryRun) throw new Error('הדוח לא סומן dryRun');
+  const planned = dry.kgWrites.find((w) => w.forecastId === forecast.id);
+  if (!planned || planned.to !== expectedKg) throw new Error(`dryRun לא תכנן את הכתיבה: ${JSON.stringify(planned)}`);
+  if (dry.kgUpdated !== undefined) throw new Error('dryRun דיווח על כתיבות שבוצעו');
+  if (await ajForecastKg(forecast.id) !== null) throw new Error('dryRun כתב ל-Airtable!');
+  // ואחרי הרצה אמיתית — נכתב
+  await api('POST', 'actuals/sync');
+  if (await ajForecastKg(forecast.id) !== expectedKg) throw new Error('ההרצה האמיתית לא כתבה');
+  return `dryRun תכנן ${expectedKg} ק"ג ולא נגע ב-Airtable; ההרצה האמיתית כתבה`;
+}, 30000);
+
+await test('AJ חי: הרשאות — GET report לכולם, POST sync למנהלת ראשית בלבד', async () => {
+  const problems = [];
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  if (manager) {
+    const ml = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
+    try { await apiAs(ml.token, 'POST', 'actuals/sync', {}); problems.push('מנהל עבודה הצליח לכתוב'); }
+    catch (e) { if (!/^403/.test(String(e.message))) problems.push(`manager POST: ${e.message}`); }
+    try { await apiAs(ml.token, 'GET', 'actuals/report'); }
+    catch (e) { problems.push(`manager GET נחסם: ${e.message}`); }
+  }
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  if (w) {
+    const wl = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    try { await apiAs(wl.token, 'POST', 'actuals/sync', {}); problems.push('עובד הצליח לכתוב'); }
+    catch (e) { if (!/^403/.test(String(e.message))) problems.push(`worker POST: ${e.message}`); }
+  }
+  try { await apiAs(null, 'GET', 'actuals/report'); problems.push('בלי טוקן עבר'); }
+  catch (e) { if (!/^401/.test(String(e.message))) problems.push(`בלי טוקן: ${e.message}`); }
+  if (problems.length) throw new Error(problems.join('; '));
+  return `${manager ? 'manager: POST 403 / GET עובר' : '(אין מנהל עבודה)'} · ${w ? 'worker POST 403' : '(אין עובד)'} · בלי טוקן 401`;
+}, 20000);
 
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
