@@ -291,17 +291,52 @@ export async function fetchForecastSources() {
 // הבנייה בפועל
 // ------------------------------------------------------------
 
+// ------------------------------------------------------------
+// מנעול-לפי-תוכנית
+// ------------------------------------------------------------
+// ⚠️ באג אמיתי שנתפס בבדיקה (AK, 13.10.2026): שתי בניות **במקביל**
+// לאותה תוכנית יוצרות שורות כפולות. שתיהן קוראות את שורות-התחזית
+// הקיימות, שתיהן רואות "אין שורה לשבוע הזה", ושתיהן יוצרות — ואז
+// ההתאמה (`planReconciliation`) עובדת מול תמונה שכבר לא נכונה.
+// נמדד: 9 שורות במקום 5.
+//
+// זה לא תרחיש-בדיקה בלבד: `forecast-sync` בונה מדובנס אחרי שינוי
+// מחיר, ובאותו רגע תמר יכולה ללחוץ "רענן תחזית" או "שינוי תקופה" —
+// ושתי הבניות ירוצו יחד על אותה תוכנית. הפתרון הוא הסדרה: בנייה
+// לתוכנית שכבר נבנית **ממתינה** לקודמת (ולא מדלגת) — כי היא נקראה
+// עם נתונים חדשים יותר, וחייבת לרוץ אחריה.
+const inFlight = new Map(); // planId -> Promise
+
+export async function buildForecastForPlan(planId, opts = {}) {
+  if (opts.dryRun) return buildForecastForPlanUnlocked(planId, opts); // קריאה בלבד — אין מה להסדיר
+  const previous = inFlight.get(planId) || Promise.resolve();
+  // `previous.catch` — כשל של הבנייה הקודמת לא מפיל את שלנו
+  const run = previous.catch(() => {}).then(() => buildForecastForPlanUnlocked(planId, opts));
+  // במפה נשמרת שרשרת שלא זורקת, כדי שהממתין הבא לא ייפול על כשל שלנו
+  const guard = run.catch(() => {});
+  inFlight.set(planId, guard);
+  try {
+    return await run;
+  } finally {
+    // משחררים רק אם לא נכנס ממתין חדש אחרינו
+    if (inFlight.get(planId) === guard) inFlight.delete(planId);
+  }
+}
+
 /**
  * בונה (או מחשב ב-dryRun) את התחזית לתוכנית אחת.
+ * **לא לקרוא ישירות** — ר' `buildForecastForPlan` והמנעול שמעליה.
  *
  * @param {string} planId
  * @param {{ dryRun?: boolean, sources?: object, clearTrigger?: boolean }} opts
  *   `sources` — תוצאת `fetchForecastSources()`, כדי שבנייה של כמה
  *   תוכניות לא תקרא את אותן ארבע הטבלאות פעם אחר פעם.
+ *   ⚠️ כשמעבירים `sources` לבנייה **אמיתית**, שורות-התחזית שבו עלולות
+ *   להיות מיושנות אם בנייה אחרת רצה בינתיים — ולכן הן נקראות מחדש.
  *   `clearTrigger` — לכבות `רענן תחזית` בסוף (ברירת מחדל: כן, כמו
  *   הסקריפט). מכובה גם בכשל, כדי שהסורק לא ינסה לנצח (ר' §3 במשימה).
  */
-export async function buildForecastForPlan(planId, { dryRun = false, sources = null, clearTrigger = true } = {}) {
+async function buildForecastForPlanUnlocked(planId, { dryRun = false, sources = null, clearTrigger = true } = {}) {
   const data = sources || await fetchForecastSources();
   const plan = data.plans.find((p) => p.id === planId);
   if (!plan) {
@@ -330,7 +365,11 @@ export async function buildForecastForPlan(planId, { dryRun = false, sources = n
     return { ...base, ok: false, missing: computed.missing, created: 0, updated: 0, deleted: 0, unchanged: 0 };
   }
 
-  const existing = data.forecasts.filter((f) => linkedIds(f[PLAN_LINK]).includes(planId));
+  // ר' האזהרה מעל הפונקציה: בבנייה אמיתית קוראים את שורות-התחזית
+  // **עכשיו**, גם כשהועבר `sources` — אחרת בנייה סדרתית של כמה
+  // תוכניות (או בנייה שהמתינה למנעול) תעבוד מול תמונה מיושנת.
+  const forecastRows = (dryRun || !sources) ? data.forecasts : await fetchRecords(FORECAST_TABLE, {});
+  const existing = forecastRows.filter((f) => linkedIds(f[PLAN_LINK]).includes(planId));
   const recon = planReconciliation(computed.rows, existing);
   const result = {
     ...base,

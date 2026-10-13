@@ -27,6 +27,7 @@ import { tokenSource } from './cli-token.js';
 import { checkForecastPreflight } from './forecast-preflight.js';
 import { isForecastSourceTable, syncForecastForChangedRecord, setForecastSyncHooks, queueForecastBuild } from './forecast-sync.js';
 import { buildForecastForPlan } from './forecast-build.js';
+import { changePlanPeriod, updatePlanOriginal, mergePlans, overlapsForPlan } from './plan-periods.js';
 import {
   startForecastWatcher, recordBuildResult,
   allFailures as allForecastFailures, WATCH_MS as FORECAST_WATCH_MS,
@@ -989,6 +990,68 @@ app.post('/api/plans/:id/forecast', authenticate, requireOwner, async (req, res)
 
 app.get('/api/plans/forecast-failures', authenticate, async (_req, res) => {
   res.json({ failures: allForecastFailures(), watchMs: FORECAST_WATCH_MS });
+});
+
+// ============================================================
+// "שינוי תקופה" ומיזוג תוכניות חופפות (משימה AK, 13.10.2026)
+// ------------------------------------------------------------
+// ר' plan-periods.js להסבר המלא על המודל (איזה כפתור משנה מה) ועל
+// ההיפוך: `תקופות תוכנית` היא **תוצר** של התאריכים המעודכנים ולא מקור.
+// עד AK הכפתור רק יצר שורה ידנית ולא שינה שום דבר בתוכנית או בתחזית.
+//
+// מנהלת ראשית בלבד, כמו שאר הכתיבות של מסך תוכנית השתילה. מוגדר כאן
+// **לפני** `app.post('/api/:table')` ו-`app.delete('/api/:table/:id')`,
+// מאותה סיבה שמתועדת מעל נתיבי המחיקה למטה.
+// ============================================================
+app.post('/api/plans/:id/period', authenticate, requireOwner, async (req, res) => {
+  try {
+    const result = await changePlanPeriod(req.params.id, req.body || {});
+    [PLANS_TABLE, PERIODS_TABLE, PLAN_FORECAST_TABLE].forEach(invalidateReads);
+    res.json(result);
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.error(`[plan-periods] POST /api/plans/${req.params.id}/period נכשל: ${e.message}`);
+    sendApiError(res, e);
+  }
+});
+
+app.get('/api/plans/:id/overlaps', authenticate, async (req, res) => {
+  try {
+    res.json(await overlapsForPlan(req.params.id));
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    sendApiError(res, e);
+  }
+});
+
+// "עריכת תוכנית" — **רק המקורי** (תוספת 2 של תמר, 13.10). עד AK
+// העריכה הפעילה את `חשב תוכנית`, שמעתיק מקורי→מעודכן ולכן **מחק בשקט
+// כל הזזה קודמת**. מעתה המעודכן נשאר, ותאריכי-הסוף המקוריים מחושבים
+// בשרת באותה לוגיקה (ר' endOfWorkPeriod ב-plan-periods.js).
+app.patch('/api/plans/:id/original', authenticate, requireOwner, async (req, res) => {
+  try {
+    const result = await updatePlanOriginal(req.params.id, req.body || {});
+    invalidateReads(PLANS_TABLE);
+    if (result.forecast) invalidateReads(PLAN_FORECAST_TABLE);
+    res.json(result);
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.error(`[plan-periods] PATCH /api/plans/${req.params.id}/original נכשל: ${e.message}`);
+    sendApiError(res, e);
+  }
+});
+
+app.post('/api/plans/:id/merge', authenticate, requireOwner, async (req, res) => {
+  try {
+    const result = await mergePlans(req.params.id, req.body?.otherId, { deletePlan: deletePlanCascade });
+    [PLANS_TABLE, PERIODS_TABLE, PLAN_FORECAST_TABLE].forEach(invalidateReads);
+    invalidateReads('קטיפים');
+    res.json(result);
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    console.error(`[plan-periods] POST /api/plans/${req.params.id}/merge נכשל: ${e.message}`);
+    sendApiError(res, e);
+  }
 });
 
 // ============================================================
