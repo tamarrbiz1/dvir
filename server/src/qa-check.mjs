@@ -40,6 +40,11 @@ import { yearFromWeekValue, dateFromWeekValue, invoiceDate } from '../../client/
 import { shouldResetOption } from '../../client/src/utils/selectGuard.js';
 import { groupWeeksByMonth, totalsOfWeeks } from '../../client/src/utils/planSummary.js';
 import { computeActuals, dedupeDocuments, cartonWeightIndex, KG_PER_CARTON } from './actuals-sync.js';
+import {
+  computeForecastRows, planReconciliation, buildForecastForPlan, fetchForecastSources,
+  startOfOperationalWeek, parseDate as alParseDate, formatDate as alFormatDate,
+} from './forecast-build.js';
+import { sweepOnce, lastFailure } from './forecast-watcher.js';
 import { pickProvider, classifyAnalysisFailure } from './document-analysis.js';
 import { nextRetryAt, retryDecision, resumeCandidateReason, sweepStalledAnalyses, BACKOFF_MINUTES } from './analysis-retry.js';
 import { writeFile as writeFileAsync, chmod as chmodAsync, mkdtemp as mkdtempAsync } from 'node:fs/promises';
@@ -2310,15 +2315,20 @@ await test('forecast-preflight: תוכנית שלא קיימת מחזירה ok=f
 // תוכנית בלי אף גידול מקושר (שדה "גידולים" ריק/לא-קיים) — מקרה-קצה
 // מפורש ממשימת-הציד: preflight חייב לעצור ב"אין גידול מקושר" בלי
 // לנסות לבדוק מחיר/תפוקה (שאין להם מה לבדוק מולו), ובלי לקרוס.
-await test('forecast-preflight: תוכנית בלי גידול מקושר כלל → "אין גידול מקושר", בלי קריסה', async () => {
+// משימה AL (13.10.2026) — ההודעה השתנתה בכוונה מ"לתוכנית זו אין גידול
+// מקושר" ל**"לא נבחר גידול בתוכנית."**: מאז AL ה-preflight הוא אותה
+// בנייה ב-dryRun, ולכן הוא מחזיר בדיוק את ההודעות שהבנייה מחזירה
+// (שהן ההודעות של סקריפט-Airtable המקורי). הבדיקה מקבלת את שתיהן, כדי
+// שלא תישבר שוב אם הנוסח יתעדכן — מה שחייב להישאר הוא ש"גידול" מופיע.
+await test('forecast-preflight: תוכנית בלי גידול מקושר כלל → הודעת "אין גידול", בלי קריסה', async () => {
   if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
   const plan = await create('תוכניות שתילה', {
     'מבנה': [sId], 'שנת תוכנית': 2033,
     'תחילת קטיף מקורית': '2033-02-01', 'סוף קטיף מקורי': '2033-02-20',
   });
   const result = await api('GET', `plans/${plan.id}/forecast-preflight`);
-  if (!result.missing.some((m) => m.includes('אין גידול מקושר'))) {
-    throw new Error(`צפויה הודעת "אין גידול מקושר" ברשימת החוסרים. התקבל: ${JSON.stringify(result.missing)}`);
+  if (!result.missing.some((m) => /גידול/.test(m))) {
+    throw new Error(`צפויה הודעה על גידול חסר ברשימת החוסרים. התקבל: ${JSON.stringify(result.missing)}`);
   }
   if (result.checkedCropNames.length) throw new Error('בלי גידול מקושר, checkedCropNames אמור להיות ריק');
   if (result.ok) throw new Error('"ok" לא יכול להיות true כשחסר גידול מקושר');
@@ -2443,6 +2453,15 @@ await test('כרטיס משווק: לכל חשבונית אמיתית עם "סכ
 // תפקידו להסביר למה התחזית ריקה. הבדיקה יוצרת תוכנית+גידול+תפוקה-QA
 // ומחיר-QA **בלי "שנה"** אך בטווח שמכסה את הקטיף, ודורשת שלא יופיע
 // חוסר-מחיר. אין Make בטבלאות האלה — רק אוטומציית Airtable פשוטה.
+//
+// ⚠️ עודכן במשימה AL (13.10.2026): התוכניות כאן מקבלות עכשיו גם
+// **תאריכי קטיף מעודכנים**. מאז AL ה-preflight הוא הבנייה עצמה
+// ב-dryRun, והבנייה — בדיוק כמו סקריפט-Airtable שהיא מחליפה — עובדת
+// על `תחילת/סוף קטיף מעודכן` ולא נופלת-לאחור למקוריים (הסקריפט זרק
+// "חסרים תאריכי קטיף מעודכנים."). בפועל `חשב תוכנית` ממלא את
+// המעודכנים בכל תוכנית אמיתית, ולכן זו לא רגרסיה — אבל תוכנית-QA
+// שנוצרת ישירות, בלי להפעיל את האוטומציה, חייבת לקבל אותם מפורשות,
+// אחרת הבדיקה נעצרת על התאריכים ולא מגיעה בכלל לבדיקת המחיר.
 // ============================================================
 await test('forecast-preflight: מחיר בטווח-תאריכים בלי "שנה" אינו מדווח כ"חסר מחיר משוער"', async () => {
   if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
@@ -2451,6 +2470,7 @@ await test('forecast-preflight: מחיר בטווח-תאריכים בלי "שנ�
   const plan = await create('תוכניות שתילה', {
     'מבנה': [sId], 'גידולים': [crop.id], 'שנת תוכנית': 2032,
     'תחילת קטיף מקורית': '2032-02-01', 'סוף קטיף מקורי': '2032-02-20',
+    'תחילת קטיף מעודכנת': '2032-02-01', 'סוף קטיף מעודכן': '2032-02-20',
   });
 
   // (1) בלי שום מחיר — חייב להתלונן על מחיר
@@ -2477,6 +2497,7 @@ await test('forecast-preflight: מחיר בטווח-תאריכים בלי "שנ�
   const awayPlan = await create('תוכניות שתילה', {
     'מבנה': [sId], 'גידולים': [away.id], 'שנת תוכנית': 2032,
     'תחילת קטיף מקורית': '2032-02-01', 'סוף קטיף מקורי': '2032-02-20',
+    'תחילת קטיף מעודכנת': '2032-02-01', 'סוף קטיף מעודכן': '2032-02-20',
   });
   const awayRes = await api('GET', `plans/${awayPlan.id}/forecast-preflight`);
   if (!awayRes.missing.some((m) => m.includes('מחיר'))) {
@@ -4096,6 +4117,273 @@ await test('AJ חי: הרשאות — GET report לכולם, POST sync למנה�
   if (problems.length) throw new Error(problems.join('; '));
   return `${manager ? 'manager: POST 403 / GET עובר' : '(אין מנהל עבודה)'} · ${w ? 'worker POST 403' : '(אין עובד)'} · בלי טוקן 401`;
 }, 20000);
+
+// ============================================================
+// חלק AL (13.10.2026) — בניית התחזית עברה מ-Airtable לשרת
+// ------------------------------------------------------------
+// תמר השביתה את אוטומציית "רענן תחזית". `forecast-build.js` הוא
+// השחזור של אותו סקריפט, עם שני תיקונים: **בונים לפני שמוחקים**,
+// ו**עדכון במקום** (לא מחיקה+יצירה).
+//
+// הבדיקות הטהורות פה עובדות על `computeForecastRows`/`planReconciliation`
+// — בלי רשת, בלי Airtable, ובלי להפעיל שום אוטומציה. הבדיקות החיות
+// נוגעות רק בתוכניות/תחזיות/גידולים (אין שם Make), ובשנת 2037 שאין
+// בה שום נתון אמיתי.
+// ============================================================
+const AL_CROP = 'recALcrop';
+const alPlan = (over = {}) => ({
+  id: 'recALplan', 'מספר תוכנית': 8001, 'שנת תוכנית': 2037, 'גידולים': [AL_CROP],
+  'תחילת קטיף מעודכנת': '2037-05-04', 'סוף קטיף מעודכן': '2037-05-20', ...over,
+});
+const alYield = (quarter, kg = 50, crop = AL_CROP) => ({ id: `recY${quarter}`, 'גידול': [crop], 'רבעון': String(quarter), 'קג לדונם לשבוע': kg });
+const alPrice = (over = {}) => ({ id: 'recP', 'גידול': [AL_CROP], 'שנה': 2037, 'מחיר משוער לקג': 10, 'ברירת מחדל שנתית': true, ...over });
+
+await test('AL טהור: שבוע תפעולי שבת–חמישי, ימי קטיף פעילים בשבוע חלקי, ורבעון לפי תחילת השבוע', () => {
+  // 2037-05-04 הוא יום שני; השבוע שלו מתחיל בשבת 2037-05-02.
+  const out = computeForecastRows(alPlan(), { yields: [alYield(2)], prices: [alPrice()] });
+  if (!out.ok) throw new Error(`לא נבנה: ${out.missing.join(' | ')}`);
+  const starts = out.rows.map((r) => r.weekStart);
+  if (starts.join(',') !== '2037-05-02,2037-05-09,2037-05-16') throw new Error(`שבועות: ${starts.join(',')}`);
+  // כל תחילת-שבוע חייבת להיות שבת
+  for (const s of starts) {
+    const day = new Date(s + 'T12:00:00Z').getUTCDay();
+    if (day !== 6) throw new Error(`${s} אינו יום שבת (getUTCDay=${day})`);
+  }
+  const days = out.rows.map((r) => r.fields['ימי קטיף פעילים']);
+  // שבוע ראשון: 04/05→07/05 = 4 ימים (הקטיף מתחיל בשני) · שבוע מלא: 6 ·
+  // שבוע אחרון: 16/05→20/05 = 5 ימים (הקטיף נגמר ב-20)
+  if (days.join(',') !== '4,6,5') throw new Error(`ימי קטיף פעילים: ${days.join(',')}`);
+  const ends = out.rows.map((r) => r.fields['סוף שבוע']);
+  if (ends.join(',') !== '2037-05-07,2037-05-14,2037-05-21') throw new Error(`סופי שבוע: ${ends.join(',')}`);
+  if (out.rows[0].fields['שבוע'] !== '2037-05-02 - 2037-05-07') throw new Error(`תווית: ${out.rows[0].fields['שבוע']}`);
+  if (out.quarters.join(',') !== '2') throw new Error(`רבעונים: ${out.quarters.join(',')}`);
+  // יום שישי שייך לשבוע שהסתיים — שבוע שמתחיל ביום שישי הוא השבת שלפני 6 ימים
+  const fri = startOfOperationalWeek(alParseDate('2037-05-08'));
+  if (alFormatDate(fri) !== '2037-05-02') throw new Error(`יום שישי מופה ל-${alFormatDate(fri)}`);
+  return '3 שבועות (שבת–חמישי) · ימי קטיף 4/6/5 · רבעון 2 · יום שישי → השבוע שהסתיים';
+});
+
+await test('AL טהור: חסר נתון → ok:false עם הודעת הסקריפט, ובלי אף שורה', () => {
+  const noYield = computeForecastRows(alPlan(), { yields: [alYield(1)], prices: [alPrice()] });
+  if (noYield.ok) throw new Error('נבנה למרות שאין תפוקה לרבעון 2');
+  if (!noYield.missing.includes('לא נמצאה תפוקה רבעונית לגידול ברבעון 2')) throw new Error(`הודעה: ${JSON.stringify(noYield.missing)}`);
+  if (noYield.rows.length) throw new Error('הוחזרו שורות למרות כשל');
+
+  const noPrice = computeForecastRows(alPlan(), { yields: [alYield(2)], prices: [] });
+  if (noPrice.ok || !noPrice.missing.some((m) => /לא נמצא מחיר משוער לתאריך 2037-05-04/.test(m))) {
+    throw new Error(`מחיר חסר: ${JSON.stringify(noPrice.missing)}`);
+  }
+  // רשומת מחיר קיימת אבל בלי ערך — הודעה אחרת, כמו בסקריפט
+  const blankPrice = computeForecastRows(alPlan(), { yields: [alYield(2)], prices: [alPrice({ 'מחיר משוער לקג': null })] });
+  if (blankPrice.ok || !blankPrice.missing.some((m) => /אין מחיר/.test(m))) throw new Error(`מחיר ריק: ${JSON.stringify(blankPrice.missing)}`);
+  // תאריכי קטיף / גידול חסרים
+  const noDates = computeForecastRows(alPlan({ 'תחילת קטיף מעודכנת': null }), { yields: [alYield(2)], prices: [alPrice()] });
+  if (!noDates.missing.includes('חסרים תאריכי קטיף מעודכנים.')) throw new Error(`תאריכים: ${JSON.stringify(noDates.missing)}`);
+  const reversed = computeForecastRows(alPlan({ 'סוף קטיף מעודכן': '2037-05-01' }), { yields: [alYield(2)], prices: [alPrice()] });
+  if (!reversed.missing.includes('סוף הקטיף לפני תחילת הקטיף.')) throw new Error(`הפוך: ${JSON.stringify(reversed.missing)}`);
+  const noCrop = computeForecastRows(alPlan({ 'גידולים': [] }), { yields: [alYield(2)], prices: [alPrice()] });
+  if (!noCrop.missing.includes('לא נבחר גידול בתוכנית.')) throw new Error(`בלי גידול: ${JSON.stringify(noCrop.missing)}`);
+  return 'חסר תפוקה/מחיר/מחיר-ריק/תאריכים/סדר-הפוך/גידול → ok:false, 0 שורות, הודעות הסקריפט';
+});
+
+await test('AL טהור: עדיפות המחירים — טווח גובר על ברירת מחדל, והמאוחר-להתחיל גובר', () => {
+  const prices = [
+    alPrice({ id: 'annual', 'מחיר משוער לקג': 10 }),
+    alPrice({ id: 'range1', 'מחיר משוער לקג': 20, 'מתאריך': '2037-01-01', 'עד תאריך': '2037-12-31', 'ברירת מחדל שנתית': false }),
+    alPrice({ id: 'range2', 'מחיר משוער לקג': 30, 'מתאריך': '2037-05-10', 'ברירת מחדל שנתית': false }),
+  ];
+  const out = computeForecastRows(alPlan(), { yields: [alYield(2)], prices });
+  if (!out.ok) throw new Error(out.missing.join(' | '));
+  const got = out.rows.map((r) => r.fields['מחיר לקג מעודכן']);
+  // שבוע 1: המחיר נקבע לפי **04/05** (היום הראשון הפעיל, לא 02/05) → range1=20
+  // שבוע 2 (09/05): עדיין range1 בלבד → 20 · שבוע 3 (16/05): range2 התחיל → 30
+  if (got.join(',') !== '20,20,30') throw new Error(`מחירים: ${got.join(',')} (צפוי 20,20,30)`);
+  const links = out.rows.map((r) => r.fields['מחירי גידול משוערים'][0]);
+  if (links.join(',') !== 'range1,range1,range2') throw new Error(`קישורי-מחיר: ${links.join(',')}`);
+  // בלי אף טווח — נופלים לברירת המחדל השנתית של אותה שנה
+  const annualOnly = computeForecastRows(alPlan(), { yields: [alYield(2)], prices: [prices[0]] });
+  if (annualOnly.rows.map((r) => r.fields['מחיר לקג מעודכן']).join(',') !== '10,10,10') throw new Error('ברירת מחדל שנתית לא נבחרה');
+  // ברירת מחדל של **שנה אחרת** אינה נחשבת
+  const wrongYear = computeForecastRows(alPlan(), { yields: [alYield(2)], prices: [alPrice({ 'שנה': 2036 })] });
+  if (wrongYear.ok) throw new Error('ברירת מחדל משנה אחרת נבחרה בטעות');
+  // טווח שהסתיים לפני התאריך אינו נחשב
+  const expired = computeForecastRows(alPlan(), { yields: [alYield(2)], prices: [alPrice({ 'מתאריך': '2037-01-01', 'עד תאריך': '2037-04-30', 'ברירת מחדל שנתית': false })] });
+  if (expired.ok) throw new Error('טווח שפג נבחר בטעות');
+  return 'טווח > ברירת-מחדל · המאוחר-להתחיל גובר (20,20,30) · מחיר לפי היום הפעיל הראשון · שנה שגויה/טווח שפג נדחים';
+});
+
+await test('AL טהור: עדכון במקום — זהה לא נוגע, שונה מתעדכן, חסר נוצר, עודף נמחק', () => {
+  const out = computeForecastRows(alPlan(), { yields: [alYield(2)], prices: [alPrice()] });
+  const asExisting = (row, i, over = {}) => ({
+    id: `recE${i}`, 'תוכנית שתילה': ['recALplan'],
+    'תחילת שבוע': row.fields['תחילת שבוע'], 'סוף שבוע': row.fields['סוף שבוע'],
+    'שבוע': row.fields['שבוע'], 'ימי קטיף פעילים': row.fields['ימי קטיף פעילים'],
+    'תפוקה רבעונית': row.fields['תפוקה רבעונית'], 'מחירי גידול משוערים': row.fields['מחירי גידול משוערים'],
+    'מחיר לקג מעודכן': row.fields['מחיר לקג מעודכן'], ...over,
+  });
+
+  // 1. הכל כבר נכון → הכל unchanged, אפס כתיבות
+  const same = planReconciliation(out.rows, out.rows.map(asExisting));
+  if (same.unchanged.length !== 3 || same.creates.length || same.updates.length || same.deletes.length) {
+    throw new Error(`זהה: ${JSON.stringify({ u: same.unchanged.length, c: same.creates.length, up: same.updates.length, d: same.deletes.length })}`);
+  }
+  // 2. שורה אחת עם מחיר שונה → update של **אותו שדה בלבד**
+  const existing2 = out.rows.map((r, i) => asExisting(r, i, i === 1 ? { 'מחיר לקג מעודכן': 7 } : {}));
+  const diff = planReconciliation(out.rows, existing2);
+  if (diff.updates.length !== 1 || diff.unchanged.length !== 2) throw new Error(`שונה: ${JSON.stringify(diff.updates)}`);
+  if (Object.keys(diff.updates[0].fields).join(',') !== 'מחיר לקג מעודכן') throw new Error(`נכתבו שדות מיותרים: ${Object.keys(diff.updates[0].fields)}`);
+  // 3. שורה חסרה → create; שורה עודפת → delete
+  const partial = planReconciliation(out.rows, [asExisting(out.rows[0], 0)]);
+  if (partial.creates.length !== 2 || partial.unchanged.length !== 1) throw new Error(`חסר: ${JSON.stringify({ c: partial.creates.length, u: partial.unchanged.length })}`);
+  const extra = planReconciliation(out.rows.slice(0, 2), out.rows.map(asExisting));
+  if (extra.deletes.length !== 1 || extra.deletes[0].weekStart !== '2037-05-16') throw new Error(`עודף: ${JSON.stringify(extra.deletes)}`);
+  // 4. `קג בפועל` לא נכתב לעולם, ושורה עודפת שיש בה בפועל **לא נמחקת**
+  const withActual = out.rows.map((r, i) => asExisting(r, i, { 'קג בפועל': 99 }));
+  const keep = planReconciliation(out.rows.slice(0, 2), withActual);
+  if (keep.deletes.length) throw new Error('נמחקה שורה שיש בה "קג בפועל"');
+  if (keep.keptWithActual.length !== 1 || keep.keptWithActual[0].actualKg !== 99) throw new Error(`keptWithActual: ${JSON.stringify(keep.keptWithActual)}`);
+  const changed = planReconciliation(out.rows, out.rows.map((r, i) => asExisting(r, i, { 'קג בפועל': 99, 'ימי קטיף פעילים': 1 })));
+  if (changed.updates.some((u) => 'קג בפועל' in u.fields)) throw new Error('"קג בפועל" נכנס לרשימת השדות שנכתבים!');
+  // 5. שתי שורות לאותו שבוע (שריד הסקריפט הישן) → אחת נשמרת, השנייה עודפת
+  const dup = planReconciliation(out.rows, [...out.rows.map(asExisting), asExisting(out.rows[0], 9)]);
+  if (dup.deletes.length !== 1) throw new Error(`כפילות לא טופלה: ${JSON.stringify(dup)}`);
+  return 'זהה→0 כתיבות · שונה→update של שדה אחד · חסר→create · עודף→delete · בפועל לא נכתב ולא נמחק · כפילות מנוקה';
+});
+
+await test('AL חי: תוכנית 2037 — בנייה, אידמפוטנטיות, הרחבת טווח, וכשל שלא הורס', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const crop = await create('גידולים', { 'שם גידול': `${MARK}-al` });
+  const yieldRec = await create('תפוקה רבעונית', { 'גידול': [crop.id], 'רבעון': '2', 'קג לדונם לשבוע': 40 });
+  const priceRec = await create('מחירי גידול משוערים', { 'גידול': [crop.id], 'שנה': 2037, 'מחיר משוער לקג': 11, 'ברירת מחדל שנתית': true });
+  const plan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'גידולים': [crop.id], 'שנת תוכנית': 2037,
+    'תחילת קטיף מעודכנת': '2037-05-04', 'סוף קטיף מעודכן': '2037-05-20',
+  });
+  const rowsOf = async () => (await api('GET', `${enc('תחזית שתילה שבועית')}?raw=1&maxRecords=1000&includeTest=1`))
+    .filter((f) => (Array.isArray(f['תוכנית שתילה']) ? f['תוכנית שתילה'] : []).map((x) => x?.id || x).includes(plan.id));
+
+  // 1. בנייה ראשונה
+  const first = await api('POST', `plans/${plan.id}/forecast`);
+  if (!first.ok) throw new Error(`הבנייה נכשלה: ${first.missing?.join(' | ')}`);
+  if (first.created !== 3 || first.updated || first.deleted) throw new Error(`בנייה ראשונה: ${JSON.stringify(first)}`);
+  let rows = await rowsOf();
+  rows.forEach((r) => cleanup.push({ table: 'תחזית שתילה שבועית', id: r.id }));
+  if (rows.length !== 3) throw new Error(`${rows.length} שורות ב-Airtable, צפוי 3`);
+  if (rows.some((r) => Number(r['מחיר לקג מעודכן']) !== 11)) throw new Error('המחיר לא נכתב');
+  if (!rows.every((r) => (r['תפוקה רבעונית'] || []).some((x) => (x?.id || x) === yieldRec.id))) throw new Error('התפוקה לא קושרה');
+
+  // 2. אידמפוטנטיות
+  const again = await api('POST', `plans/${plan.id}/forecast`);
+  if (again.unchanged !== 3 || again.created || again.updated || again.deleted) throw new Error(`הרצה שנייה: ${JSON.stringify(again)}`);
+
+  // 3. `קג בפועל` שהוזן ביד נשמר דרך בנייה מחדש, והרחבת-טווח מוסיפה שבוע אחד
+  const target = rows.find((r) => String(r['תחילת שבוע']).startsWith('2037-05-02'));
+  await patch('תחזית שתילה שבועית', target.id, { 'קג בפועל': 123 });
+  await patch('תוכניות שתילה', plan.id, { 'סוף קטיף מעודכן': '2037-05-26' });
+  const grown = await api('POST', `plans/${plan.id}/forecast`);
+  if (grown.created !== 1) throw new Error(`הרחבת טווח: ${JSON.stringify(grown)}`);
+  if (grown.deleted) throw new Error('נמחקו שורות בהרחבת טווח');
+  rows = await rowsOf();
+  rows.forEach((r) => { if (!cleanup.some((c) => c.id === r.id)) cleanup.push({ table: 'תחזית שתילה שבועית', id: r.id }); });
+  const kept = rows.find((r) => r.id === target.id);
+  if (Number(kept?.['קג בפועל']) !== 123) throw new Error(`"קג בפועל" אבד בבנייה מחדש: ${kept?.['קג בפועל']}`);
+
+  // 4. **המבחן המרכזי**: מוחקים את התפוקה → הבנייה נכשלת ו**שום שורה לא נמחקת**
+  const beforeFail = (await rowsOf()).length;
+  await del('תפוקה רבעונית', yieldRec.id);
+  const i = cleanup.findIndex((c) => c.table === 'תפוקה רבעונית' && c.id === yieldRec.id);
+  if (i >= 0) cleanup.splice(i, 1);
+  const failed = await api('POST', `plans/${plan.id}/forecast`);
+  if (failed.ok) throw new Error('הבנייה הצליחה למרות שאין תפוקה רבעונית');
+  if (!failed.missing.some((m) => /תפוקה רבעונית/.test(m))) throw new Error(`הודעה: ${JSON.stringify(failed.missing)}`);
+  const afterFail = await rowsOf();
+  if (afterFail.length !== beforeFail) throw new Error(`הכשל מחק שורות: ${beforeFail} → ${afterFail.length} (זה בדיוק הבאג שתוקן)`);
+  if (Number(afterFail.find((r) => r.id === target.id)?.['קג בפועל']) !== 123) throw new Error('"קג בפועל" אבד בכשל');
+  // preflight מחזיר **אותה** הודעה (איחוד הלוגיקות)
+  const pf = await api('GET', `plans/${plan.id}/forecast-preflight`);
+  if (pf.ok || JSON.stringify(pf.missing) !== JSON.stringify(failed.missing)) {
+    throw new Error(`preflight לא תואם את הבנייה: ${JSON.stringify(pf.missing)} מול ${JSON.stringify(failed.missing)}`);
+  }
+  return `3 שבועות נבנו · הרצה שנייה 0 כתיבות · הרחבת-טווח +1 בלי מחיקות · "קג בפועל"=123 שרד · מחיקת תפוקה → ok:false ו-${beforeFail} שורות נשארו · preflight זהה (מחיר 11, ${priceRec.id.slice(-4)})`;
+}, 40000);
+
+await test('AL חי: הסורק הופך סימון "רענן תחזית" לבנייה, ומכבה אותו גם בכשל', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const crop = await create('גידולים', { 'שם גידול': `${MARK}-alw` });
+  await create('תפוקה רבעונית', { 'גידול': [crop.id], 'רבעון': '2', 'קג לדונם לשבוע': 40 });
+  await create('מחירי גידול משוערים', { 'גידול': [crop.id], 'שנה': 2037, 'מחיר משוער לקג': 12, 'ברירת מחדל שנתית': true });
+  const plan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'גידולים': [crop.id], 'שנת תוכנית': 2037,
+    'תחילת קטיף מעודכנת': '2037-06-01', 'סוף קטיף מעודכן': '2037-06-10', 'רענן תחזית': true,
+  });
+  const sweep = await sweepOnce();
+  if (sweep.error) throw new Error(`הסורק נכשל: ${sweep.error}`);
+  const mine = (sweep.plans || []).find((p) => p.planId === plan.id);
+  if (!mine) throw new Error(`הסורק לא תפס את התוכנית המסומנת (תפס ${sweep.plans?.length || 0})`);
+  if (!mine.ok) throw new Error(`הסורק בנה אבל נכשל: ${mine.missing?.join(' | ')}`);
+  const after = await api('GET', `${enc('תוכניות שתילה')}/${plan.id}?includeTest=1`);
+  if (after['רענן תחזית']) throw new Error('הסימון לא כובה — הסורק ינסה לנצח');
+  const rows = (await api('GET', `${enc('תחזית שתילה שבועית')}?raw=1&maxRecords=1000&includeTest=1`))
+    .filter((f) => (Array.isArray(f['תוכנית שתילה']) ? f['תוכנית שתילה'] : []).map((x) => x?.id || x).includes(plan.id));
+  rows.forEach((r) => cleanup.push({ table: 'תחזית שתילה שבועית', id: r.id }));
+  if (!rows.length) throw new Error('הסורק דיווח הצלחה אבל לא נוצרו שורות');
+
+  // ועכשיו תוכנית מסומנת שאי-אפשר לבנות: הסימון חייב להיכבות בכל זאת
+  const broken = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'שנת תוכנית': 2037, // בלי גידול
+    'תחילת קטיף מעודכנת': '2037-06-01', 'סוף קטיף מעודכן': '2037-06-10', 'רענן תחזית': true,
+  });
+  const sweep2 = await sweepOnce();
+  const brokenResult = (sweep2.plans || []).find((p) => p.planId === broken.id);
+  if (!brokenResult || brokenResult.ok) throw new Error(`תוכנית שבורה: ${JSON.stringify(brokenResult)}`);
+  const brokenAfter = await api('GET', `${enc('תוכניות שתילה')}/${broken.id}?includeTest=1`);
+  if (brokenAfter['רענן תחזית']) throw new Error('סימון של תוכנית שבורה לא כובה — לופ אינסופי של הסורק');
+  if (!lastFailure(broken.id)?.missing?.length) throw new Error('הכשל לא נרשם לצ\'יפ בכרטיס');
+  return `הסורק בנה ${rows.length} שבועות והסימון כבה · תוכנית שבורה: הסימון כבה והסיבה נרשמה ("${lastFailure(broken.id).missing[0]}")`;
+}, 40000);
+
+await test('AL חי: הרשאות — POST forecast למנהלת ראשית בלבד, 404 למזהה שלא קיים', async () => {
+  const problems = [];
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  if (manager) {
+    const ml = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
+    try { await apiAs(ml.token, 'POST', 'plans/recX/forecast', {}); problems.push('מנהל עבודה עבר'); }
+    catch (e) { if (!/^403/.test(String(e.message))) problems.push(`manager: ${e.message}`); }
+  }
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  if (w) {
+    const wl = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    try { await apiAs(wl.token, 'POST', 'plans/recX/forecast', {}); problems.push('עובד עבר'); }
+    catch (e) { if (!/^403/.test(String(e.message))) problems.push(`worker: ${e.message}`); }
+  }
+  try { await api('POST', 'plans/recNONEXISTENT00000/forecast', {}); problems.push('מזהה שלא קיים עבר'); }
+  catch (e) { if (!/^404/.test(String(e.message))) problems.push(`404: ${e.message}`); }
+  try { await apiAs(null, 'POST', 'plans/recX/forecast', {}); problems.push('בלי טוקן עבר'); }
+  catch (e) { if (!/^401/.test(String(e.message))) problems.push(`בלי טוקן: ${e.message}`); }
+  if (problems.length) throw new Error(problems.join('; '));
+  return `${manager ? 'manager 403' : '(אין מנהל עבודה)'} · ${w ? 'worker 403' : '(אין עובד)'} · מזהה לא קיים 404 · בלי טוקן 401`;
+}, 20000);
+
+await test('AL: כל 21 התוכניות האמיתיות שיש להן תחזית — dryRun מחזיר "ללא שינוי" לכולן', async () => {
+  // **מבחן-השקילות מול הסקריפט המושבת**: 131 השורות הקיימות נבנו ע"י
+  // סקריפט-Airtable. אם הבנייה בשרת מחזירה unchanged לכולן, המשמעות
+  // היא שהיא מייצרת בדיוק את אותו פלט — שבועות, ימי-קטיף, רבעונים,
+  // קישורי-תפוקה, קישורי-מחיר ומחירים. dryRun = קריאה בלבד.
+  const sources = await fetchForecastSources();
+  const real = sources.plans.filter((p) => !/QA-\d{10,}/.test(JSON.stringify(p)));
+  let unchanged = 0, dirty = [], failed = [];
+  for (const p of real) {
+    const r = await buildForecastForPlan(p.id, { dryRun: true, sources });
+    if (!r.ok) { failed.push(`${r.planNumber}: ${r.missing[0]}`); continue; }
+    unchanged += r.unchanged;
+    if (r.created || r.updated || r.deleted) {
+      dirty.push(`${r.planNumber} (+${r.created}/~${r.updated}/-${r.deleted})`);
+    }
+  }
+  if (dirty.length) throw new Error(`הבנייה בשרת סוטה מהסקריפט הישן ב-${dirty.length} תוכניות: ${dirty.join(', ')}`);
+  if (unchanged < 100) throw new Error(`רק ${unchanged} שורות אומתו — צפוי 100+ (האם התחזיות נמחקו?)`);
+  return `${unchanged} שורות קיימות שוחזרו זהות (0 שינויים) · ${failed.length} תוכניות עם חוסרים: ${failed.join(' | ') || 'אין'}`;
+}, 40000);
 
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
