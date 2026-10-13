@@ -248,16 +248,70 @@ export function withInventoryLock(key, fn) {
  * הוא באמת PDF/JPEG/PNG לפני יצירת רשומה ב-Airtable ושליחה ל-Make לניתוח.
  */
 function isValidDocumentFile(buffer) {
-  if (!buffer || buffer.length < 4) return false;
-  const b = buffer;
-  if (b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46) return true; // "%PDF"
-  // PDF עם תווי-רווח/שורה לפני הכותרת (סורקים וכלי-הנפקה מסוימים — נתפס
-  // חי 12.10.2026, "רשת.pdf" עם 4×LF לפני %PDF). מפרט PDF מתיר לכותרת להופיע
-  // בתוך 1024 הבתים הראשונים, וכל קורא PDF פותח קובץ כזה.
-  if (b.subarray(0, Math.min(b.length, 1024)).indexOf('%PDF-') !== -1) return true;
-  if (b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return true; // JPEG
-  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return true; // PNG
-  return false;
+  return detectDocumentFormat(buffer).ok;
+}
+
+// ============================================================
+// AM-3 (13.10.2026) — "הקובץ אינו תקין" שאומר **מה** זוהה
+// ------------------------------------------------------------
+// תמר קיבלה "הקובץ אינו תקין. יש להעלות PDF, JPG או PNG תקין." בלי שום
+// רמז מה היה הקובץ, ולכן גם בלי רמז מה לעשות. התרחיש השכיח: צילום
+// מהאייפון נשמר כ-**HEIC** ונראה כמו תמונה רגילה בטלפון; WebP מגיע
+// מהורדה מהדפדפן; ו-DOCX/XLSX הם ZIP מבחינת הכותרת, כך שגם הם נראים
+// "שבורים" ולא "פורמט אחר".
+//
+// הזיהוי כאן הוא על **חתימות הבתים** (magic bytes) ולא על הסיומת או
+// על ה-MIME שהדפדפן שלח — שניהם משקרים בקלות (ר' הבדיקה הקיימת
+// "txt בסיומת .jpg נדחה ב-400").
+// ============================================================
+const DOC_FORMATS = [
+  // [תווית, בדיקה]
+  ['PDF', (b) => (b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46)
+    // PDF עם תווי-רווח/שורה לפני הכותרת (סורקים וכלי-הנפקה מסוימים —
+    // נתפס חי 12.10.2026, "רשת.pdf" עם 4×LF לפני %PDF). מפרט PDF מתיר
+    // לכותרת להופיע בתוך 1024 הבתים הראשונים, וכל קורא PDF פותח כזה.
+    || b.subarray(0, Math.min(b.length, 1024)).indexOf('%PDF-') !== -1],
+  ['JPG', (b) => b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF],
+  ['PNG', (b) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47],
+];
+
+/** פורמטים שאינם נתמכים — מזוהים **רק** כדי להסביר למשתמשת מה קרה */
+const REJECTED_FORMATS = [
+  // ISO-BMFF: בתים 4..7 = "ftyp", וה-brand בבתים 8..11 אומר מה זה
+  ['HEIC (תמונה מאייפון)', (b) => b.length > 12 && b.subarray(4, 8).toString('latin1') === 'ftyp'
+    && /^(heic|heix|hevc|hevx|mif1|msf1)/.test(b.subarray(8, 12).toString('latin1'))],
+  ['HEIF/וידאו (MP4/MOV)', (b) => b.length > 12 && b.subarray(4, 8).toString('latin1') === 'ftyp'],
+  ['WebP', (b) => b.length > 12 && b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WEBP'],
+  ['GIF', (b) => b.subarray(0, 3).toString('latin1') === 'GIF'],
+  ['BMP', (b) => b[0] === 0x42 && b[1] === 0x4D],
+  ['TIFF', (b) => (b[0] === 0x49 && b[1] === 0x49 && b[2] === 0x2A) || (b[0] === 0x4D && b[1] === 0x4D && b[2] === 0x00)],
+  // DOCX/XLSX/PPTX הם ZIP; גם ZIP רגיל מגיע לכאן, וזה בסדר — ההודעה
+  // אומרת "Word/Excel או ZIP" ולא מתיימרת להבחין ביניהם בלי לפרוס.
+  ['Word/Excel או ZIP', (b) => b[0] === 0x50 && b[1] === 0x4B && (b[2] === 0x03 || b[2] === 0x05 || b[2] === 0x07)],
+  ['Word/Excel ישן (doc/xls)', (b) => b.length > 8 && b.subarray(0, 8).toString('hex') === 'd0cf11e0a1b11ae1'],
+  ['HTML', (b) => /^\s*<(!doctype html|html)/i.test(b.subarray(0, 64).toString('latin1'))],
+];
+
+/**
+ * @returns {{ ok: boolean, format: string|null, message: string|null }}
+ *   `format` — התווית שזוהתה (נתמך או לא), או null אם לא זוהה כלל.
+ */
+function detectDocumentFormat(buffer) {
+  if (!buffer || buffer.length < 4) {
+    return { ok: false, format: null, message: 'הקובץ ריק או קטוע. יש להעלות PDF, JPG או PNG.' };
+  }
+  for (const [label, test] of DOC_FORMATS) {
+    if (test(buffer)) return { ok: true, format: label, message: null };
+  }
+  for (const [label, test] of REJECTED_FORMATS) {
+    if (test(buffer)) {
+      const hint = /HEIC/.test(label)
+        ? ' צלמי שוב במצב "תואם" (JPG), או שתפי את התמונה והמירי ל-JPG לפני ההעלאה.'
+        : (/WebP|GIF|BMP|TIFF/.test(label) ? ' שמרי את התמונה כ-JPG או PNG.' : ' שמרי או הדפיסי את הקובץ כ-PDF.');
+      return { ok: false, format: label, message: `זוהה קובץ ${label} — מתקבלים רק PDF, JPG או PNG.${hint}` };
+    }
+  }
+  return { ok: false, format: null, message: 'לא זוהה פורמט מוכר בקובץ. מתקבלים רק PDF, JPG או PNG.' };
 }
 
 app.post('/api/upload-document', authenticate, upload.single('file'), async (req, res) => {
@@ -270,8 +324,10 @@ app.post('/api/upload-document', authenticate, upload.single('file'), async (req
     if (req.file.size > 5 * 1024 * 1024) {
       return res.status(400).json({ error: 'הקובץ גדול מ-5MB. יש להעלות קובץ קטן יותר (תמונות מוקטנות אוטומטית).' });
     }
-    if (!isValidDocumentFile(req.file.buffer)) {
-      return res.status(400).json({ error: 'הקובץ אינו תקין. יש להעלות PDF, JPG או PNG תקין.', invalidFile: true });
+    // AM-3: ההודעה אומרת **מה זוהה** ומה לעשות — ר' detectDocumentFormat
+    const detected = detectDocumentFormat(req.file.buffer);
+    if (!detected.ok) {
+      return res.status(400).json({ error: detected.message, invalidFile: true, detectedFormat: detected.format });
     }
 
     // תיקון שם-קובץ שהתעקם ב-multer (קידוד latin1 בטעות על מקור UTF-8) —
@@ -773,8 +829,10 @@ app.post('/api/expenses/manual', authenticate, requireOwner, upload.single('file
       if (req.file.size > 5 * 1024 * 1024) {
         return res.status(400).json({ error: 'הקובץ גדול מ-5MB. יש להעלות קובץ קטן יותר (תמונות מוקטנות אוטומטית).' });
       }
-      if (!isValidDocumentFile(req.file.buffer)) {
-        return res.status(400).json({ error: 'הקובץ אינו תקין. יש להעלות PDF, JPG או PNG תקין.', invalidFile: true });
+      // AM-3: אותה הודעה מפורטת גם במסלול ההוצאה הידנית
+      const detectedManual = detectDocumentFormat(req.file.buffer);
+      if (!detectedManual.ok) {
+        return res.status(400).json({ error: detectedManual.message, invalidFile: true, detectedFormat: detectedManual.format });
       }
     }
 

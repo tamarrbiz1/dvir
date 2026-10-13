@@ -81,24 +81,48 @@ function fmtAnalysis(v, kind) {
   return Array.isArray(v) ? v.join(', ') : String(v);
 }
 
-const ACCEPT = '.pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png';
+// AM-3: הסיומות שמקבלים ישירות + אלה שמומרות אוטומטית ל-JPG. HEIC
+// נכנס לכאן בכוונה: זה פורמט ברירת-המחדל של צילום באייפון, ועד AM-3
+// הוא נדחה עם "סוג קובץ לא נתמך" שלא אמר מה לעשות.
+const ACCEPT = '.pdf,.jpg,.jpeg,.png,.heic,.heif,.webp,application/pdf,image/jpeg,image/png,image/heic,image/heif,image/webp';
 const MAX_MB = 15;
+/** פורמטים שהדפדפן אמור להצליח לפענח ואנחנו ממירים ל-JPG לפני השליחה */
+const CONVERTIBLE_RE = /\.(heic|heif|webp|bmp|tiff?|gif)$/i;
+const CONVERTIBLE_TYPES = ['image/heic', 'image/heif', 'image/webp', 'image/bmp', 'image/tiff', 'image/gif'];
 
 // תמונות גדולות מוקטנות בצד הלקוח לפני השליחה — מקצר משמעותית את זמן ההעלאה
 // (המסמך נשאר קריא לניתוח; PDF אינו משתנה)
 async function shrinkImage(f, maxDim = 2000, quality = 0.85) {
   if (!f.type.startsWith('image/') || f.size < 1.2 * 1024 * 1024) return f;
   try {
-    const bmp = await createImageBitmap(f);
-    const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(bmp.width * scale));
-    canvas.height = Math.max(1, Math.round(bmp.height * scale));
-    canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
-    if (!blob || blob.size >= f.size) return f;
-    return new File([blob], f.name.replace(/\.(png|jpe?g)$/i, '.jpg'), { type: 'image/jpeg' });
+    return await imageToJpeg(f, maxDim, quality) || f;
   } catch { return f; }
+}
+
+/**
+ * תמונה → JPEG דרך canvas. מחזיר null אם הקובץ לא קטן בפועל (ואז אין
+ * טעם להמיר) ו**זורק** אם הדפדפן לא מצליח לפענח את הפורמט.
+ *
+ * AM-3: אותה פונקציה משמשת גם להקטנה (JPG/PNG גדולים) וגם להמרה
+ * (HEIC/WebP). `createImageBitmap` הוא מה שקובע אם הפורמט נתמך —
+ * iOS/Safari מפענחים HEIC, וזה בדיוק המקום שממנו HEIC מגיע. בדפדפן
+ * שלא מפענח, הזריקה נתפסת ב-acceptFile והמשתמשת מקבלת הסבר מה לעשות
+ * במקום "סוג קובץ לא נתמך".
+ *
+ * **בלי תלות חדשה בכלל** — אין ספריית HEIC ב-node_modules, ולא הוספתי
+ * אחת (הן שוקלות מגה-בייטים של wasm).
+ */
+async function imageToJpeg(f, maxDim = 2000, quality = 0.85) {
+  const bmp = await createImageBitmap(f);
+  const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bmp.width * scale));
+  canvas.height = Math.max(1, Math.round(bmp.height * scale));
+  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
+  if (!blob) throw new Error('המרת התמונה נכשלה');
+  const name = f.name.replace(/\.[^.]+$/i, '') + '.jpg';
+  return new File([blob], name, { type: 'image/jpeg' });
 }
 
 // ---------- שבוע עסקי: שבת → חמישי ----------
@@ -261,11 +285,29 @@ export default function UploadDocumentPage() {
   const acceptFile = async (f) => {
     if (!f) return;
     const okType = /\.(pdf|jpe?g|png)$/i.test(f.name) || ['application/pdf', 'image/jpeg', 'image/png'].includes(f.type);
-    if (!okType) { setStatus('error'); setMessage('סוג קובץ לא נתמך. יש להעלות PDF, JPG או PNG.'); return; }
+    // AM-3: פורמט שהדפדפן יודע לפענח (HEIC מאייפון, WebP מהורדה) מומר
+    // ל-JPG **לפני** השליחה, במקום להידחות. אם הדפדפן לא מפענח — הודעה
+    // שאומרת בדיוק מה לעשות, ולא "סוג קובץ לא נתמך".
+    const convertible = !okType && (CONVERTIBLE_RE.test(f.name) || CONVERTIBLE_TYPES.includes(f.type));
+    if (!okType && !convertible) { setStatus('error'); setMessage('סוג קובץ לא נתמך. יש להעלות PDF, JPG או PNG.'); return; }
     if (f.size > MAX_MB * 1024 * 1024) { setStatus('error'); setMessage(`הקובץ גדול מדי (מקסימום ${MAX_MB}MB).`); return; }
-    const small = await shrinkImage(f);
+    let ready = f;
+    if (convertible) {
+      setStatus('idle'); setMessage('ממיר את התמונה ל-JPG…');
+      try {
+        ready = await imageToJpeg(f);
+      } catch {
+        setStatus('error');
+        setMessage(/heic|heif/i.test(f.name) || /heic|heif/i.test(f.type)
+          ? 'הדפדפן הזה לא יודע לפתוח HEIC (הפורמט של צילום באייפון). צלמי שוב במצב "תואם ביותר" (JPG), או שתפי את התמונה מהגלריה — השיתוף ממיר אותה ל-JPG. אפשר גם לשלוח PDF.'
+          : 'לא ניתן היה להמיר את התמונה. יש להעלות PDF, JPG או PNG.');
+        return;
+      }
+    }
+    const small = await shrinkImage(ready);
     if (small.size > 5 * 1024 * 1024) { setStatus('error'); setMessage('הקובץ גדול מ-5MB גם לאחר כיווץ — יש להעלות קובץ קטן יותר.'); return; }
-    setFile(small); setStatus('idle'); setMessage('');
+    setFile(small); setStatus('idle');
+    setMessage(convertible ? `הקובץ הומר ל-JPG (${f.name} → ${small.name})` : '');
   };
 
   const shiftWeek = (weeks) => { const d = new Date(weekStart); d.setDate(d.getDate() + weeks * 7); setWeekStart(d); };

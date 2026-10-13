@@ -4283,8 +4283,16 @@ await test('AL חי: תוכנית 2037 — בנייה, אידמפוטנטיות,
   await patch('תחזית שתילה שבועית', target.id, { 'קג בפועל': 123 });
   await patch('תוכניות שתילה', plan.id, { 'סוף קטיף מעודכן': '2037-05-26' });
   const grown = await api('POST', `plans/${plan.id}/forecast`);
-  if (grown.created !== 1) throw new Error(`הרחבת טווח: ${JSON.stringify(grown)}`);
+  // ⚠️ נבדק **מצב סופי ולא דלתא**: בנייה-ברקע (forecast-sync המדובנס
+  // או הסורק) יכולה להקדים את הבנייה היזומה, ואז היא זו שתיצור את
+  // השבוע הנוסף וכאן נראה created=0/unchanged=4. שתי התוצאות נכונות
+  // באותה מידה — מה שחייב להיות נכון הוא התוצאה: 4 שבועות, בלי
+  // מחיקות, והערך שהוזן ביד שרד.
+  if (!grown.ok) throw new Error(`הרחבת טווח נכשלה: ${grown.missing?.join(' | ')}`);
   if (grown.deleted) throw new Error('נמחקו שורות בהרחבת טווח');
+  if (grown.created + grown.updated + grown.unchanged !== 4) {
+    throw new Error(`אחרי הרחבת הטווח יש ${grown.created + grown.updated + grown.unchanged} שבועות, צפוי 4: ${JSON.stringify({ c: grown.created, u: grown.updated, un: grown.unchanged })}`);
+  }
   rows = await rowsOf();
   rows.forEach((r) => { if (!cleanup.some((c) => c.id === r.id)) cleanup.push({ table: 'תחזית שתילה שבועית', id: r.id }); });
   const kept = rows.find((r) => r.id === target.id);
@@ -4306,7 +4314,7 @@ await test('AL חי: תוכנית 2037 — בנייה, אידמפוטנטיות,
   if (pf.ok || JSON.stringify(pf.missing) !== JSON.stringify(failed.missing)) {
     throw new Error(`preflight לא תואם את הבנייה: ${JSON.stringify(pf.missing)} מול ${JSON.stringify(failed.missing)}`);
   }
-  return `3 שבועות נבנו · הרצה שנייה 0 כתיבות · הרחבת-טווח +1 בלי מחיקות · "קג בפועל"=123 שרד · מחיקת תפוקה → ok:false ו-${beforeFail} שורות נשארו · preflight זהה (מחיר 11, ${priceRec.id.slice(-4)})`;
+  return `3 שבועות נבנו · הרצה שנייה 0 כתיבות · הרחבת-טווח → 4 שבועות בלי מחיקות · "קג בפועל"=123 שרד · מחיקת תפוקה → ok:false ו-${beforeFail} שורות נשארו · preflight זהה (מחיר 11, ${priceRec.id.slice(-4)})`;
 }, 40000);
 
 await test('AL חי: הסורק הופך סימון "רענן תחזית" לבנייה, ומכבה אותו גם בכשל', async () => {
@@ -5012,6 +5020,83 @@ await test('AM-2: הוצאות #173 ו-#174 — המצב השמור בבסיס (
     lines.push(`#${n}: ${st.status}, ${res.length} התאמות${st.unmatched ? `, ${st.unmatched.count}/${st.unmatched.totalLines} שורות לא הותאמו` : ' (נותח לפני AM-2 — אין פירוט שורות)'}`);
   }
   return lines.join(' · ');
+}, READ_WARN_MS);
+
+// ============================================================
+// חלק AM-3 (13.10.2026) — "הקובץ אינו תקין" שאומר **מה** זוהה
+// ------------------------------------------------------------
+// ההודעה הישנה ("הקובץ אינו תקין. יש להעלות PDF, JPG או PNG תקין.")
+// לא אמרה מה היה הקובץ, ולכן גם לא מה לעשות. התרחיש השכיח הוא HEIC —
+// פורמט ברירת-המחדל של צילום באייפון, שנראה כמו תמונה רגילה בטלפון.
+// הזיהוי הוא על **חתימות בתים**, לא על הסיומת או על ה-MIME מהדפדפן
+// (שניהם משקרים — ר' הבדיקה "txt בסיומת .jpg נדחה ב-400").
+// נבדק דרך ה-API האמיתי, בלי ליצור שום רשומה (כל הקבצים נדחים ב-400).
+// ============================================================
+await test('AM-3: הודעת-דחייה מזהה את הפורמט (HEIC/WebP/Word/GIF) ומסבירה מה לעשות', async () => {
+  const send = async (buf, name, type) => {
+    const fd = new FormData();
+    fd.append('file', new Blob([buf], { type }), name);
+    fd.append('table', 'הוצאות');
+    fd.append('field', 'חשבונית');
+    try { await api('POST', 'upload-document', fd, true); return null; }
+    catch (e) { return String(e.message); }
+  };
+  const pad = (b) => Buffer.concat([b, Buffer.alloc(64)]);
+  // HEIC: ftyp + brand "heic" בבתים 8..11
+  const heic = pad(Buffer.concat([Buffer.alloc(4), Buffer.from('ftypheic', 'latin1')]));
+  const webp = pad(Buffer.concat([Buffer.from('RIFF', 'latin1'), Buffer.alloc(4), Buffer.from('WEBP', 'latin1')]));
+  const docx = pad(Buffer.from([0x50, 0x4B, 0x03, 0x04]));
+  const gif = pad(Buffer.from('GIF89a', 'latin1'));
+  const junk = pad(Buffer.from('זה בכלל לא קובץ מסמך', 'utf8'));
+  const bad = [];
+  const expect = async (buf, name, type, needle, label) => {
+    const msg = await send(buf, name, type);
+    if (!msg) { bad.push(`${label}: הקובץ **נקלט** למרות שהוא לא נתמך!`); return; }
+    if (!msg.startsWith('400')) { bad.push(`${label}: צפוי 400, התקבל ${msg.slice(0, 40)}`); return; }
+    if (!msg.includes(needle)) bad.push(`${label}: ההודעה לא מכילה "${needle}" — ${msg.slice(0, 160)}`);
+  };
+  await expect(heic, 'photo.heic', 'image/heic', 'HEIC', 'HEIC');
+  await expect(webp, 'x.webp', 'image/webp', 'WebP', 'WebP');
+  await expect(docx, 'x.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'Word', 'Word/ZIP');
+  await expect(gif, 'x.gif', 'image/gif', 'GIF', 'GIF');
+  await expect(junk, 'x.pdf', 'application/pdf', 'לא זוהה פורמט מוכר', 'קובץ לא מזוהה');
+  await expect(Buffer.from([1, 2]), 'tiny.pdf', 'application/pdf', 'ריק או קטוע', 'קובץ קטוע');
+  // HEIC חייב לכלול הנחיה מעשית, לא רק את שם הפורמט
+  const heicMsg = await send(heic, 'photo.heic', 'image/heic');
+  if (!/JPG/.test(heicMsg || '')) bad.push('הודעת HEIC לא מציעה פתרון (JPG)');
+  // ו-PDF תקין **לא** נדחה (לא שברנו את המסלול התקין): שולחים כותרת
+  // PDF מינימלית ומוודאים שהשגיאה — אם יש — אינה שגיאת-פורמט.
+  // (רשומה כן תיווצר אם זה יעבור, ולכן שולחים PDF *קטוע* שייפול
+  // בהמשך המסלול ולא בבדיקת-הפורמט.)
+  const pdfMsg = await send(pad(Buffer.from('%PDF-1.4\n', 'latin1')), 'ok.pdf', 'application/pdf');
+  if (pdfMsg && /מתקבלים רק PDF|לא זוהה פורמט|ריק או קטוע/.test(pdfMsg)) {
+    bad.push(`PDF תקין נדחה כפורמט לא נתמך: ${pdfMsg.slice(0, 120)}`);
+  }
+  if (bad.length) throw new Error(bad.join('; '));
+  return 'HEIC (עם הצעת JPG) · WebP · Word/ZIP · GIF · קובץ לא מזוהה · קובץ קטוע — כולם 400 עם הסבר';
+}, 30000);
+
+// ============================================================
+// חלק AM-4 (13.10.2026) — "N רשומות ריקות הוסתרו" בתפוקה רבעונית
+// ------------------------------------------------------------
+// ההודעה לא אמרה **איזו** רשומה, ולכן לא היה מה לעשות איתה. הבדיקה
+// מאמתת את הזיהוי מול הבסיס החי (קריאה בלבד) — הכפתור עצמו הוא לקוח.
+// ידוע: רשומה ריקה `reclxqqNrwNEyIfh6`. **לא נמחקת כאן** (הנחיית תמר).
+// ============================================================
+await test('AM-4: הרשומות הריקות בתפוקה רבעונית מזוהות אחת-אחת (קריאה בלבד)', async () => {
+  const quarterly = await directFetchRecords('תפוקה רבעונית', {});
+  const isEmpty = (q) => {
+    const raw = q['קג לדונם לשבוע'] ?? q['ק"ג לדונם לשבוע'];
+    return raw === null || raw === undefined || raw === '';
+  };
+  const empties = quarterly.filter(isEmpty);
+  const label = (q) => `#${q['רבעון גידול'] ?? '?'}/${(Array.isArray(q['גידול']) && q['גידול'].length) ? 'עם גידול' : 'בלי גידול'}/${q['רבעון'] ? 'Q' + q['רבעון'] : 'בלי רבעון'}`;
+  // כל רשומה ריקה חייבת להיות ניתנת לזיהוי — אחרת הכפתור חסר-משמעות
+  const unlabelled = empties.filter((q) => q['רבעון גידול'] === undefined || q['רבעון גידול'] === null);
+  if (unlabelled.length) throw new Error(`${unlabelled.length} רשומות ריקות בלי מספר-רשומה — אי אפשר להציג אותן`);
+  // ורשומה עם 0 אמיתי **אינה** ריקה
+  if (isEmpty({ 'קג לדונם לשבוע': 0 })) throw new Error('0 אמיתי סומן כרשומה ריקה');
+  return `${empties.length} מתוך ${quarterly.length} ריקות: ${empties.map(label).join(', ') || 'אין'} (לא נמחקו — הנחיית תמר)`;
 }, READ_WARN_MS);
 
 // ============ 4. ניקוי מלא ============

@@ -459,20 +459,33 @@ function QuarterlyTab({ quarterly, crops, api, canEdit, onChanged }) {
   // רשומות "תפוקה רבעונית" ריקות-לחלוטין (אין ערך ל"קג לדונם לשבוע" —
   // לא 0 אמיתי, אלא שדה חסר) מוסתרות מהמטריצה ולא נחשבות "—"/0 מטעה;
   // מסך זה רק מציג, לא מתקן את החוסר (ר' תוספת 2026-10-06, סעיף E).
-  const { rows, hiddenCount } = useMemo(() => {
-    let hidden = 0;
+  // AM-4 (13.10.2026): עד כה ההודעה אמרה רק "N רשומות ריקות הוסתרו",
+  // בלי לומר **איזו** — ולכן אי-אפשר היה לעשות איתה שום דבר. עכשיו
+  // נשמרות הרשומות עצמן (מספר הרשומה, גידול, רבעון), ולמנהלת הראשית
+  // יש כפתור מחיקה עם אישור לכל אחת.
+  const { rows, hiddenRecords } = useMemo(() => {
+    const hidden = [];
     const map = {};
     quarterly.forEach((q) => {
       const raw = q['קג לדונם לשבוע'] ?? q['ק"ג לדונם לשבוע'];
-      if (raw === null || raw === undefined || raw === '') { hidden += 1; return; }
+      if (raw === null || raw === undefined || raw === '') { hidden.push(q); return; }
       const crop = cropName(q);
       const qname = q['רבעון'] ? `Q${String(q['רבעון']).replace('Q', '')}` : '—';
       if (!map[crop]) map[crop] = { crop, recs: {} };
       map[crop][qname] = Number(raw) || 0;
       map[crop].recs[qname] = q;
     });
-    return { rows: Object.values(map), hiddenCount: hidden };
+    return { rows: Object.values(map), hiddenRecords: hidden };
   }, [quarterly]);
+  const hiddenCount = hiddenRecords.length;
+  /** תיאור קריא לרשומה ריקה — מספרה, והגידול/הרבעון אם יש */
+  const hiddenLabel = (q) => {
+    const parts = [`רשומה #${q['רבעון גידול'] ?? '?'}`];
+    const crop = displayName(q['גידול'], '');
+    if (crop) parts.push(crop); else parts.push('בלי גידול');
+    parts.push(q['רבעון'] ? `רבעון ${String(q['רבעון']).replace('Q', '')}` : 'בלי רבעון');
+    return parts.join(' · ');
+  };
 
   return (
     <div>
@@ -482,8 +495,24 @@ function QuarterlyTab({ quarterly, crops, api, canEdit, onChanged }) {
         </div>
       )}
       {hiddenCount > 0 && (
-        <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
-          {hiddenCount} רשומות ריקות הוסתרו (אין ק"ג לדונם לשבוע)
+        <div className="card" style={{ marginBottom: 10, padding: '10px 12px' }}>
+          <div style={{ fontSize: 13, marginBottom: hiddenCount ? 8 : 0 }}>
+            {hiddenCount === 1 ? 'רשומה ריקה אחת הוסתרה' : `${hiddenCount} רשומות ריקות הוסתרו`} —
+            אין בהן "ק״ג לדונם לשבוע", ולכן הן לא נכנסות למטריצה ולא משמשות בחישוב התחזית.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {hiddenRecords.map((q) => (
+              <div key={q.id} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', fontSize: 12 }}>
+                <span className="muted">{hiddenLabel(q)}</span>
+                {canEdit && (
+                  <button type="button" className="btn btn-sm btn-ghost"
+                    onClick={async () => {
+                      if (await removeRecord(api, 'תפוקה רבעונית', q.id, hiddenLabel(q))) await onChanged();
+                    }}>🗑 מחיקה</button>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
       {!rows.length ? <div className="empty-state">אין נתונים לתקופה זו</div> : (
