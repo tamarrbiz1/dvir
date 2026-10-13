@@ -91,7 +91,23 @@ export function inventoryAiSummary(state) {
   const results = Array.isArray(state.results) ? state.results : [];
   const deducted = results.filter((r) => r.deducted);
   const pending = results.filter((r) => r.needsApproval && !r.deducted);
-  if (!results.length) return { kind: 'none', text: 'לא נמצאו פריטי מלאי במסמך' };
+  if (!results.length) {
+    // AM-2 (13.10.2026): "לא נמצאו פריטי מלאי במסמך" נקרא כמו "הניתוח
+    // נכשל", ובפועל זה היה המצב ההפוך — ב-#174 ה-AI קרא 25 שורות
+    // מושלם, ואף אחת מהן לא הייתה אחת מקטגוריות המלאי. עכשיו ההודעה
+    // אומרת **מה כן נקרא**, כדי שתמר תדע שהמסמך נותח ושההחלטה
+    // (להוסיף פריט-מלאי) היא שלה. ר' inventory-deduction.js.
+    const u = state.unmatched;
+    if (u?.count) {
+      return {
+        kind: 'none',
+        text: `נקראו ${u.totalLines} שורות, אף אחת אינה פריט מלאי`,
+        detail: `הניתוח קרא את המסמך במלואו. ${u.count} מתוך ${u.totalLines} השורות אינן שייכות לאף אחת מקטגוריות המלאי הקיימות (${(u.knownCategories || []).join(', ')}).`,
+        unmatched: u.samples || [],
+      };
+    }
+    return { kind: 'none', text: 'לא נמצאו פריטי מלאי במסמך' };
+  }
   if (pending.length) return { kind: 'warn', text: `${pending.length} ממתין לאישור` };
   return { kind: 'ok', text: `הורדה מ-${deducted.length} פריטים` };
 }

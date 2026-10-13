@@ -599,8 +599,47 @@ function InventoryAiSection({ expense, onChanged }) {
           </button>
         </div>
       )}
+      {/* AM-2 (13.10.2026): "לא נמצאו פריטי מלאי במסמך" נקרא כמו כשל,
+          ובפועל (#174) ה-AI קרא 25 שורות מושלם — פשוט אף אחת מהן אינה
+          אחת מקטגוריות המלאי. מציגים מה כן נקרא, כדי שההחלטה "להוסיף
+          פריט-מלאי / לא רלוונטי" תהיה שלה ועל בסיס נתונים. */}
       {state && state.status !== 'failed' && state.status !== 'waiting' && !results.length && (
-        <div className="muted" style={{ marginBottom: 10 }}>לא נמצאו פריטי מלאי במסמך.</div>
+        state.unmatched?.count ? (
+          <div style={{ marginBottom: 10 }}>
+            <div className="badge" style={{ width: '100%', background: 'var(--docs-soft)', textAlign: 'start', padding: '8px 10px', lineHeight: 1.6 }}>
+              📄 המסמך נותח במלואו: <b>{state.unmatched.totalLines} שורות נקראו</b>, ואף אחת מהן אינה שייכת
+              לקטגוריות המלאי הקיימות ({(state.unmatched.knownCategories || []).join(', ') || 'אין קטגוריות'}).
+              לכן לא ירד כלום — וזו לא תקלה.
+            </div>
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 13 }}>
+                הצג את השורות שנקראו ({Math.min(state.unmatched.count, (state.unmatched.samples || []).length)}
+                {state.unmatched.count > (state.unmatched.samples || []).length ? ` מתוך ${state.unmatched.count}` : ''})
+              </summary>
+              <div className="table-wrap" style={{ marginTop: 6 }}>
+                <table className="data-table">
+                  <thead><tr><th>תיאור</th><th>כמות</th><th>יחידה</th><th>מק״ט</th></tr></thead>
+                  <tbody>
+                    {(state.unmatched.samples || []).map((l, i) => (
+                      <tr key={i}>
+                        <td>{l.description || '—'}</td>
+                        <td>{l.quantity ?? '—'}</td>
+                        <td>{l.unit || '—'}</td>
+                        <td>{l.sku || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                אם אחד מהפריטים האלה כן אמור להיות במלאי — צריך להוסיף אותו כפריט מלאי
+                (או לקשר לו מק״ט), ואז "נתח מחדש".
+              </div>
+            </details>
+          </div>
+        ) : (
+          <div className="muted" style={{ marginBottom: 10 }}>לא נמצאו פריטי מלאי במסמך.</div>
+        )
       )}
 
       {results.map((r, i) => (

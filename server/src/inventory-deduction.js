@@ -328,6 +328,41 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
   // משימה AB: שלב-מק"ט מקדים לפני ההתאמה-לפי-שם. הספק של המסמך (קישור
   // אמיתי לרשומת "ספקים", לא הטקסט החופשי של ספק-AI) מצמצם את החיפוש.
   const matched = await matchLinesWithSkus(analysis.lines, inventoryItems, { supplierId: firstLinkId(fields['ספקים']) });
+  // ============================================================
+  // AM-2 (13.10.2026) — שורות שלא הותאמו **מדווחות** ולא נעלמות
+  // ------------------------------------------------------------
+  // תמר: "ניתוח המלאי החזיר 0 שורות" בהוצאות #173 ו-#174. נבדק חי על
+  // #174 (חשבונית "המשביר לחקלאי", ינואר): ה-AI קרא אותה **מושלם** —
+  // 25 שורות עם תיאור, כמות, יחידה ומק"ט, בביטחון 0.85–0.95 — ו**אף
+  // אחת** מהן אינה אחת משש קטגוריות המלאי (משטחי עץ / נילונים / סולר /
+  // קרטונים / רשתות / כובעים): מגשי ירקות, מרסס, חומרי הדברה, דשנים,
+  // מסמרים, סרט אריזה, הובלה.
+  //
+  // כלומר ההתאמה **עבדה נכון** — אין כאן באג התאמה או פרסינג. הבאג הוא
+  // שכל 25 השורות נפלו **בשקט** (`matchLinesToInventory` עושה
+  // `continue` כשאין קטגוריה או כשאין פריט-מלאי לקטגוריה), והמסך הציג
+  // "לא נמצאו פריטי מלאי במסמך" — מה שנקרא כמו "הניתוח לא הצליח".
+  // מעתה המצב שומר **מה כן נקרא ולמה זה לא נספר**, כדי שההחלטה (להוסיף
+  // פריט-מלאי? לשנות שם?) תהיה של תמר ועל בסיס נתונים.
+  //
+  // נשמרות עד 20 שורות, תיאור מקוצר — ה-state יושב בשדה "הערות" של
+  // ההוצאה, ואין טעם לנפח אותו עם חשבונית של 200 שורות.
+  // ============================================================
+  const matchedLines = new Set(matched.map((m) => m.line));
+  const unmatchedLines = (analysis.lines || []).filter((l) => !matchedLines.has(l));
+  const unmatched = {
+    count: unmatchedLines.length,
+    totalLines: (analysis.lines || []).length,
+    // הקטגוריות שקיימות במלאי כרגע — בלעדיהן ההודעה "לא זוהתה קטגוריה"
+    // חסרת-משמעות למי שקורא אותה
+    knownCategories: [...new Set((inventoryItems || []).map((it) => it['קטגוריה']).filter(Boolean))],
+    samples: unmatchedLines.slice(0, 20).map((l) => ({
+      description: String(l.description || '').slice(0, 60),
+      quantity: l.quantity ?? null,
+      unit: l.unit || null,
+      sku: l.sku || null,
+    })),
+  };
   const expenseNum = fields['מספר הוצאה'];
   const supplierLabel = analysis.supplier || fields['ספק-AI'] || '';
   const dateLabel = analysis.date || fields['תאריך חשבונית-AI'] || '';
@@ -336,7 +371,7 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
     expenseId, currentNotes, matched,
     { supplier: analysis.supplier, date: analysis.date, total: analysis.total, expenseNum, supplierLabel, dateLabel }
   );
-  return { status: finalStatus, analyzedAt: new Date().toISOString(), supplier: analysis.supplier, date: analysis.date, total: analysis.total, results, notes };
+  return { status: finalStatus, analyzedAt: new Date().toISOString(), supplier: analysis.supplier, date: analysis.date, total: analysis.total, results, notes, unmatched };
 }
 
 /** מזהה-הרשומה הראשון בשדה-קישור (מערך של ids, או של {id} אחרי העשרה) */
