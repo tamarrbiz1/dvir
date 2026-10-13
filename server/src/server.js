@@ -25,7 +25,12 @@ import { importSprayReport, deleteSprayReport, sprayReportsHistory, scheduleSpra
 import { startLogisticsSweep } from './logistics-sweep.js';
 import { tokenSource } from './cli-token.js';
 import { checkForecastPreflight } from './forecast-preflight.js';
-import { isForecastSourceTable, syncForecastForChangedRecord } from './forecast-sync.js';
+import { isForecastSourceTable, syncForecastForChangedRecord, setForecastSyncHooks, queueForecastBuild } from './forecast-sync.js';
+import { buildForecastForPlan } from './forecast-build.js';
+import {
+  startForecastWatcher, recordBuildResult,
+  allFailures as allForecastFailures, WATCH_MS as FORECAST_WATCH_MS,
+} from './forecast-watcher.js';
 import {
   planDeletionPreview, deletePlanCascade,
   PLANS_TABLE, PERIODS_TABLE, PLAN_FORECAST_TABLE,
@@ -936,12 +941,13 @@ app.post('/api/spray-reports/:id/import', authenticate, requireOwner, async (req
 
 // ============================================================
 // preflight ל"רענן תחזית" (תוספת 2026-10-06, סעיף E) — בדיקה read-only
-// בלבד (fetchRecords, בלי שום כתיבה) שבודקת אם לתוכנית-שתילה מסוימת
-// יש את כל נתוני-הבסיס שהאוטומציה "רענן תחזית" ב-Airtable צריכה כדי
-// להצליח (תפוקה רבעונית + מחיר גידול משוער). מוגדר כאן, *לפני* ה-
-// middleware הכללי '/api/:table' למטה — אחרת '/api/plans/...' היה
-// מתפרש כטבלה בשם "plans" שלא קיימת ונכשל ב-404, בדיוק כמו שההערה
-// מעל '/api/upload-document' מסבירה.
+// בלבד (בלי שום כתיבה) שבודקת אם לתוכנית-שתילה מסוימת יש את כל
+// נתוני-הבסיס שהבנייה צריכה (תפוקה רבעונית + מחיר גידול משוער).
+// מאז AL זו **אותה בנייה ב-dryRun** ולא לוגיקה שנייה — ר' הכותרת
+// ב-forecast-preflight.js. מוגדר כאן, *לפני* ה-middleware הכללי
+// '/api/:table' למטה — אחרת '/api/plans/...' היה מתפרש כטבלה בשם
+// "plans" שלא קיימת ונכשל ב-404, בדיוק כמו שההערה מעל
+// '/api/upload-document' מסבירה.
 // ============================================================
 app.get('/api/plans/:id/forecast-preflight', authenticate, async (req, res) => {
   try {
@@ -950,6 +956,39 @@ app.get('/api/plans/:id/forecast-preflight', authenticate, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ============================================================
+// בניית התחזית השבועית בשרת (משימה AL, 13.10.2026)
+// ------------------------------------------------------------
+// תמר השביתה את אוטומציית "רענן תחזית" ב-Airtable; מרגע זה השרת הוא
+// שבונה. הנתיב הזה הוא מה שכפתור "🔄 רענן תחזית" בכרטיס קורא לו,
+// והתשובה **סינכרונית** — אין יותר פולינג ואין watchdog של 3 דקות,
+// כי אין יותר אוטומציה אסינכרונית לחכות לה.
+//
+// 200 גם כשהבנייה לא התבצעה בגלל נתון-בסיס חסר (`ok:false` +
+// `missing`): זו תשובה תקפה ולא שגיאת-שרת, והלקוח מציג את אותו מודאל
+// חוסרים של סעיף E. מנהלת ראשית בלבד, כמו שאר הכתיבות של המסך
+// ("תחזית שתילה שבועית" אינו ב-MANAGER_WRITE).
+//
+// `GET` מחזיר את מצב-הכשל האחרון שהסורק רשם לתוכנית (לצ'יפ בכרטיס) —
+// ר' forecast-watcher.js.
+// ============================================================
+app.post('/api/plans/:id/forecast', authenticate, requireOwner, async (req, res) => {
+  try {
+    const dryRun = req.query.dryRun === '1' || req.body?.dryRun === true;
+    const result = recordBuildResult(await buildForecastForPlan(req.params.id, { dryRun }));
+    if (result.notFound) return res.status(404).json({ error: 'התוכנית לא נמצאה' });
+    if (!dryRun && result.ok) { invalidateReads(FORECAST_TABLE); invalidateReads(PLANS_TABLE); }
+    res.json(result);
+  } catch (e) {
+    console.error(`[forecast-build] POST /api/plans/${req.params.id}/forecast נכשל: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/plans/forecast-failures', authenticate, async (_req, res) => {
+  res.json({ failures: allForecastFailures(), watchMs: FORECAST_WATCH_MS });
 });
 
 // ============================================================
@@ -1751,6 +1790,12 @@ app.listen(PORT, () => {
   // 15 דקות, ובנוסף מדובנס אחרי כל שמירה/מחיקה של דיווח-קטיף או תעודת
   // משלוח. ר' actuals-sync.js.
   startActualsSync({ invalidate: () => invalidateReads(FORECAST_TABLE) });
+  // משימה AL: אוטומציית "רענן תחזית" ב-Airtable הושבתה — השרת בונה.
+  // `חשב תוכנית`/`הזז תוכנית` (שנשארו פעילים) ממשיכים לסמן
+  // `רענן תחזית=true`, והסורק הזה הופך את הסימון לבנייה בפועל.
+  const invalidateForecast = () => { invalidateReads(FORECAST_TABLE); invalidateReads(PLANS_TABLE); };
+  setForecastSyncHooks({ invalidate: invalidateForecast });
+  startForecastWatcher({ invalidate: invalidateForecast });
 });
 
 // ============================================================

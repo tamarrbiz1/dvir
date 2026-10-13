@@ -329,7 +329,11 @@ export default function PlantingPlanPage() {
   // (Airtable משותף, עד 5 בקשות/שנייה — אין לבדוק מאות תוכניות בבת-אחת).
   // ------------------------------------------------------------
   const [preflightByPlan, setPreflightByPlan] = useState({});
-  const [preflightModal, setPreflightModal] = useState(null); // { planId, missing }
+  const [preflightModal, setPreflightModal] = useState(null); // { planId, missing, buildFailed? }
+  // משימה AL: planId -> { missing:[], at } — תוכניות שהסורק בשרת ניסה
+  // לבנות ונכשל (נתון-בסיס חסר). בלי זה בנייה שנכשלה ברקע, בלי שאף אחד
+  // לחץ על כלום, הייתה שקטה לגמרי.
+  const [forecastFailures, setForecastFailures] = useState({});
 
   // ============================================================
   // טעינת נתונים
@@ -362,6 +366,18 @@ export default function PlantingPlanPage() {
   // לכן הם מגיעים מ-`GET /api/actuals/report`, שמחשב אותם בשרת מאותם
   // נתוני-מקור בדיוק. כשל כאן אינו מפיל את המסך — ר' הקריאה ב-load.
   // ============================================================
+  // כשלי-בנייה שהסורק בשרת רשם (משימה AL) — לצ'יפ בכרטיס התוכנית
+  const loadForecastFailures = useCallback(async () => {
+    try {
+      const res = await authFetch('/api/plans/forecast-failures');
+      if (!res.ok) return;
+      const data = await res.json();
+      const map = {};
+      for (const f of data.failures || []) map[f.planId] = f;
+      setForecastFailures(map);
+    } catch { /* לא קריטי — הצ'יפ פשוט לא יוצג */ }
+  }, []);
+
   const loadActuals = useCallback(async ({ fresh = false } = {}) => {
     try {
       const res = await authFetch(`/api/actuals/report${fresh ? '?fresh=1' : ''}`);
@@ -391,6 +407,7 @@ export default function PlantingPlanPage() {
       // "קג בפועל" מהטבלה גם בלעדיו; מה שחסר בלעדיו הוא רק המטא-נתונים:
       // מקור, סימון-הערכה, הכנסה-בפועל ותאריכי-קטיף-בפועל).
       loadActuals({ fresh });
+      loadForecastFailures();
       const data = {
         plans: Array.isArray(p) ? p : [],
         periods: Array.isArray(pe) ? pe : [],
@@ -410,7 +427,7 @@ export default function PlantingPlanPage() {
       setLoading(false);
       return null;
     }
-  }, [app.api, loadActuals]);
+  }, [app.api, loadActuals, loadForecastFailures]);
 
   useEffect(() => { load(); }, [load]);
   const silentLoad = useCallback(() => load({ silent: true }), [load]);
@@ -752,9 +769,8 @@ export default function PlantingPlanPage() {
     }
   }, []);
 
-  // "בפועל" חי של forecasts לשימוש בתוך ה-watchdog (setTimeout) בלי closure תקוע על ערך ישן
-  const forecastsRef = useRef(forecasts);
-  useEffect(() => { forecastsRef.current = forecasts; }, [forecasts]);
+  // (עד AL היה כאן `forecastsRef` עבור ה-watchdog של "רענן תחזית".
+  //  הבנייה סינכרונית מאז AL, ה-watchdog נמחק, והרף התייתר.)
 
   // ------------------------------------------------------------
   // פולינג-אחרי-אוטומציה (משימה AI, 13.10.2026)
@@ -832,41 +848,49 @@ export default function PlantingPlanPage() {
   const forecastCountFor = (planId, rows) =>
     rows.filter((f) => firstId(f['תוכנית שתילה']) === planId).length;
 
-  // watchdog: אם 3 דקות אחרי הפעלת "רענן תחזית" אין שורת-תחזית חדשה
-  // לתוכנית הזו — ייתכן שהאוטומציה "נתקעה בשקט" על נתוני-בסיס חסרים
-  // (בדיוק התקרית שגרמה למשימה הזו). רק התרעה — לא פעולה אוטומטית נוספת.
-  // נשאר כגב-מערך ארוך-טווח *מעל* הפולינג הקצר (45 שניות) — האוטומציה
-  // הזו נמדדה בפועל גם בעיכובים של דקות, ואז הפולינג כבר הרים ידיים.
-  const startRefreshWatchdog = useCallback((planId, beforeCount) => {
-    const t = setTimeout(() => {
-      const afterCount = forecastCountFor(planId, forecastsRef.current);
-      if (afterCount <= beforeCount) {
-        toast('הרענון לא הצליח — ייתכן שחסרים נתונים, בדוק preflight', 'warn');
-      }
-    }, 3 * 60 * 1000);
-    pollTimersRef.current.push(t);
-  }, []);
-
+  // ------------------------------------------------------------
+  // "רענן תחזית" (משימה AL, 13.10.2026) — הבנייה עברה לשרת
+  // ------------------------------------------------------------
+  // תמר השביתה את אוטומציית "רענן תחזית" ב-Airtable. לכן הכפתור לא
+  // מסמן יותר צ'קבוקס ולא מחכה לאוטומציה: הוא קורא ל-
+  // `POST /api/plans/:id/forecast`, והתשובה **סינכרונית** — המספרים
+  // האמיתיים חוזרים מיד. נמחקו יחד אִתו `forceTrigger('רענן תחזית')`,
+  // הפולינג של 45 השניות עבור הפעולה הזו, וה-watchdog של 3 הדקות:
+  // שלושתם היו פתרונות לאי-ודאות שכבר לא קיימת.
+  //
+  // `forceTrigger` עצמו **נשאר** — `חשב תוכנית` ו`הזז תוכנית` הן עדיין
+  // אוטומציות Airtable פעילות (לא נגענו בהן), ועליהן הפולינג כן נחוץ.
+  // ------------------------------------------------------------
   const doRefreshForecast = async (planId) => {
-    const beforeCount = forecastCountFor(planId, forecasts);
     const ok = await runAction(async () => {
-      await forceTrigger('תוכניות שתילה', planId, 'רענן תחזית');
-      // תנאי-העצירה: מספר שורות התחזית של התוכנית עלה.
-      return {
-        key: planId,
-        label: '⏳ מחשב תחזית…',
-        isDone: ({ forecasts: rows }) => forecastCountFor(planId, rows) > beforeCount,
-      };
+      const res = await authFetch(`/api/plans/${planId}/forecast`, { method: 'POST' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || `שגיאה ${res.status}`);
+      if (!data.ok) {
+        // נתון-בסיס חסר. **שורות התחזית הקיימות לא נגעו** — זה התיקון
+        // המרכזי ב-AL: הסקריפט הישן מחק קודם ונכשל אחר כך.
+        setPreflightModal({ planId, missing: data.missing || ['הבנייה לא הצליחה'], buildFailed: true });
+        return null;
+      }
+      const detail = [];
+      if (data.created) detail.push(`${data.created} חדשים`);
+      if (data.updated) detail.push(`${data.updated} עודכנו`);
+      if (data.deleted) detail.push(`${data.deleted} נמחקו`);
+      if (!detail.length) detail.push('ללא שינוי');
+      toast(`נבנו ${data.weeks?.length ?? 0} שבועות (${detail.join(', ')})`);
+      if (data.keptWithActual?.length) {
+        toast(`${data.keptWithActual.length} שבועות מחוץ לטווח הקטיף נשמרו כי יש בהם ק"ג בפועל`, 'warn');
+      }
+      return null;
     });
     if (ok) {
-      toast('הרענון הופעל — התחזית תתעדכן בעוד רגע');
-      startRefreshWatchdog(planId, beforeCount);
+      setForecastFailures((m) => { const n = { ...m }; delete n[planId]; return n; });
       fetchPreflight(planId);
     }
   };
 
   // כפתור "רענן תחזית": בודק preflight קודם; אם יש חוסרים — מודאל-אזהרה
-  // לפני ההפעלה בפועל (המשתמש יכול להמשיך בכל זאת), אחרת מפעיל ישירות.
+  // (אפשר להמשיך בכל זאת — הבנייה תסרב בעצמה ולא תהרוס כלום), אחרת בונה.
   const refreshForecast = async (planId) => {
     const pf = await fetchPreflight(planId);
     if (pf && Array.isArray(pf.missing) && pf.missing.length > 0) {
@@ -1454,6 +1478,7 @@ export default function PlantingPlanPage() {
           periods={periods.filter((p) => firstId(p['תוכנית שתילה']) === planDrawer.id)}
           canWrite={canEdit}
           planActual={actualsByPlan.get(planDrawer.id) || null}
+          buildFailure={forecastFailures[planDrawer.id] || null}
           actualsByRow={actualsByRow}
           computing={computing[planDrawer.id]}
           preflight={preflightByPlan[planDrawer.id]}
@@ -1503,13 +1528,24 @@ export default function PlantingPlanPage() {
       {preflightModal && (
         <div className="modal-overlay" onClick={() => !busy && setPreflightModal(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>⚠ חוסרי נתונים לפני רענון תחזית</h3>
+            <h3>⚠ חוסרי נתונים {preflightModal.buildFailed ? '— התחזית לא נבנתה' : 'לפני רענון תחזית'}</h3>
             <div style={{ marginBottom: 12, color: 'var(--text-secondary)', fontSize: 13 }}>
-              {/* שם המפתחת הוסר מהממשק (משימה AI, סעיף 3) — האפליקציה
-                  נמסרת ללקוח ואין לו הקשר לשם הזה. */}
-              נמצאו נתוני-בסיס חסרים בגידולים/מחירים — "רענן תחזית" עשוי לא ליצור שורות
-              תחזית חדשות עד שהחוסרים האלה יתוקנו ב-Airtable. ניתן להפעיל בכל
-              זאת, אבל סביר שלא תתקבל תוצאה.
+              {/* משימה AL: הטקסט משתנה לפי המצב. `buildFailed` = השרת
+                  **כבר** סירב לבנות, ואז המשפט החשוב הוא שלא נהרס כלום
+                  (עד AL הסקריפט ב-Airtable מחק את השורות ואז נכשל,
+                  והתוכנית נשארה ריקה). */}
+              {preflightModal.buildFailed ? (
+                <>
+                  הבנייה לא התבצעה בגלל נתוני-בסיס חסרים. <b>שורות התחזית הקיימות של
+                  התוכנית לא נגעו ולא נמחקו.</b> אחרי השלמת הנתונים ב-Airtable — לחצי
+                  שוב "רענן תחזית".
+                </>
+              ) : (
+                <>
+                  נמצאו נתוני-בסיס חסרים בגידולים/מחירים, ולכן בנייה עכשיו תסרב. ניתן
+                  לנסות בכל זאת — גם אם תסרב, שום שורה קיימת לא תימחק.
+                </>
+              )}
             </div>
             <ul style={{ margin: '0 0 16px', paddingInlineStart: 20 }}>
               {preflightModal.missing.map((m, i) => (
@@ -1518,15 +1554,17 @@ export default function PlantingPlanPage() {
             </ul>
             <div className="form-actions">
               <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setPreflightModal(null)}>
-                ביטול
+                {preflightModal.buildFailed ? 'סגירה' : 'ביטול'}
               </button>
-              <button type="button" className="btn btn-primary" disabled={busy} onClick={async () => {
-                const planId = preflightModal.planId;
-                setPreflightModal(null);
-                await doRefreshForecast(planId);
-              }}>
-                {busy ? 'מפעיל...' : 'הפעל בכל זאת'}
-              </button>
+              {!preflightModal.buildFailed && (
+                <button type="button" className="btn btn-primary" disabled={busy} onClick={async () => {
+                  const planId = preflightModal.planId;
+                  setPreflightModal(null);
+                  await doRefreshForecast(planId);
+                }}>
+                  {busy ? 'בונה...' : 'נסי בכל זאת'}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1803,8 +1841,24 @@ function CalendarGrid({ days, leadingBlanks, tall, eventsOnDate, nonWorkByKey, o
 // ============================================================
 // כרטיס תוכנית (סעיפים 14–15)
 // ============================================================
-/** צ'יפ-סטטוס קטן על כרטיס התוכנית — תוצאת preflight ל"רענן תחזית" (סעיף E) */
-function ForecastReadinessChip({ preflight }) {
+/**
+ * צ'יפ-סטטוס קטן על כרטיס התוכנית — תוצאת preflight ל"רענן תחזית"
+ * (סעיף E), ומאז AL גם **כשל-בנייה שקרה ברקע**: `חשב תוכנית`/
+ * `הזז תוכנית` ב-Airtable מסמנים `רענן תחזית=true`, הסורק בשרת מנסה
+ * לבנות, ואם חסר נתון-בסיס — הכשל נרשם ומוצג כאן. בלי זה הבנייה
+ * הייתה נכשלת ברקע בשקט מוחלט, בלי שאף אחד לחץ על כלום.
+ */
+function ForecastReadinessChip({ preflight, buildFailure, pendingBuild }) {
+  if (buildFailure?.missing?.length) {
+    return (
+      <span className="badge badge-error" style={{ fontSize: 11 }} title={buildFailure.missing.join('\n')}>
+        ⚠ התחזית לא נבנתה: {buildFailure.missing[0]}
+      </span>
+    );
+  }
+  if (pendingBuild) {
+    return <span className="badge badge-warn" style={{ fontSize: 11 }} title="הסורק בשרת בונה את התחזית — עד 20 שניות">⏳ ממתין לבניית תחזית</span>;
+  }
   if (!preflight || preflight.loading) {
     return <span className="badge" style={{ background: 'var(--bg-secondary)', fontSize: 11 }}>בודק מוכנות...</span>;
   }
@@ -1822,7 +1876,7 @@ function ForecastReadinessChip({ preflight }) {
   );
 }
 
-function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate, onDeletePeriod, onDelete, onRefreshForecast, preflight, computing, canWrite = true, planActual = null, actualsByRow = null }) {
+function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate, onDeletePeriod, onDelete, onRefreshForecast, preflight, computing, canWrite = true, planActual = null, actualsByRow = null, buildFailure = null }) {
   useEscapeClose(onClose, !busy); // סגירה במקש Escape
   const [openWeek, setOpenWeek] = useState(null); // מזהה רשומת תחזית שפתוחה לפירוט יומי
   const pairs = [
@@ -1845,7 +1899,7 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
         <div className="drawer-header">
           <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {info.icon} כרטיס תוכנית — תוכנית {info.number ?? 'חדשה'}
-            <ForecastReadinessChip preflight={preflight} />
+            <ForecastReadinessChip preflight={preflight} buildFailure={buildFailure} pendingBuild={!!plan['רענן תחזית']} />
             {/* האוטומציה ב-Airtable עוד רצה על התוכנית הזו (משימה AI) */}
             {computing && <span className="badge badge-warn">{computing}</span>}
           </span>

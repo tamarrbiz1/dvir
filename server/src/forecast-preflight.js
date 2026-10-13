@@ -1,166 +1,87 @@
 // ============================================================
 // בדיקת מוכנות-תחזית לתוכנית שתילה (read-only) — תוספת 2026-10-06, סעיף E
+// **נכתב מחדש במשימה AL (13.10.2026) — ר' "איחוד" למטה.**
 // ------------------------------------------------------------
-// הבעיה: הכפתור/תיבת-הסימון "רענן תחזית" (אוטומציה ב-Airtable, טבלת
-// "תוכניות שתילה") נכשלת בשקט כשחסרים נתוני-בסיס — "תפוקה רבעונית"
-// לגידול+רבעון, או "מחיר גידול משוער" לגידול+שנה. המשתמש לא מקבל שום
-// שגיאה; פשוט לא נוצרות שורות "תחזית שתילה שבועית" חדשות (ר' תוכנית 42
+// הבעיה המקורית: "רענן תחזית" נכשל בשקט כשחסרים נתוני-בסיס — תפוקה
+// רבעונית לגידול+רבעון, או מחיר גידול משוער — והמשתמשת לא קיבלה שום
+// שגיאה; פשוט לא נוצרו שורות "תחזית שתילה שבועית" (ר' תוכנית 42
 // שנשארה ריקה).
 //
-// המודול הזה *בודק בלבד* (fetchRecords, לא כתיבה) ומחזיר רשימת חוסרים
-// בעברית ברורה — התיקון עצמו הוא בידי תמר ישירות ב-Airtable, לא כאן.
+// ------------------------------------------------------------
+// איחוד (AL, §1.5 במשימה): אין יותר שתי לוגיקות
+// ------------------------------------------------------------
+// עד AL היה כאן **שחזור עצמאי** של תנאי-הזכאות של סקריפט-Airtable:
+// אילו רבעונים רלוונטיים, איזה מחיר תקף, מה נחשב "חסר". זה החזיק שתי
+// אמיתות שהיה מובטח שיסטו אחת מהשנייה — וזה כבר קרה: בלילה 3
+// (7.10.2026) המחיר-לפי-טווח-תאריכים נבדק כאן לפי `שנה` בלבד, ולכן
+// מחיר תקף לגמרי דווח כ"חסר" ותמר נשלחה לתקן נתון שלא היה שבור.
+//
+// מאז AL החישוב **עבר לשרת** (`forecast-build.js`), ולכן הבדיקה הזו
+// היא פשוט אותה בנייה ב-`dryRun`: אותה פונקציה, אותם מקורות, **אותן
+// הודעות-חוסר בדיוק** שתמר תראה אם תלחץ "רענן תחזית". אי-אפשר יותר
+// שהצ'יפ יגיד "מוכן" והבנייה תיכשל, או להיפך.
 // ============================================================
-import { fetchRecords } from './airtable.js';
+import { buildForecastForPlan, fetchForecastSources, quarterFromDate, parseDate } from './forecast-build.js';
 
-const PLANS_TABLE = 'תוכניות שתילה';
-const CROPS_TABLE = 'גידולים';
-const QUARTERLY_YIELD_TABLE = 'תפוקה רבעונית';
-const CROP_PRICES_TABLE = 'מחירי גידול משוערים';
-
-const QUARTER_MONTHS = { 1: [0, 1, 2], 2: [3, 4, 5], 3: [6, 7, 8], 4: [9, 10, 11] };
-
-/** כל מזהי-הקישור בשדה (לא רק הראשון) — "גידול" מוגדר כקישור-יחיד, אבל
- *  Airtable מרשה להוסיף שם יותר מאחד, ואז בדיקת-הראשון-בלבד שהייתה כאן
- *  עד לילה 3 "איבדה" התאמה ודיווחה חוסר-כזב. */
-function allIds(value) {
+const linkedIds = (value) => {
   const arr = Array.isArray(value) ? value : (value ? [value] : []);
   return arr.map((v) => (v && typeof v === 'object' ? v.id : v)).filter(Boolean);
-}
-
-/** תאריך Airtable ("2027-01-30") -> Date בחצות מקומית, בלי הסטת אזור זמן */
-function parseDate(value) {
-  if (!value) return null;
-  const [y, m, d] = String(value).slice(0, 10).split('-').map(Number);
-  if (!y || !m || !d) return null;
-  const date = new Date(y, m - 1, d);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function quarterOfMonth(m) {
-  for (const [q, months] of Object.entries(QUARTER_MONTHS)) {
-    if (months.includes(m)) return Number(q);
-  }
-  return null;
-}
-
-/** ערך "ריק" — null/undefined/מחרוזת ריקה. 0 אינו ריק (ר' הערה ב-PlantingPlanPage.jsx, actualKg). */
-function isBlank(v) {
-  return v === null || v === undefined || v === '';
-}
+};
 
 /**
- * הרבעונים (1–4) שתקופת הקטיף של התוכנית חוצה — לפי הטווח המעודכן אם
- * קיים, אחרת המקורי (אותה לוגיקה בדיוק כמו computePlanRanges בלקוח).
+ * בדיקת מוכנות-תחזית לתוכנית בודדת — read-only בלבד (dryRun).
+ * מחזיר: { ok, planId, planNumber, year, checkedCropNames, checkedQuarters, missing, preview }
+ * — אותו מבנה-תשובה שהלקוח צורך מאז סעיף E, כדי שהצ'יפ והמודאל
+ * הקיימים ימשיכו לעבוד בלי שינוי.
  */
-function relevantQuarters(plan) {
-  const start = parseDate(plan['תחילת קטיף מעודכנת']) || parseDate(plan['תחילת קטיף מקורית']);
-  if (!start) return [];
-  const end = parseDate(plan['סוף קטיף מעודכן']) || parseDate(plan['סוף קטיף מקורי']) || start;
-  const realEnd = end >= start ? end : start;
-
-  const quarters = new Set();
-  const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
-  const endCursor = new Date(realEnd.getFullYear(), realEnd.getMonth(), 1);
-  // הגנת-שפיות: לא לולאה אינסופית אם תאריכים הפוכים/שבורים הגיעו מ-Airtable
-  let guard = 0;
-  while (cursor <= endCursor && guard < 64) {
-    const q = quarterOfMonth(cursor.getMonth());
-    if (q) quarters.add(q);
-    cursor.setMonth(cursor.getMonth() + 1);
-    guard += 1;
-  }
-  return [...quarters].sort((a, b) => a - b);
-}
-
-/**
- * בדיקת מוכנות-תחזית לתוכנית שתילה בודדת — read-only בלבד.
- * מחזיר: { ok, planId, planNumber, year, checkedCropNames, checkedQuarters, missing }
- * "missing" הוא מערך משפטים בעברית, לדוגמה:
- *   "חסר מחיר משוער לעגבניה לשנת 2026"
- *   "חסרה תפוקה רבעונית לרבעון 4 (מלפפון)"
- */
-export async function checkForecastPreflight(planId) {
-  const plans = await fetchRecords(PLANS_TABLE, {});
-  const plan = plans.find((p) => p.id === planId);
+export async function checkForecastPreflight(planId, { sources = null } = {}) {
+  const data = sources || await fetchForecastSources();
+  const plan = data.plans.find((p) => p.id === planId);
   if (!plan) {
     return {
       ok: false, planId, planNumber: null, year: null,
       checkedCropNames: [], checkedQuarters: [],
-      missing: ['התוכנית לא נמצאה'],
+      missing: ['התוכנית לא נמצאה'], preview: null,
     };
   }
 
-  const cropIds = allIds(plan['גידולים']);
-  const year = Number(plan['שנת תוכנית']) || null;
-  const quarters = relevantQuarters(plan);
-  // טווח הקטיף בפועל (YYYY-MM-DD) — נחוץ לבדיקת מחיר-לפי-טווח-תאריכים
-  const harvestFrom = String(plan['תחילת קטיף מעודכנת'] || plan['תחילת קטיף מקורית'] || '').slice(0, 10) || null;
-  const harvestTo = String(plan['סוף קטיף מעודכן'] || plan['סוף קטיף מקורי'] || '').slice(0, 10) || harvestFrom;
-  const missing = [];
+  const result = await buildForecastForPlan(planId, { dryRun: true, sources: data });
 
-  if (!cropIds.length) missing.push('לתוכנית זו אין גידול מקושר (שדה "גידולים" ריק)');
-  if (!year) missing.push('לתוכנית זו אין "שנת תוכנית" — לא ניתן לבדוק מחיר משוער');
-  if (!quarters.length) missing.push('לתוכנית זו אין תאריכי קטיף (מקוריים או מעודכנים) — לא ניתן לקבוע רבעונים רלוונטיים');
+  const cropNames = linkedIds(plan['גידולים'])
+    .map((id) => data.crops.find((c) => c.id === id)?.['שם גידול'] || id);
 
-  // בלי גידול מקושר אין מה לבדוק מול תפוקה/מחירים — עוצרים כאן
-  if (!cropIds.length) {
-    return { ok: missing.length === 0, planId, planNumber: plan['מספר תוכנית'] ?? null, year, checkedCropNames: [], checkedQuarters: quarters, missing };
-  }
-
-  const [crops, yields, prices] = await Promise.all([
-    fetchRecords(CROPS_TABLE, {}),
-    fetchRecords(QUARTERLY_YIELD_TABLE, {}),
-    fetchRecords(CROP_PRICES_TABLE, {}),
-  ]);
-  const cropById = new Map(crops.map((c) => [c.id, c]));
-  const checkedCropNames = cropIds.map((id) => cropById.get(id)?.['שם גידול'] || id);
-
-  for (const cropId of cropIds) {
-    const cropName = cropById.get(cropId)?.['שם גידול'] || cropId;
-
-    for (const q of quarters) {
-      const hasYield = yields.some((y) => allIds(y['גידול']).includes(cropId)
-        && Number(y['רבעון']) === q
-        && !isBlank(y['קג לדונם לשבוע']));
-      if (!hasYield) missing.push(`חסרה תפוקה רבעונית לרבעון ${q} (${cropName})`);
-    }
-
-    // מחיר: האוטומציה ב-Airtable בוחרת לפי העדיפות
-    //   "מחיר לקג מעודכן" ידני  >  מחיר שטווח-התאריכים שלו מכיל את השבוע
-    //   >  מחיר ברירת-המחדל-השנתית לאותה שנה.
-    // תיקון לילה 3 (2026-10-07): כאן נבדק עד עכשיו **רק** Number(שנה)===year,
-    // ולכן מחיר שמוגדר בטווח-תאריכים בלבד (שדות "מתאריך"/"עד תאריך",
-    // בלי "שנה" — צירוף חוקי לגמרי בטבלה) דווח בשקר כ"חסר מחיר משוער",
-    // גם כשהאוטומציה כן הייתה מוצאת ומקשרת אותו. דיווח-חוסר כזב גרוע
-    // במיוחד כאן, כי כל תפקידו של המודול הזה הוא להסביר למה התחזית
-    // ריקה — והוא היה שולח את תמר לתקן נתון שלא היה שבור.
-    const cropPrices = prices.filter((pr) => allIds(pr['גידול']).includes(cropId) && !isBlank(pr['מחיר משוער לקג']));
-    const byYear = year ? cropPrices.filter((pr) => Number(pr['שנה']) === year) : [];
-    // חפיפה בין טווח-המחיר לטווח-הקטיף; צד פתוח (בלי "מתאריך"/"עד תאריך")
-    // נחשב פתוח לאינסוף — בדיוק כמו "מחיר שתקף מאז/עד בלי הגבלה".
-    const byRange = (harvestFrom && harvestTo)
-      ? cropPrices.filter((pr) => {
-        const from = String(pr['מתאריך'] || '').slice(0, 10) || null;
-        const to = String(pr['עד תאריך'] || '').slice(0, 10) || null;
-        if (!from && !to) return false; // לא מחיר-טווח בכלל
-        return (!from || from <= harvestTo) && (!to || to >= harvestFrom);
-      })
-      : [];
-    if (!byYear.length && !byRange.length) {
-      missing.push(year
-        ? `חסר מחיר משוער ל${cropName} לשנת ${year} (גם אין מחיר שטווח התאריכים שלו מכסה את תקופת הקטיף)`
-        : `חסר מחיר משוער ל${cropName} — אין "שנת תוכנית" ואין מחיר שטווח התאריכים שלו מכסה את תקופת הקטיף`);
+  // הרבעונים שהבנייה נגעה בהם. כשהתוכנית נפלה עוד לפני הלופ (אין
+  // תאריכי קטיף או אין גידול) אין רבעונים — ואז הם נגזרים מהטווח, כדי
+  // שהתשובה תישאר אינפורמטיבית כמו קודם.
+  let checkedQuarters = result.quarters || [];
+  if (!checkedQuarters.length) {
+    const start = parseDate(plan['תחילת קטיף מעודכנת']) || parseDate(plan['תחילת קטיף מקורית']);
+    const end = parseDate(plan['סוף קטיף מעודכן']) || parseDate(plan['סוף קטיף מקורי']) || start;
+    if (start && end && end >= start) {
+      const qs = new Set();
+      const cursor = new Date(start);
+      let guard = 0;
+      while (cursor <= end && guard < 64) {
+        qs.add(quarterFromDate(cursor));
+        cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+        guard += 1;
+      }
+      checkedQuarters = [...qs].sort((a, b) => a - b);
     }
   }
 
   return {
-    ok: missing.length === 0,
+    ok: result.ok,
     planId,
     planNumber: plan['מספר תוכנית'] ?? null,
-    year,
-    checkedCropNames,
-    checkedQuarters: quarters,
-    missing,
+    year: Number(plan['שנת תוכנית']) || null,
+    checkedCropNames: cropNames,
+    checkedQuarters,
+    missing: result.missing || [],
+    // תוספת AL — מה *היה* קורה אם היו לוחצים "רענן תחזית" עכשיו
+    preview: result.ok
+      ? { weeks: result.weeks?.length || 0, created: result.created, updated: result.updated, deleted: result.deleted, unchanged: result.unchanged }
+      : null,
   };
 }
 
