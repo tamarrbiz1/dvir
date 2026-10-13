@@ -30,6 +30,7 @@ import {
   planDeletionPreview, deletePlanCascade,
   PLANS_TABLE, PERIODS_TABLE, PLAN_FORECAST_TABLE,
 } from './plan-delete.js';
+import { syncActuals, getActualsReport, startActualsSync, scheduleActualsSync, WORKS_TABLE as ACTUALS_WORKS_TABLE } from './actuals-sync.js';
 
 const FORECAST_TABLE = 'תחזית שתילה שבועית';
 
@@ -320,6 +321,10 @@ app.post('/api/upload-document', authenticate, upload.single('file'), async (req
     // דוח ריסוסים: ברקע מחכים שהניתוח של Make יתמלא ואז מייבאים את
     // השורות לטיפולים (ר' spray-report-import.js). fire-and-forget.
     if (table === SPRAY_REPORTS_TABLE) scheduleSprayReportImport(created.id, { afterImport: onSprayImported });
+    // "בפועל": משקל-ממוצע-לקרטון נלקח מתעודות המשלוח של אותו יום וזן,
+    // ולכן תעודה חדשה יכולה לשנות ק"ג-בפועל של שבוע קיים. מדובנס, ואם
+    // הניתוח של Make טרם הסתיים — הסריקה התקופתית (15 דק') תתפוס.
+    if (table === 'תעודות משלוח') scheduleActualsSync(`תעודת משלוח חדשה ${created.id}`);
     res.status(201).json({ ok: true, record: created });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -680,6 +685,42 @@ app.post('/api/weekly/sync', authenticate, requireOwner, async (req, res) => {
     if (!dryRun) { invalidateReads('סיכום שבועי'); invalidateReads(INVOICES_TABLE); invalidateReads(NOTES_TABLE); }
     res.json(report);
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// "בפועל" — מנוע הביצוע (משימה AJ, 13.10.2026). ר' actuals-sync.js.
+// ------------------------------------------------------------
+// GET  /api/actuals/report  — קריאה בלבד, לכל תפקיד. הלקוח (מסך תוכנית
+//      השתילה) צורך מכאן את מה שאין לו שדה ב-Airtable: מקור הבפועל,
+//      סימון "מוערך", הכנסה בפועל ותאריכי קטיף בפועל (ר' ההסבר על
+//      403 של Meta API בכותרת actuals-sync.js).
+// POST /api/actuals/sync[?dryRun=1] — מנהלת ראשית בלבד, כמו שאר
+//      הכתיבות של מסך תוכנית השתילה ("תחזית שתילה שבועית" אינו
+//      ב-MANAGER_WRITE).
+//
+// שתי השורות האלה **חייבות** להיות כאן, לפני app.get('/api/:table/:id')
+// — אחרת "actuals" היה נקלט כשם-טבלה ו"report" כמזהה-רשומה (אותה
+// מלכודת בדיוק שמתועדת ליד נתיבי /api/plans).
+// ============================================================
+app.get('/api/actuals/report', authenticate, async (req, res) => {
+  try {
+    res.json(await getActualsReport({ maxAgeMs: req.query.fresh === '1' ? 0 : undefined }));
+  } catch (e) {
+    console.error(`[actuals] GET /api/actuals/report נכשל: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/actuals/sync', authenticate, requireOwner, async (req, res) => {
+  try {
+    const dryRun = req.query.dryRun === '1' || req.body?.dryRun === true;
+    const report = await syncActuals({ dryRun });
+    if (!dryRun && (report.kgUpdated || report.kgCleared)) invalidateReads(FORECAST_TABLE);
+    res.json(report);
+  } catch (e) {
+    console.error(`[actuals] POST /api/actuals/sync נכשל: ${e.message}`);
     res.status(500).json({ error: e.message });
   }
 });
@@ -1471,6 +1512,9 @@ app.post('/api/:table', authorizeWrite, async (req, res) => {
       syncForecastForChangedRecord(table, created, { reason: 'יצירה' });
       invalidateReads(FORECAST_TABLE);
     }
+    // דיווח קטיף חדש = מקור ה"בפועל" היחיד (ר' actuals-sync.js) — מריצים
+    // את המנוע מדובנס, כך שהזנת כמה דיווחים ברצף מתכנסת לריצה אחת.
+    if (table === ACTUALS_WORKS_TABLE) scheduleActualsSync(`עבודה חדשה ${created.id}`);
     res.status(201).json(created);
   } catch (e) {
     console.error(`[api] POST /api/${req.params.table} (role=${req.auth?.role || '?'}): ${e.message}`);
@@ -1506,6 +1550,7 @@ app.patch('/api/:table/:id', authorizeWrite, async (req, res) => {
       syncForecastForChangedRecord(table, updated, { reason: 'עדכון' });
       invalidateReads(FORECAST_TABLE);
     }
+    if (table === ACTUALS_WORKS_TABLE) scheduleActualsSync(`עדכון עבודה ${req.params.id}`);
     res.json(updated);
   } catch (e) {
     console.error(`[api] PATCH /api/${req.params.table}/${req.params.id} (role=${req.auth?.role || '?'}): ${e.message}`);
@@ -1616,6 +1661,9 @@ app.delete('/api/:table/:id', authorizeWrite, async (req, res) => {
       syncForecastForChangedRecord(table, forecastSyncSource, { reason: 'מחיקה' });
       invalidateReads(FORECAST_TABLE);
     }
+    // מחיקת דיווח קטיף / תעודת משלוח משנה את ה"בפועל" לא פחות מיצירה:
+    // המנוע מנקה ערך שהוא עצמו כתב וכבר אין לו מקור (ר' actuals-sync.js).
+    if (table === ACTUALS_WORKS_TABLE || table === 'תעודות משלוח') scheduleActualsSync(`מחיקת ${table}/${id}`);
     res.json({ ok: true, cascade });
   } catch (e) {
     console.error(`[api] DELETE /api/${req.params.table}/${req.params.id} (role=${req.auth?.role || '?'}): ${e.message}`);
@@ -1699,6 +1747,10 @@ app.listen(PORT, () => {
     analyze: async (id) => { await analyzeExpenseInventory(id); invalidateReads('מלאי בסיסי'); invalidateReads(EXPENSES_TABLE); },
     markGaveUp: markAnalysisGaveUp,
   });
+  // משימה AJ: מנוע ה"בפועל" — סריקה ראשונה ~3 דק' אחרי העלייה ואז כל
+  // 15 דקות, ובנוסף מדובנס אחרי כל שמירה/מחיקה של דיווח-קטיף או תעודת
+  // משלוח. ר' actuals-sync.js.
+  startActualsSync({ invalidate: () => invalidateReads(FORECAST_TABLE) });
 });
 
 // ============================================================
