@@ -4954,6 +4954,66 @@ await test('AM-1: ההוצאות האמיתיות שהיו "נעלמות" אכן
   return `${split.inPeriod.length} בתקופה (${monthPrefix}) · ${split.recentOutside.length} הועלו לאחרונה מחוץ לתקופה: ${nums.join(', ') || 'אין'}`;
 }, READ_WARN_MS);
 
+// ============================================================
+// חלק AM-2 (13.10.2026) — "ניתוח המלאי החזיר 0 שורות"
+// ------------------------------------------------------------
+// נחקר חי על הוצאה #174 (חשבונית "המשביר לחקלאי", ינואר 2026), בניתוח
+// **אמיתי אחד** ללא הורדה: ה-AI קרא את המסמך מושלם — 25 שורות עם
+// תיאור, כמות, יחידה ומק"ט, בביטחון 0.85–0.95. **אף אחת** מהן אינה
+// אחת משש קטגוריות המלאי (משטחי עץ/נילונים/סולר/קרטונים/רשתות/כובעים):
+// מגשי ירקות, מרסס, חומרי הדברה, דשנים, מסמרים, סרט אריזה, הובלה.
+//
+// כלומר אין כאן באג התאמה או פרסינג — ההתאמה עבדה **נכון**. הבאג היחיד
+// היה שכל 25 השורות נפלו בשקט והמסך אמר "לא נמצאו פריטי מלאי במסמך",
+// שנקרא כמו כשל-ניתוח. הבדיקה הזו מכסה את הדיווח החדש.
+// ============================================================
+await test('AM-2 טהור: שורות שלא הותאמו — ההודעה אומרת מה כן נקרא, ולא "לא נמצא"', () => {
+  const bad = [];
+  // המצב האמיתי של #174: 25 שורות, 0 התאמות
+  const withUnmatched = inventoryAiSummary({
+    status: 'done', results: [],
+    unmatched: {
+      count: 25, totalLines: 25,
+      knownCategories: ['משטחי עץ', 'נילונים', 'סולר', 'קרטונים', 'רשתות', 'כובעים'],
+      samples: [{ description: 'מגש ירקות 15 פתוח', quantity: 660, unit: 'יח', sku: '07660096' }],
+    },
+  });
+  if (withUnmatched.kind !== 'none') bad.push(`kind=${withUnmatched.kind}`);
+  if (!/25 שורות/.test(withUnmatched.text)) bad.push(`הטקסט לא מציין שנקראו שורות: "${withUnmatched.text}"`);
+  if (/לא נמצאו/.test(withUnmatched.text)) bad.push('ההודעה עדיין "לא נמצאו"');
+  if (!/רשתות/.test(withUnmatched.detail || '')) bad.push('הפירוט לא מונה את קטגוריות המלאי');
+  if (withUnmatched.unmatched?.[0]?.sku !== '07660096') bad.push('השורות עצמן לא מוחזרות לתצוגה');
+
+  // מסמך שבאמת לא נקרא ממנו כלום — ההודעה הישנה נשארת
+  const empty = inventoryAiSummary({ status: 'done', results: [], unmatched: { count: 0, totalLines: 0, knownCategories: [], samples: [] } });
+  if (empty.text !== 'לא נמצאו פריטי מלאי במסמך') bad.push(`מסמך ריק: "${empty.text}"`);
+  // state ישן בלי השדה החדש — לא קורס, ומתנהג כמו קודם
+  const legacy = inventoryAiSummary({ status: 'done', results: [] });
+  if (legacy.text !== 'לא נמצאו פריטי מלאי במסמך') bad.push(`state ישן: "${legacy.text}"`);
+  // כשל-ניתוח וסטטוס-המתנה לא השתנו
+  if (inventoryAiSummary({ status: 'failed', error: 'אין מכסה' }).kind !== 'error') bad.push('failed השתנה');
+  if (inventoryAiSummary({ status: 'waiting', retry: {} }).kind !== 'pending') bad.push('waiting השתנה');
+  // ויש התאמות — ההתנהגות הקיימת נשמרת
+  const ok = inventoryAiSummary({ status: 'done', results: [{ deducted: true }], unmatched: { count: 3, totalLines: 4 } });
+  if (ok.kind !== 'ok' || !/הורדה מ-1/.test(ok.text)) bad.push(`עם התאמות: ${JSON.stringify(ok)}`);
+  if (bad.length) throw new Error(bad.join('; '));
+  return '25 שורות נקראו → ההודעה אומרת זאת ומונה את הקטגוריות · מסמך ריק/state ישן → ההודעה הישנה · failed/waiting/ok לא השתנו';
+});
+
+await test('AM-2: הוצאות #173 ו-#174 — המצב השמור בבסיס (קריאה בלבד)', async () => {
+  const expenses = await directFetchRecords('הוצאות', {});
+  const lines = [];
+  for (const n of [173, 174]) {
+    const e = expenses.find((x) => Number(x['מספר הוצאה']) === n);
+    if (!e) { lines.push(`#${n}: לא נמצאה`); continue; }
+    const st = readState(e['הערות']);
+    if (!st) { lines.push(`#${n}: בלי תגית [מלאי-AI]`); continue; }
+    const res = Array.isArray(st.results) ? st.results : [];
+    lines.push(`#${n}: ${st.status}, ${res.length} התאמות${st.unmatched ? `, ${st.unmatched.count}/${st.unmatched.totalLines} שורות לא הותאמו` : ' (נותח לפני AM-2 — אין פירוט שורות)'}`);
+  }
+  return lines.join(' · ');
+}, READ_WARN_MS);
+
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
 // שרדה את הניקוי בריצה קודמת ונשארה בטבלה החיה עד שאותרה ידנית למחרת —
