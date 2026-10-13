@@ -18,6 +18,7 @@ import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 
 import { periodRange, inPeriod, periodCaption } from '../utils/period.js';
+import { splitExpenses, RECENT_UPLOAD_DAYS } from '../utils/expenseList.js';
 import PeriodSelect from './PeriodSelect.jsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
@@ -27,6 +28,9 @@ import { readInventoryAiState, inventoryAiSummary, stripInventoryAiMarker, waiti
 const TABLE = 'הוצאות';
 
 const expDate = (e) => pick(e, ['תאריך חשבונית-AI', 'תאריך העלאת החשבונית', 'תאריך']);
+// AM-1: תאריך **ההעלאה** בלבד (בלי נפילה-לאחור לתאריך החשבונית) —
+// הוא מה שקובע אם ההוצאה "הועלתה לאחרונה". ר' utils/expenseList.js.
+const expUpload = (e) => e['תאריך העלאת החשבונית'] || null;
 const expAmount = (e) => num(e, ['סכום כולל-AI', 'סכום', 'סכום כולל']);
 const expCategory = (e) => expenseCategory(e);
 const expSupplierLink = (e) => (Array.isArray(e['ספקים']) && e['ספקים'][0]) || null;
@@ -85,16 +89,29 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged, onRem
   const supplierNames = useMemo(() => [...new Set(expenses.map(supplierName).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'he')), [expenses]);
 
   const range = useMemo(() => periodRange(preset, from, to), [preset, from, to]);
-  const filtered = useMemo(() => expenses.filter((e) => {
-    if (fSupplier && supplierName(e) !== fSupplier) return false;
-    if (fCategory && expCategory(e) !== fCategory) return false;
-    if (!inPeriod(expDate(e), range)) return false;
-    if (search) {
-      const hay = [supplierName(e), expCategory(e), e['אמצעי תשלום'], e['הערות']].filter(Boolean).join(' ').toLowerCase();
-      if (!hay.includes(search.toLowerCase())) return false;
-    }
-    return true;
-  }).sort((a, b) => String(expDate(b) || '').localeCompare(String(expDate(a) || ''))), [expenses, search, fSupplier, fCategory, range]);
+  // AM-1 (13.10.2026): "הוצאה שהעליתי עכשיו נעלמת" — המסך מסנן לפי
+  // **תאריך החשבונית** וברירת המחדל היא "החודש", ולכן חשבונית שהועלתה
+  // היום עם תאריך ינואר לא הופיעה בכלל. `split.rows` = מה שהטבלה
+  // מציגה (ה"חדשות" בראש), `split.inPeriod` = מה שנכנס ל-KPI ולגרפים
+  // בלבד — כדי שסכום "החודש" לא יכלול חשבונית של ינואר.
+  // ר' utils/expenseList.js להסבר המלא ולבדיקות.
+  const split = useMemo(() => splitExpenses(expenses, {
+    matches: (e) => {
+      if (fSupplier && supplierName(e) !== fSupplier) return false;
+      if (fCategory && expCategory(e) !== fCategory) return false;
+      if (search) {
+        const hay = [supplierName(e), expCategory(e), e['אמצעי תשלום'], e['הערות']].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(search.toLowerCase())) return false;
+      }
+      return true;
+    },
+    inRange: (e) => inPeriod(expDate(e), range),
+    uploadOf: expUpload,
+    sortKey: expDate,
+  }), [expenses, search, fSupplier, fCategory, range]);
+  const filtered = split.inPeriod;   // KPI, גרפים, סכומים — התקופה בלבד
+  const rows = split.rows;           // הטבלה — כולל ה"חדשות" מחוץ לתקופה
+  const recentIds = useMemo(() => new Set(split.recentOutside.map((e) => e.id)), [split]);
 
   const total = filtered.reduce((s, e) => s + expAmount(e), 0);
   // כיתוב התקופה בכרטיסים ובגרפים — בדיוק מה שהטבלה מסננת
@@ -156,18 +173,34 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged, onRem
       {/* טבלה */}
       <div className="card">
         <div className="section-title" style={{ marginTop: 0 }}>הוצאות ({filtered.length})</div>
-        {filtered.length === 0 ? <div className="empty-state"><div className="icon">🧾</div>אין נתונים לתקופה זו</div> : (
+        {/* AM-1: השורה הזו היא התשובה ל"איפה ההוצאה שהעליתי עכשיו" —
+            היא מופיעה רק כשיש כאלה, ומסבירה למה הן בטבלה אבל לא בסכום. */}
+        {split.recentOutside.length > 0 && (
+          <div className="badge" style={{ display: 'block', textAlign: 'start', marginBottom: 10, background: 'var(--docs-soft)', padding: '8px 10px', lineHeight: 1.6 }}>
+            🆕 {split.recentOutside.length} {split.recentOutside.length === 1 ? 'הוצאה שהועלתה' : 'הוצאות שהועלו'} ב-{RECENT_UPLOAD_DAYS} הימים האחרונים
+            אך תאריך החשבונית שלהן מחוץ לתקופה שנבחרה — הן מוצגות בראש הרשימה ואינן נספרות בסכומים למעלה.
+          </div>
+        )}
+        {rows.length === 0 ? <div className="empty-state"><div className="icon">🧾</div>אין נתונים לתקופה זו</div> : (
           <div className="table-wrap">
             <table className="data-table">
               <thead><tr><th>תאריך</th><th>ספק</th><th>קטגוריה</th><th>אמצעי תשלום</th><th>סכום</th><th>מסמך</th><th>מלאי</th><th className="no-print">פעולות</th></tr></thead>
               <tbody>
-                {filtered.slice(0, limit).map((e) => {
+                {rows.slice(0, limit).map((e) => {
                   const link = expSupplierLink(e);
                   const doc = expDoc(e);
                   const aiSummary = inventoryAiSummary(readInventoryAiState(e['הערות']));
+                  const isRecent = recentIds.has(e.id);
                   return (
-                    <tr key={e.id} {...activatable(() => setDrawer(e), 'פתיחת פרטי ההוצאה')}>
-                      <td>{expDate(e) ? formatDate(expDate(e)) : 'לא זמין'}</td>
+                    <tr key={e.id} {...activatable(() => setDrawer(e), 'פתיחת פרטי ההוצאה')}
+                      style={isRecent ? { background: 'var(--docs-soft)' } : undefined}>
+                      <td>
+                        {isRecent && (
+                          <span className="badge" style={{ background: 'var(--docs)', color: '#fff', fontSize: 10, marginInlineEnd: 6 }}
+                            title={`הועלתה ב-${formatDate(expUpload(e))}, מחוץ לתקופה שנבחרה`}>חדש</span>
+                        )}
+                        {expDate(e) ? formatDate(expDate(e)) : 'לא זמין'}
+                      </td>
                       <td>
                         {link ? (
                           <span className="obj-chip"
@@ -220,9 +253,9 @@ export default function ExpensesTab({ app, expenses, suppliers, onChanged, onRem
             </table>
           </div>
         )}
-        {filtered.length > limit && (
+        {rows.length > limit && (
           <div style={{ textAlign: 'center', marginTop: 12 }}>
-            <button className="btn btn-ghost no-print" onClick={() => setLimit((l) => l + 50)}>הצג עוד ({filtered.length - limit} נוספות)</button>
+            <button className="btn btn-ghost no-print" onClick={() => setLimit((l) => l + 50)}>הצג עוד ({rows.length - limit} נוספות)</button>
           </div>
         )}
       </div>
