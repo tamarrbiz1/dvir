@@ -976,6 +976,139 @@ await test('אבטחה: DELETE על "תפוקה רבעונית" — owner מצל
 });
 
 // ============================================================
+// חלק AI (13.10.2026) — DELETE /api/plans/:id: מחיקת תוכנית-שתילה
+// שלמה (תחזיות → תקופות → התוכנית). ר' server/src/plan-delete.js.
+// הכל על רשומות QA בלבד: תוכנית-בדיקה שנוצרת כאן ונמחקת כאן. אין שום
+// נגיעה בתוכנית אמיתית — ובמיוחד לא בקטיפים, שהם נתוני אמת וחוסמים
+// מחיקה (הבדיקה השנייה מאמתת בדיוק את זה).
+// הערה: הטבלאות האלה אינן טבלאות-המסמכים של Make — אין כאן סיכון
+// קרדיטים/השבתה-אוטומטית, ולכן הבדיקות רצות תמיד (בלי RUN_UPLOAD_TESTS).
+// שום אוטומציה אינה מופעלת כאן: התקופות ושורות-התחזית נוצרות ישירות,
+// בלי לגעת ב"חשב תוכנית"/"רענן תחזית", כדי שהבדיקה תהיה דטרמיניסטית
+// ולא תלויה בתור-האוטומציות של Airtable (ר' הערת חלק C2 למעלה).
+// ============================================================
+const planChildren = async (planId) => {
+  const [periods, forecasts] = await Promise.all([
+    api('GET', `${enc('תקופות תוכנית')}?raw=1&maxRecords=1000&includeTest=1`),
+    api('GET', `${enc('תחזית שתילה שבועית')}?raw=1&maxRecords=1000&includeTest=1`),
+  ]);
+  const linked = (rows, field) => rows.filter((r) => (Array.isArray(r[field]) ? r[field] : [])
+    .map((x) => x?.id || x).includes(planId));
+  return { periods: linked(periods, 'תוכנית שתילה'), forecasts: linked(forecasts, 'תוכנית שתילה') };
+};
+
+/** תוכנית-QA עם 2 תקופות ו-2 שורות-תחזית, בלי להפעיל שום אוטומציה */
+const makeQaPlanWithChildren = async (suffix) => {
+  const crop = await create('גידולים', { 'שם גידול': `${MARK}-${suffix}` });
+  const plan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'גידולים': [crop.id], 'שנת תוכנית': 2031,
+    'תחילת שתילה מקורית': '2031-04-01', 'מספר ימי שתילה': 10,
+    'תחילת קטיף מקורית': '2031-05-01', 'מספר ימי קטיף': 20,
+  });
+  await create('תקופות תוכנית', { 'תוכנית שתילה': [plan.id], 'מתאריך': '2031-04-01', 'עד תאריך': '2031-04-10', 'סטטוס': 'שתילה', 'מקור': 'שינוי ידני' });
+  await create('תקופות תוכנית', { 'תוכנית שתילה': [plan.id], 'מתאריך': '2031-05-01', 'עד תאריך': '2031-05-20', 'סטטוס': 'קטיף', 'מקור': 'שינוי ידני' });
+  await create('תחזית שתילה שבועית', { 'תוכנית שתילה': [plan.id], 'תחילת שבוע': '2031-05-04', 'סוף שבוע': '2031-05-10', 'שבוע': `${MARK}-w1` });
+  await create('תחזית שתילה שבועית', { 'תוכנית שתילה': [plan.id], 'תחילת שבוע': '2031-05-11', 'סוף שבוע': '2031-05-17', 'שבוע': `${MARK}-w2` });
+  return { crop, plan };
+};
+
+/** הסרה מרשימת הניקוי של רשומות שהמחיקה כבר מחקה (אחרת הניקוי יתלונן) */
+const forgetCleanup = (table, ids) => {
+  for (const id of ids) {
+    const i = cleanup.findIndex((c) => c.table === table && c.id === id);
+    if (i >= 0) cleanup.splice(i, 1);
+  }
+};
+
+await test('מחיקת תוכנית: תוכנית QA עם 2 תקופות ו-2 שורות תחזית → הכל נמחק, לא נשאר כלום', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const { plan } = await makeQaPlanWithChildren('del-plan');
+  const before = await planChildren(plan.id);
+  if (before.periods.length !== 2) throw new Error(`הכנה נכשלה: ${before.periods.length} תקופות במקום 2`);
+  if (before.forecasts.length !== 2) throw new Error(`הכנה נכשלה: ${before.forecasts.length} שורות תחזית במקום 2`);
+
+  const preview = await api('GET', `plans/${plan.id}/delete-preview`);
+  if (preview.periods !== 2 || preview.forecasts !== 2 || preview.harvests !== 0) {
+    throw new Error(`delete-preview לא תואם: ${JSON.stringify(preview)}`);
+  }
+
+  const res = await api('DELETE', `plans/${plan.id}`);
+  if (res?.deleted?.periods !== 2 || res?.deleted?.forecasts !== 2) {
+    throw new Error(`תשובת המחיקה לא תואמת: ${JSON.stringify(res)}`);
+  }
+  forgetCleanup('תקופות תוכנית', before.periods.map((r) => r.id));
+  forgetCleanup('תחזית שתילה שבועית', before.forecasts.map((r) => r.id));
+  forgetCleanup('תוכניות שתילה', [plan.id]);
+
+  // האימות האמיתי: לא רק שהתוכנית איננה — גם אף ילד לא נשאר יתום.
+  let planGone = false;
+  try { await api('GET', `${enc('תוכניות שתילה')}/${plan.id}`); } catch { planGone = true; }
+  if (!planGone) throw new Error('התוכנית לא נמחקה בפועל');
+  const after = await planChildren(plan.id);
+  if (after.periods.length || after.forecasts.length) {
+    throw new Error(`נשארו רשומות יתומות: ${after.periods.length} תקופות, ${after.forecasts.length} שורות תחזית`);
+  }
+  return '2 תקופות + 2 שורות תחזית + התוכנית — נמחקו, אין רשומות יתומות';
+});
+
+await test('מחיקת תוכנית: תוכנית QA עם קטיף מקושר → 409 ושום דבר לא נמחק', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const { plan } = await makeQaPlanWithChildren('del-blocked');
+  const harvest = await create('קטיפים', {
+    'תוכניות שתילה': [plan.id], 'מבנה': [sId], 'תאריך': '2031-05-05',
+    'סוג קטיף': 'סוג א', 'כמות ק"ג': 5, 'הערות': `${MARK} בדיקת חסימת מחיקה`,
+  });
+  const preview = await api('GET', `plans/${plan.id}/delete-preview`);
+  if (preview.harvests !== 1) throw new Error(`delete-preview לא דיווח על הקטיף: ${JSON.stringify(preview)}`);
+  try {
+    await api('DELETE', `plans/${plan.id}`);
+    throw new Error('המחיקה עברה למרות שיש קטיף מקושר!');
+  } catch (e) {
+    if (!String(e.message).startsWith('409')) throw e;
+  }
+  // כלום לא נמחק — לא התוכנית, לא הילדים, ובטח לא הקטיף
+  const after = await planChildren(plan.id);
+  if (after.periods.length !== 2 || after.forecasts.length !== 2) {
+    throw new Error(`המחיקה החסומה בכל זאת נגעה בילדים: ${after.periods.length} תקופות, ${after.forecasts.length} תחזיות`);
+  }
+  await api('GET', `${enc('תוכניות שתילה')}/${plan.id}`); // זורק אם נמחקה
+  await api('GET', `${enc('קטיפים')}/${harvest.id}`);     // הקטיף שלם
+  return '409 כנדרש; התוכנית, 2 התקופות, 2 התחזיות והקטיף נשארו שלמים';
+});
+
+await test('מחיקת תוכנית: manager/worker נדחים (403), מזהה שלא קיים מחזיר 404', async () => {
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  const fakeId = 'recQA0000000000AI';
+  if (manager) {
+    const mLogin = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
+    try {
+      await apiAs(mLogin.token, 'DELETE', `plans/${fakeId}`);
+      throw new Error('מנהל עבודה הצליח למחוק תוכנית שתילה!');
+    } catch (e) {
+      if (!String(e.message).startsWith('403')) throw e;
+    }
+  }
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  if (w) {
+    const wLogin = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    try {
+      await apiAs(wLogin.token, 'DELETE', `plans/${fakeId}`);
+      throw new Error('עובד הצליח למחוק תוכנית שתילה!');
+    } catch (e) {
+      if (!String(e.message).startsWith('403')) throw e;
+    }
+  }
+  // owner עם מזהה שלא קיים — 404 מפורש, לא 500 עמום
+  try {
+    await api('DELETE', `plans/${fakeId}`);
+    throw new Error('מזהה שלא קיים החזיר הצלחה!');
+  } catch (e) {
+    if (!String(e.message).startsWith('404')) throw new Error(`צפוי 404 למזהה שלא קיים, התקבל: ${e.message}`);
+  }
+  return `manager: ${manager ? '403' : 'דולג'}; worker: ${w ? '403' : 'דולג'}; מזהה לא קיים: 404`;
+});
+
+// ============================================================
 // אבטחה בצד השרת (2026-09-08) — בדיקות-על קבועות לפי דרישת הלקוחה:
 // "בקשות בלי token נדחות, עם token של עובד אי אפשר לקרוא כספים, עם
 // token של מנהל עבודה אי אפשר לכתוב מחוץ לחריגים, קודי כניסה לא

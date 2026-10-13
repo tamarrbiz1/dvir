@@ -26,6 +26,10 @@ import { startLogisticsSweep } from './logistics-sweep.js';
 import { tokenSource } from './cli-token.js';
 import { checkForecastPreflight } from './forecast-preflight.js';
 import { isForecastSourceTable, syncForecastForChangedRecord } from './forecast-sync.js';
+import {
+  planDeletionPreview, deletePlanCascade,
+  PLANS_TABLE, PERIODS_TABLE, PLAN_FORECAST_TABLE,
+} from './plan-delete.js';
 
 const FORECAST_TABLE = 'תחזית שתילה שבועית';
 
@@ -904,6 +908,46 @@ app.get('/api/plans/:id/forecast-preflight', authenticate, async (req, res) => {
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
+// מחיקת תוכנית-שתילה שלמה (משימה AI, 13.10.2026) — ר' plan-delete.js
+// להסבר המלא על הקישורים, סדר המחיקה וחסימת-הקטיפים.
+// מוגדר כאן בכוונה, **לפני** `app.delete('/api/:table/:id')` — אחרת
+// '/api/plans/<id>' היה נקלט שם כטבלה בשם "plans" (שלא קיימת), ובתור
+// מנהל-ראשי (שמותר לו לכתוב לכל טבלה) זה היה מגיע עד Airtable ונכשל
+// בשגיאה עמומה במקום לרוץ.
+// הרשאה: מנהל-ראשי בלבד — בדיוק כמו שאר הכתיבות של מסך תוכנית
+// השתילה (canWriteTable: 'תוכניות שתילה' אינו ב-MANAGER_WRITE).
+// ============================================================
+app.get('/api/plans/:id/delete-preview', authenticate, requireOwner, async (req, res) => {
+  try {
+    const { plan, periods, forecasts, harvests } = await planDeletionPreview(req.params.id);
+    res.json({
+      planNumber: plan['מספר תוכנית'] ?? null,
+      periods: periods.length,
+      forecasts: forecasts.length,
+      harvests: harvests.length,
+    });
+  } catch (e) {
+    sendApiError(res, e);
+  }
+});
+
+app.delete('/api/plans/:id', authenticate, requireOwner, async (req, res) => {
+  try {
+    const result = await deletePlanCascade(req.params.id);
+    [PLANS_TABLE, PERIODS_TABLE, PLAN_FORECAST_TABLE].forEach(invalidateReads);
+    console.log(`[plan-delete] תוכנית ${result.planNumber ?? req.params.id} נמחקה: ${result.deleted.forecasts} תחזיות, ${result.deleted.periods} תקופות`);
+    res.json(result);
+  } catch (e) {
+    console.error(`[plan-delete] ${req.params.id}: ${e.message}`);
+    // כשל-אמצע: הילדים שכן נמחקו לא חוזרים, אבל המטמון חייב להתנקה
+    // כדי שהמסך יראה את המצב האמיתי ולא "כאילו כלום לא קרה".
+    if (e.partial) [PLANS_TABLE, PERIODS_TABLE, PLAN_FORECAST_TABLE].forEach(invalidateReads);
+    if (e.status) return res.status(e.status).json({ error: e.message, ...(e.partial ? { partial: e.partial } : {}), ...(e.harvests ? { harvests: e.harvests } : {}) });
+    sendApiError(res, e);
   }
 });
 

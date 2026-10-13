@@ -212,6 +212,30 @@ export async function deleteRecord(tableName, recordId) {
   return true;
 }
 
+/**
+ * מחיקת כמה רשומות במנות של 10 (מגבלת Airtable לבקשה), כמו createRecords.
+ * מחזיר את מספר הרשומות שנמחקו. בכשל זורק שגיאה שנושאת `deletedCount` —
+ * כמה *כן* נמחקו לפני הכשל — כדי שהקורא יוכל לדווח מצב-חלקי במקום
+ * "נכשל" סתמי (ר' plan-delete.js: מחיקה מדורגת של תוכנית שתילה).
+ */
+export async function deleteRecords(tableName, recordIds) {
+  if (!Array.isArray(recordIds) || !recordIds.length) return 0;
+  maybeFail('delete', tableName);
+  const base = getBase();
+  let done = 0;
+  for (let i = 0; i < recordIds.length; i += 10) {
+    const chunk = recordIds.slice(i, i + 10);
+    try {
+      await base(tableName).destroy(chunk);
+    } catch (e) {
+      e.deletedCount = done;
+      throw e;
+    }
+    done += chunk.length;
+  }
+  return done;
+}
+
 export default {
   getBase,
   getMeta,
