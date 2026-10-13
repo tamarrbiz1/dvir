@@ -231,7 +231,12 @@ const CHART_COLORS = ['#3578E5', '#2E9B62', '#E8B20B', '#7C4DFF', '#09A7B2', '#F
 
 // מתי לרענן (עם עקיפת-מטמון) אחרי פעולה שמפעילה אוטומציה ב-Airtable.
 // ר' ההסבר המלא ליד pollAfterAutomation (משימה AI, 13.10.2026).
-const AUTOMATION_POLL_MS = [5000, 12000, 25000, 45000];
+// הוארך במשימה AK (תוספת 1 של תמר): `הזז תוכנית` מעדכן את תאריכי
+// התוכנית תוך ~12 שניות, ואת שורות `תקופות תוכנית` רק אחרי ~25 שניות
+// (אוטומציה נפרדת שרצה אחריה). עם התקרה הקודמת (45 שנ') ועם תנאי-עצירה
+// של "משהו השתנה" — הפולינג נעצר על השינוי הראשון, והלוח נשאר עם
+// התקופות הישנות עד ההזזה הבאה. ר' planIsConsistent.
+const AUTOMATION_POLL_MS = [5000, 12000, 25000, 45000, 70000];
 
 // ============================================================
 // רכיבים קטנים
@@ -318,6 +323,8 @@ export default function PlantingPlanPage() {
   const [planForm, setPlanForm] = useState(null); // יצירה / שכפול / עריכה
   const [shiftForm, setShiftForm] = useState(null);
   const [periodForm, setPeriodForm] = useState(null);
+  // משימה AK: { planId, planNumber, other } — הצעת מיזוג לתוכנית חופפת
+  const [mergeModal, setMergeModal] = useState(null);
   const [showNonWork, setShowNonWork] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState('');
@@ -845,6 +852,39 @@ export default function PlantingPlanPage() {
     return `${dates}#${per}`;
   }, []);
 
+  /**
+   * **תנאי-העצירה החדש (AK, תוספת 1): עקביות — לא "משהו השתנה".**
+   *
+   * הבאג שתמר דיווחה עליו ("ההזזה מתעדכנת רק בפעם השנייה") לא היה
+   * בהזזה אלא כאן: `הזז תוכנית` מריץ שתי אוטומציות בזו אחר זו —
+   * קודם התאריכים המעודכנים (~12 שנ') ואחר כך שורות `תקופות תוכנית`
+   * (~25 שנ'). תנאי-העצירה הקודם היה "החתימה השתנתה", והחתימה כוללת
+   * את התאריכים — ולכן הפולינג עצר אחרי 12 שניות, כשהתקופות עוד
+   * ישנות. הלוח והגיליון קוראים **מהתקופות**, ולכן הם הציגו את המצב
+   * הקודם; בהזזה הבאה נראתה התוצאה של הקודמת.
+   *
+   * עכשיו עוצרים רק כששורות ה-`מערכת` של שני השלבים **תואמות** את
+   * התאריכים המעודכנים של התוכנית, **וגם** החתימה שונה ממה שהיה לפני
+   * הפעולה (אחרת מצב שהיה עקבי מלכתחילה היה נחשב "סיים" מיד).
+   */
+  const planIsConsistent = useCallback((planId, plans_, periods_) => {
+    const p = plans_.find((x) => x.id === planId);
+    if (!p) return false;
+    const mine = periods_.filter((x) => firstId(x['תוכנית שתילה']) === planId
+      && String(x['מקור'] || '') === 'מערכת');
+    const d = (v) => String(v || '').slice(0, 10);
+    for (const [status, from, to] of [
+      ['שתילה', 'תחילת שתילה מעודכנת', 'סוף שתילה מעודכן'],
+      ['קטיף', 'תחילת קטיף מעודכנת', 'סוף קטיף מעודכן'],
+    ]) {
+      if (!d(p[from]) || !d(p[to])) continue; // לשלב אין תאריכים — אין מה להשוות
+      const row = mine.find((x) => String(x['סטטוס'] || '') === status);
+      if (!row) return false;
+      if (d(row['מתאריך']) !== d(p[from]) || d(row['עד תאריך']) !== d(p[to])) return false;
+    }
+    return true;
+  }, []);
+
   const forecastCountFor = (planId, rows) =>
     rows.filter((f) => firstId(f['תוכנית שתילה']) === planId).length;
 
@@ -949,7 +989,8 @@ export default function PlantingPlanPage() {
       return {
         key: `year:${year}`,
         label: `⏳ מחשב ${list.length} תוכניות…`,
-        isDone: (data) => list.every((pl) => planStateSignature(pl.id, data.plans, data.periods) !== before.get(pl.id)),
+        isDone: (data) => list.every((pl) => planStateSignature(pl.id, data.plans, data.periods) !== before.get(pl.id)
+          && planIsConsistent(pl.id, data.plans, data.periods)),
       };
     });
     if (ok) toast('החישוב הופעל — התוכנית תתעדכן בעוד רגע');
@@ -966,18 +1007,39 @@ export default function PlantingPlanPage() {
       'מספר ימי קטיף': Number(form.harvestDays) || null,
       'שנת תוכנית': Number(form.year) || null,
     };
-    const beforeEdit = form.mode === 'edit' ? planStateSignature(form.id, plans, periods) : null;
+    // מזהה התוכנית שנגעה בפועל — ליצירה הוא נודע רק בתוך ה-closure
+    let touchedId = form.mode === 'edit' ? form.id : null;
     const ok = await runAction(async () => {
       if (form.mode === 'edit') {
-        await app.api.update('תוכניות שתילה', form.id, fields);
-        await forceTrigger('תוכניות שתילה', form.id, 'חשב תוכנית');
-        return {
-          key: form.id,
-          label: '⏳ מחשב תוכנית…',
-          isDone: (data) => planStateSignature(form.id, data.plans, data.periods) !== beforeEdit,
-        };
+        // ----------------------------------------------------------
+        // AK תוספת 2 (החלטת תמר, 13.10): **עריכה משנה רק את המקורי.**
+        // עד כה העריכה הפעילה את `חשב תוכנית` ב-Airtable, שמעתיק
+        // מקורי→מעודכן — כלומר כל עריכה מחקה בשקט הזזה קודמת. מעתה
+        // קוראים לנתיב שרת שכותב את שדות-המקורי בלבד ומחשב את
+        // תאריכי-הסוף באותה לוגיקה (ימי אי-עבודה), והמעודכן נשאר.
+        // ----------------------------------------------------------
+        const res = await authFetch(`/api/plans/${form.id}/original`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            plantStart: form.plantStart || null,
+            plantDays: Number(form.plantDays) || null,
+            harvestStart: form.harvestStart || null,
+            harvestDays: Number(form.harvestDays) || null,
+            cropIds: form.cropId ? [form.cropId] : [],
+            structureIds: form.structureId ? [form.structureId] : [],
+          }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.error || `שגיאה ${res.status}`);
+        const bits = [`התכנון המקורי עודכן (שתילה ${formatDate(data.after['תחילת שתילה מקורית'])}–${formatDate(data.after['סוף שתילה מקורי'])}, קטיף ${formatDate(data.after['תחילת קטיף מקורית'])}–${formatDate(data.after['סוף קטיף מקורי'])})`];
+        if (data.forecast) bits.push(data.forecast.ok ? `התחזית נבנתה מחדש (${data.forecast.reason})` : `התחזית לא נבנתה: ${data.forecast.missing?.[0] || ''}`);
+        else bits.push('התאריכים המעודכנים והתחזית לא שונו');
+        toast(bits.join(' · '));
+        return null; // תשובה סינכרונית — אין אוטומציה לחכות לה
       }
       const created = await app.api.create('תוכניות שתילה', fields);
+      touchedId = created?.id || null;
       // הפעלת מנגנון החישוב הקיים ב-Airtable — Zite אינו מחשב תאריכים
       if (created?.id) await forceTrigger('תוכניות שתילה', created.id, 'חשב תוכנית');
       if (!created?.id) return null;
@@ -986,10 +1048,20 @@ export default function PlantingPlanPage() {
       return {
         key: created.id,
         label: '⏳ מחשב תוכנית…',
-        isDone: (data) => data.periods.some((p) => firstId(p['תוכנית שתילה']) === created.id),
+        // AK תוספת 1: לא מסתפקים ב"נוצרה תקופה" — מחכים שהתקופות
+        // יהיו **תואמות** לתאריכים המעודכנים (`חשב תוכנית` כותב אותן
+        // באוטומציה נפרדת שרצה אחרי זו שכותבת את התאריכים).
+        isDone: (data) => data.periods.some((p) => firstId(p['תוכנית שתילה']) === created.id)
+          && planIsConsistent(created.id, data.plans, data.periods),
       };
     });
-    if (ok) { setPlanForm(null); setPlanDrawer(null); }
+    if (ok) {
+      setPlanForm(null);
+      setPlanDrawer(null);
+      // AK §2: עריכה/יצירה יכולה ליצור חפיפה עם תוכנית אחרת באותו מבנה.
+      // הבדיקה רצה אחרי שהאוטומציה של Airtable סיימה (ר' AUTOMATION_POLL_MS).
+      if (touchedId) setTimeout(() => checkOverlaps(touchedId), 7000);
+    }
   };
 
   const submitShift = async () => {
@@ -1003,23 +1075,102 @@ export default function PlantingPlanPage() {
       return {
         key: planId,
         label: '⏳ מזיז תוכנית…',
-        isDone: (data) => planStateSignature(planId, data.plans, data.periods) !== before,
+        // AK תוספת 1: עקביות, לא "משהו השתנה" — ר' planIsConsistent
+        isDone: (data) => planStateSignature(planId, data.plans, data.periods) !== before
+          && planIsConsistent(planId, data.plans, data.periods),
       };
     });
-    if (ok) { setShiftForm(null); setPlanDrawer(null); }
+    if (ok) {
+      setShiftForm(null);
+      setPlanDrawer(null);
+      setTimeout(() => checkOverlaps(planId), 7000); // AK §2
+    }
   };
 
+  // בדיקת-חפיפה אחרי פעולה שהזיזה תאריכים (AK §2). נקראת גם אחרי
+  // עריכה/הזזה — שם האוטומציות של Airtable אסינכרוניות, ולכן הבדיקה
+  // רצה אחרי שהפולינג הקיים כבר ראה את התוצאה, ולא לפניה.
+  const checkOverlaps = useCallback(async (planId) => {
+    try {
+      const res = await authFetch(`/api/plans/${planId}/overlaps`);
+      if (!res.ok) return;
+      handleOverlapsRef.current(await res.json());
+    } catch { /* התראה בלבד — כשל כאן לא אמור להפריע לפעולה שהצליחה */ }
+  }, []);
+
+  // ------------------------------------------------------------
+  // "שינוי תקופה" (משימה AK, 13.10.2026) — עכשיו משנה את התוכנית
+  // ------------------------------------------------------------
+  // עד AK זה רק יצר שורה ב`תקופות תוכנית` עם `מקור='שינוי ידני'`, לצד
+  // שורת-המערכת: התאריכים של התוכנית לא השתנו, התחזית לא השתנתה, ושום
+  // ק"ג צפוי או הכנסה לא זזו. כלומר הכפתור "עבד" אבל לא עשה כלום חוץ
+  // משורה נוספת בכרטיס, שמסתירה את המצב האמיתי במקום לשנות אותו.
+  //
+  // מעתה הוא קורא ל-`POST /api/plans/:id/period`, שכותב לשדות
+  // **המעודכנים** של השלב שנבחר (המקורי נשמר להשוואה), מעדכן את שורת
+  // המערכת, מוחק שורות ידניות, ובונה את התחזית מחדש — הכל סינכרוני.
+  // ------------------------------------------------------------
   const submitPeriod = async () => {
+    // AK תוספת 2: אפשר לשנות את **שני השלבים באותה פעולה**. נשלחים רק
+    // השלבים שסומנו, והוולידציה בשרת רצה על המצב המשולב.
+    const changes = ['planting', 'harvest']
+      .filter((ph) => periodForm[ph]?.enabled)
+      .map((ph) => ({ phase: ph, from: periodForm[ph].from, to: periodForm[ph].to }));
+    if (!changes.length) { setActionError('בחרי לפחות שלב אחד לשינוי'); return; }
     const ok = await runAction(async () => {
-      await app.api.create('תקופות תוכנית', {
-        'תוכנית שתילה': [periodForm.planId],
-        'מתאריך': periodForm.from,
-        'עד תאריך': periodForm.to,
-        'סטטוס': periodForm.status,
-        'מקור': 'שינוי ידני',
+      const res = await authFetch(`/api/plans/${periodForm.planId}/period`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ changes }),
       });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || `שגיאה ${res.status}`);
+      const parts = changes.map((c) => {
+        const info = c.phase === 'harvest' ? ['תחילת קטיף מעודכנת', 'סוף קטיף מעודכן', 'קטיף'] : ['תחילת שתילה מעודכנת', 'סוף שתילה מעודכן', 'שתילה'];
+        return `${info[2]}: ${formatDate(data.after[info[0]])}–${formatDate(data.after[info[1]])}`;
+      });
+      const bits = [parts.join(' · ')];
+      if (data.forecast?.ok) bits.push(`התחזית נבנתה מחדש (${data.forecast.weeks} שבועות)`);
+      toast(bits.join(' · '));
+      if (!data.forecast?.ok && data.forecast?.missing?.length) {
+        // התאריכים כן השתנו; רק התחזית לא נבנתה (חסר נתון-בסיס).
+        setPreflightModal({ planId: periodForm.planId, missing: data.forecast.missing, buildFailed: true });
+      }
+      handleOverlaps(data);
+      return null;
     });
-    if (ok) { setPeriodForm(null); setPlanDrawer(null); }
+    if (ok) setPeriodForm(null);
+  };
+
+  // חפיפה עם תוכנית אחרת באותו מבנה (AK §2): אותו גידול → הצעת מיזוג
+  // (**לא אוטומטי** — זו החלטה של המשתמשת); גידול שונה → התראה בלבד.
+  const handleOverlaps = (data) => {
+    const list = data?.overlaps || [];
+    if (!list.length) return;
+    for (const o of list.filter((x) => !x.canMerge)) toast(o.message, 'warn');
+    const mergeable = list.find((o) => o.canMerge);
+    if (mergeable) setMergeModal({ planId: data.planId, planNumber: data.planNumber, other: mergeable });
+  };
+  // `checkOverlaps` מוגדר למעלה (useCallback יציב) וקורא דרך ref, כדי
+  // שלא ייווצר תלות-מחזורית בין שני ה-closures.
+  const handleOverlapsRef = useRef(handleOverlaps);
+  handleOverlapsRef.current = handleOverlaps;
+
+  const submitMerge = async () => {
+    const { planId, other } = mergeModal;
+    const ok = await runAction(async () => {
+      const res = await authFetch(`/api/plans/${planId}/merge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ otherId: other.planId }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || `שגיאה ${res.status}`);
+      const moved = data.moved?.harvests || 0;
+      toast(`מוזג לתוכנית ${data.survivor.planNumber} (נמחקה ${data.deleted.planNumber}${moved ? `, הועברו ${moved} קטיפים` : ''})`);
+      return null;
+    });
+    if (ok) { setMergeModal(null); setPlanDrawer(null); }
   };
 
   // ------------------------------------------------------------
@@ -1498,7 +1649,20 @@ export default function PlantingPlanPage() {
           error={actionError}
           onClose={() => setPlanDrawer(null)}
           onShift={() => { setActionError(''); setShiftForm({ planId: planDrawer.id, days: '' }); }}
-          onPeriod={() => { setActionError(''); setPeriodForm({ planId: planDrawer.id, from: '', to: '', status: 'שתילה' }); }}
+          onPeriod={() => {
+            setActionError('');
+            // משימה AK: המודאל נפתח על **התאריכים המעודכנים הקיימים** של
+            // שלב הקטיף, ולא ריק — זה שינוי של טווח קיים ולא יצירת שורה
+            // חדשה, והמשתמשת כמעט תמיד מזיזה אותו בכמה ימים.
+            const d = (f) => String(planDrawer[f] || '').slice(0, 10);
+            setPeriodForm({
+              planId: planDrawer.id,
+              // שני השלבים נטענים עם התאריכים המעודכנים הקיימים; הקטיף
+              // מסומן כברירת מחדל כי הוא השלב שמשתנה כמעט תמיד.
+              planting: { enabled: false, from: d('תחילת שתילה מעודכנת'), to: d('סוף שתילה מעודכן') },
+              harvest: { enabled: true, from: d('תחילת קטיף מעודכנת'), to: d('סוף קטיף מעודכן') },
+            });
+          }}
           onEdit={() => {
             const i = planInfo(planDrawer);
             openNewPlan({
@@ -1590,6 +1754,14 @@ export default function PlantingPlanPage() {
             <h3>
               {planForm.mode === 'edit' ? 'עריכת תוכנית' : 'תוכנית שתילה חדשה'}
             </h3>
+            {/* AK תוספת 2: עריכה כבר לא מוחקת הזזה קודמת, וחשוב שזה
+                יהיה כתוב — זו בדיוק ההפתעה שתמר נתקלה בה. */}
+            {planForm.mode === 'edit' && (
+              <div style={{ marginBottom: 12, color: 'var(--text-secondary)', fontSize: 13 }}>
+                עריכה משנה את <b>התכנון המקורי בלבד</b>. לשינוי התאריכים שהמערכת עובדת
+                לפיהם — השתמשי ב"שינוי תקופה".
+              </div>
+            )}
             {actionError && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {actionError}</div>}
             <form onSubmit={(e) => { e.preventDefault(); savePlan(); }}>
               <div className="form-group">
@@ -1678,26 +1850,43 @@ export default function PlantingPlanPage() {
         <div className="modal-overlay" onClick={() => !busy && setPeriodForm(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>שינוי תקופה</h3>
+            {/* משימה AK: המשפט הזה חשוב — עד AK הכפתור יצר שורה ידנית
+                ולא שינה את התכנון עצמו, ולכן צריך להיות ברור מה הוא
+                עושה עכשיו ומה נשמר. */}
+            <div style={{ marginBottom: 12, color: 'var(--text-secondary)', fontSize: 13 }}>
+              משנה את התאריכים <b>המעודכנים</b> של התוכנית ומחשב מחדש את התחזית.
+              התכנון המקורי נשמר להשוואה.
+            </div>
             {actionError && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {actionError}</div>}
             <form onSubmit={(e) => { e.preventDefault(); submitPeriod(); }}>
-              <div className="form-group">
-                <label>מתאריך <span className="required" /></label>
-                <input className="input" style={{ width: '100%' }} type="date" required
-                  value={periodForm.from} onChange={(e) => setPeriodForm({ ...periodForm, from: e.target.value })} />
-              </div>
-              <div className="form-group">
-                <label>עד תאריך <span className="required" /></label>
-                <input className="input" style={{ width: '100%' }} type="date" required
-                  value={periodForm.to} onChange={(e) => setPeriodForm({ ...periodForm, to: e.target.value })} />
-              </div>
-              <div className="form-group">
-                <label>סטטוס <span className="required" /></label>
-                <select className="select" style={{ width: '100%' }} required
-                  value={periodForm.status} onChange={(e) => setPeriodForm({ ...periodForm, status: e.target.value })}>
-                  <option value="שתילה">שתילה</option>
-                  <option value="קטיף">קטיף</option>
-                </select>
-              </div>
+              {/* AK תוספת 2: שני השלבים באותה פעולה. סימון השלב הוא מה
+                  שקובע מה נשלח — כך אפשר להזיז רק את הקטיף בלי לגעת
+                  בשתילה, או את שניהם יחד בכתיבה אחת ובבנייה אחת. */}
+              {[['planting', 'שתילה'], ['harvest', 'קטיף']].map(([ph, label]) => (
+                <div key={ph} className="card" style={{ marginBottom: 10, padding: '10px 12px', opacity: periodForm[ph].enabled ? 1 : 0.6 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, marginBottom: periodForm[ph].enabled ? 8 : 0 }}>
+                    <input type="checkbox" checked={periodForm[ph].enabled}
+                      onChange={(e) => setPeriodForm({ ...periodForm, [ph]: { ...periodForm[ph], enabled: e.target.checked } })} />
+                    תקופת {label}
+                  </label>
+                  {periodForm[ph].enabled && (
+                    <div className="form-grid-2" style={{ gap: '0 12px' }}>
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label>מתאריך <span className="required" /></label>
+                        <input className="input" style={{ width: '100%' }} type="date" required
+                          value={periodForm[ph].from}
+                          onChange={(e) => setPeriodForm({ ...periodForm, [ph]: { ...periodForm[ph], from: e.target.value } })} />
+                      </div>
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label>עד תאריך <span className="required" /></label>
+                        <input className="input" style={{ width: '100%' }} type="date" required
+                          value={periodForm[ph].to}
+                          onChange={(e) => setPeriodForm({ ...periodForm, [ph]: { ...periodForm[ph], to: e.target.value } })} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
               <div className="form-actions">
                 <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setPeriodForm(null)}>ביטול</button>
                 <button type="submit" className="btn btn-primary" disabled={busy}>
@@ -1705,6 +1894,38 @@ export default function PlantingPlanPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========== הצעת מיזוג לתוכנית חופפת (משימה AK) ==========
+          **לא אוטומטי בשום מצב.** המערכת רק מזהה שיש חפיפה באותו מבנה
+          ובאותו גידול ומציעה; ההחלטה — ומה שאי-אפשר לבטל אחריה —
+          היא של המשתמשת. */}
+      {mergeModal && (
+        <div className="modal-overlay" onClick={() => !busy && setMergeModal(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>⚠ חפיפה בין תוכניות</h3>
+            <div style={{ marginBottom: 12, fontSize: 14, lineHeight: 1.7 }}>
+              {mergeModal.other.message}
+            </div>
+            <div className="card" style={{ marginBottom: 14, fontSize: 13 }}>
+              <div>תוכנית {mergeModal.other.planNumber}: {formatDate(mergeModal.other.from)} – {formatDate(mergeModal.other.to)}</div>
+              <div style={{ color: 'var(--text-muted)', marginTop: 6 }}>
+                במיזוג: התוכנית עם תאריך השתילה המוקדם <b>נשארת</b> ומקבלת את הטווח
+                המאוחד; השנייה נמחקת יחד עם התקופות והתחזיות שלה. דיווחי קטיף
+                מקושרים <b>עוברים</b> לתוכנית שנשארת ואינם נמחקים.
+              </div>
+            </div>
+            {actionError && <div className="badge badge-error" style={{ marginBottom: 12 }}>⚠️ {actionError}</div>}
+            <div className="form-actions">
+              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setMergeModal(null)}>
+                השאר שתיהן
+              </button>
+              <button type="button" className="btn btn-primary" disabled={busy} onClick={submitMerge}>
+                {busy ? 'ממזג...' : 'מזג'}
+              </button>
+            </div>
           </div>
         </div>
       )}

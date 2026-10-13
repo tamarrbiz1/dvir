@@ -45,6 +45,7 @@ import {
   startOfOperationalWeek, parseDate as alParseDate, formatDate as alFormatDate,
 } from './forecast-build.js';
 import { sweepOnce, lastFailure } from './forecast-watcher.js';
+import { findOverlaps, mergedSpan, pickSurvivor, validatePhaseChange, validatePhaseChanges, endOfWorkPeriod, PHASES } from './plan-periods.js';
 import { pickProvider, classifyAnalysisFailure } from './document-analysis.js';
 import { nextRetryAt, retryDecision, resumeCandidateReason, sweepStalledAnalyses, BACKOFF_MINUTES } from './analysis-retry.js';
 import { writeFile as writeFileAsync, chmod as chmodAsync, mkdtemp as mkdtempAsync } from 'node:fs/promises';
@@ -4385,6 +4386,497 @@ await test('AL: כל 21 התוכניות האמיתיות שיש להן תחזי
   return `${unchanged} שורות קיימות שוחזרו זהות (0 שינויים) · ${failed.length} תוכניות עם חוסרים: ${failed.join(' | ') || 'אין'}`;
 }, 40000);
 
+// ============================================================
+// חלק AK (13.10.2026) — "שינוי תקופה" ומיזוג תוכניות חופפות
+// ------------------------------------------------------------
+// עד AK הכפתור "שינוי תקופה" רק יצר שורה ב`תקופות תוכנית` עם
+// `מקור='שינוי ידני'` — התאריכים של התוכנית והתחזית לא זזו בכלל.
+// מאז AK הוא משנה את **השדות המעודכנים** של השלב שנבחר, מסנכרן את
+// שורת-המערכת, מוחק שורות ידניות ובונה את התחזית מחדש.
+//
+// הכל על רשומות QA: תוכניות-בדיקה בשנת 2038 (אין בה שום נתון אמיתי),
+// בטבלאות שאין בהן Make. המיזוג כן מוחק תוכנית — אבל רק תוכנית-QA
+// שנוצרה בבדיקה הזו עצמה.
+// ============================================================
+const AK_PLAN = (over = {}) => ({
+  id: 'recAK1', 'מספר תוכנית': 7001, 'שנת תוכנית': 2038, 'מבנה': ['recStr'], 'גידולים': ['recCrop'],
+  'תחילת שתילה מעודכנת': '2038-03-01', 'סוף שתילה מעודכן': '2038-03-10',
+  'תחילת קטיף מעודכנת': '2038-04-01', 'סוף קטיף מעודכן': '2038-04-30', ...over,
+});
+
+await test('AK טהור: ולידציה — from>to, קטיף לפני שתילה, וסוף קטיף לפני סוף שתילה', () => {
+  const plan = AK_PLAN();
+  const bad = [];
+  const expect = (phase, from, to, needle, label) => {
+    const msg = validatePhaseChange(plan, phase, from, to);
+    if (!msg) { bad.push(`${label}: עבר למרות שהיה אמור להיחסם`); return; }
+    if (needle && !msg.includes(needle)) bad.push(`${label}: הודעה "${msg}" לא מכילה "${needle}"`);
+  };
+  expect('harvest', '2038-04-10', '2038-04-05', 'מאוחר', 'from>to');
+  // קטיף שמתחיל לפני השתילה
+  expect('harvest', '2038-02-01', '2038-04-30', 'לפני השתילה', 'קטיף לפני שתילה');
+  // סוף קטיף לפני סוף שתילה (שינוי בשלב השתילה שדוחף אותו קדימה)
+  expect('planting', '2038-03-01', '2038-05-30', 'לפני סוף השתילה', 'סוף שתילה אחרי סוף קטיף');
+  expect('nonsense', '2038-04-01', '2038-04-10', 'שלב', 'שלב לא מוכר');
+  expect('harvest', 'שטות', '2038-04-10', 'YYYY-MM-DD', 'תאריך לא תקין');
+  // ושינוי חוקי — חייב לעבור
+  if (validatePhaseChange(plan, 'harvest', '2038-04-04', '2038-05-03')) bad.push('שינוי חוקי נחסם');
+  if (validatePhaseChange(plan, 'planting', '2038-02-20', '2038-03-05')) bad.push('שינוי שתילה חוקי נחסם');
+  if (bad.length) throw new Error(bad.join('; '));
+  if (PHASES.harvest.from !== 'תחילת קטיף מעודכנת') throw new Error('שם השדה המעודכן השתנה');
+  return '5 מצבים נחסמו עם הודעה מתאימה · 2 שינויים חוקיים עברו';
+});
+
+await test('AK טהור: זיהוי חפיפה — אותו מבנה+גידול → מיזוג, גידול שונה → התראה בלבד', () => {
+  const cropById = new Map([['recCrop', { 'שם גידול': 'עגבניה' }], ['recOther', { 'שם גידול': 'פלפל' }]]);
+  const structById = new Map([['recStr', { 'מספר מבנה': 'מבנה QA' }], ['recStr2', { 'מספר מבנה': 'מבנה אחר' }]]);
+  const opts = { cropById, structById };
+  const me = AK_PLAN();
+  const other = (over) => AK_PLAN({ id: 'recAK2', 'מספר תוכנית': 7002, ...over });
+
+  // אותו מבנה, אותו גידול, טווחים נחתכים → מועמד למיזוג
+  const same = findOverlaps(me, [me, other({ 'תחילת שתילה מעודכנת': '2038-04-01', 'סוף קטיף מעודכן': '2038-06-01' })], opts);
+  if (same.length !== 1 || !same[0].canMerge) throw new Error(`אותו גידול: ${JSON.stringify(same)}`);
+  if (!/למזג/.test(same[0].message)) throw new Error(`הודעת מיזוג: ${same[0].message}`);
+
+  // אותו מבנה, גידול שונה → התראה בלבד
+  const diff = findOverlaps(me, [me, other({ 'גידולים': ['recOther'] })], opts);
+  if (diff.length !== 1 || diff[0].canMerge) throw new Error(`גידול שונה: ${JSON.stringify(diff)}`);
+  if (!/שימו לב/.test(diff[0].message) || !/פלפל/.test(diff[0].message)) throw new Error(`הודעת התראה: ${diff[0].message}`);
+
+  // מבנה אחר → לא חפיפה בכלל
+  if (findOverlaps(me, [me, other({ 'מבנה': ['recStr2'] })], opts).length) throw new Error('מבנה אחר נחשב חפיפה');
+  // טווח שלא נחתך → לא חפיפה (גם כשהוא נוגע-אבל-לא-חותך)
+  if (findOverlaps(me, [me, other({ 'תחילת שתילה מעודכנת': '2038-05-01', 'סוף קטיף מעודכן': '2038-06-01' })], opts).length) {
+    throw new Error('טווח שלא נחתך נחשב חפיפה');
+  }
+  // נגיעה ביום אחד **כן** חפיפה (סוף אחד = תחילת השני)
+  const touch = findOverlaps(me, [me, other({ 'תחילת שתילה מעודכנת': '2038-04-30', 'סוף קטיף מעודכן': '2038-06-01' })], opts);
+  if (touch.length !== 1) throw new Error('חפיפה של יום אחד לא זוהתה');
+  // תוכנית בלי מבנה/בלי תאריכים — לא קורסת ולא מדווחת
+  if (findOverlaps(AK_PLAN({ 'מבנה': [] }), [me], opts).length) throw new Error('תוכנית בלי מבנה דיווחה חפיפה');
+  if (findOverlaps(me, [me, other({ 'תחילת שתילה מעודכנת': null, 'תחילת קטיף מעודכנת': null, 'סוף קטיף מעודכן': null, 'סוף שתילה מעודכן': null })], opts).length) {
+    throw new Error('תוכנית בלי תאריכים דיווחה חפיפה');
+  }
+  return 'אותו גידול→מיזוג · גידול שונה→התראה · מבנה אחר/טווח זר→כלום · נגיעה ביום→חפיפה · בלי מבנה/תאריכים→בלי קריסה';
+});
+
+await test('AK טהור: מיזוג — השורדת היא המוקדמת, והטווח נמתח לכסות את שתיהן', () => {
+  const early = AK_PLAN({ id: 'recE', 'מספר תוכנית': 7001 });
+  const late = AK_PLAN({
+    id: 'recL', 'מספר תוכנית': 7002,
+    'תחילת שתילה מעודכנת': '2038-03-20', 'סוף שתילה מעודכן': '2038-03-28',
+    'תחילת קטיף מעודכנת': '2038-04-20', 'סוף קטיף מעודכן': '2038-05-25',
+  });
+  const picked = pickSurvivor(late, early); // סדר הפוך בכוונה
+  if (picked.survivor.id !== 'recE') throw new Error(`השורדת צריכה להיות המוקדמת, התקבל ${picked.survivor.id}`);
+  const span = mergedSpan(picked.survivor, picked.absorbed);
+  if (span['תחילת שתילה מעודכנת'] !== '2038-03-01') throw new Error(`תחילת שתילה: ${span['תחילת שתילה מעודכנת']}`);
+  if (span['סוף שתילה מעודכן'] !== '2038-03-28') throw new Error(`סוף שתילה (המאוחר): ${span['סוף שתילה מעודכן']}`);
+  if (span['תחילת קטיף מעודכנת'] !== '2038-04-01') throw new Error(`תחילת קטיף: ${span['תחילת קטיף מעודכנת']}`);
+  if (span['סוף קטיף מעודכן'] !== '2038-05-25') throw new Error(`סוף קטיף (המאוחר): ${span['סוף קטיף מעודכן']}`);
+  // שובר-שוויון כשתאריכי השתילה זהים: מספר התוכנית הנמוך
+  const tie = pickSurvivor(AK_PLAN({ id: 'recA', 'מספר תוכנית': 9 }), AK_PLAN({ id: 'recB', 'מספר תוכנית': 4 }));
+  if (tie.survivor.id !== 'recB') throw new Error('שובר-השוויון לא לפי מספר התוכנית');
+  // שדה חסר באחת מהן — נלקח מהשנייה ולא הופך ל-null
+  const partial = mergedSpan(AK_PLAN({ 'סוף קטיף מעודכן': null }), late);
+  if (partial['סוף קטיף מעודכן'] !== '2038-05-25') throw new Error(`שדה חסר: ${partial['סוף קטיף מעודכן']}`);
+  return 'השורדת=המוקדמת · שתילה 03-01..03-28 · קטיף 04-01..05-25 · שובר-שוויון לפי מספר · שדה חסר נמלא מהשנייה';
+});
+
+// ------------------------------------------------------------
+// בדיקות חיות — תוכניות QA בשנת 2038
+// ------------------------------------------------------------
+const akPeriodsOf = async (planId) => (await api('GET', `${enc('תקופות תוכנית')}?raw=1&maxRecords=1000&includeTest=1`))
+  .filter((p) => (Array.isArray(p['תוכנית שתילה']) ? p['תוכנית שתילה'] : []).map((x) => x?.id || x).includes(planId));
+const akForecastsOf = async (planId) => (await api('GET', `${enc('תחזית שתילה שבועית')}?raw=1&maxRecords=1000&includeTest=1`))
+  .filter((f) => (Array.isArray(f['תוכנית שתילה']) ? f['תוכנית שתילה'] : []).map((x) => x?.id || x).includes(planId));
+
+/** גידול-QA עם תפוקה לכל ארבעת הרבעונים ומחיר — כך שכל שינוי תקופה יבנה */
+const akCrop = async (suffix) => {
+  const crop = await create('גידולים', { 'שם גידול': `${MARK}-${suffix}` });
+  for (const q of ['1', '2', '3', '4']) {
+    await create('תפוקה רבעונית', { 'גידול': [crop.id], 'רבעון': q, 'קג לדונם לשבוע': 30 });
+  }
+  await create('מחירי גידול משוערים', { 'גידול': [crop.id], 'שנה': 2038, 'מחיר משוער לקג': 10, 'ברירת מחדל שנתית': true });
+  return crop;
+};
+const akPlan = async (cropId, over = {}) => create('תוכניות שתילה', {
+  'מבנה': [sId], 'גידולים': [cropId], 'שנת תוכנית': 2038,
+  'תחילת שתילה מקורית': '2038-03-01', 'סוף שתילה מקורי': '2038-03-10',
+  'תחילת קטיף מקורית': '2038-04-01', 'סוף קטיף מקורי': '2038-04-30',
+  'תחילת שתילה מעודכנת': '2038-03-01', 'סוף שתילה מעודכן': '2038-03-10',
+  'תחילת קטיף מעודכנת': '2038-04-01', 'סוף קטיף מעודכן': '2038-04-30',
+  ...over,
+});
+
+await test('AK חי: שינוי תקופה — המעודכן זז, המקורי לא, שורת המערכת עודכנה, הידנית נמחקה', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const crop = await akCrop('ak-period');
+  const plan = await akPlan(crop.id);
+  // שורת-מערכת + שורה ידנית "היסטורית" (כמו שהכפתור הישן היה יוצר)
+  await create('תקופות תוכנית', { 'תוכנית שתילה': [plan.id], 'מתאריך': '2038-04-01', 'עד תאריך': '2038-04-30', 'סטטוס': 'קטיף', 'מקור': 'מערכת' });
+  const manual = await create('תקופות תוכנית', { 'תוכנית שתילה': [plan.id], 'מתאריך': '2038-04-05', 'עד תאריך': '2038-04-20', 'סטטוס': 'קטיף', 'מקור': 'שינוי ידני' });
+
+  const res = await api('POST', `plans/${plan.id}/period`, { phase: 'harvest', from: '2038-04-04', to: '2038-05-03' });
+  if (!res.ok) throw new Error(`נכשל: ${JSON.stringify(res)}`);
+
+  const after = await api('GET', `${enc('תוכניות שתילה')}/${plan.id}?includeTest=1`);
+  if (String(after['תחילת קטיף מעודכנת']).slice(0, 10) !== '2038-04-04') throw new Error(`המעודכן לא זז: ${after['תחילת קטיף מעודכנת']}`);
+  if (String(after['סוף קטיף מעודכן']).slice(0, 10) !== '2038-05-03') throw new Error(`סוף המעודכן לא זז: ${after['סוף קטיף מעודכן']}`);
+  // **המקורי לא נגע** — זה כל ההבדל מול "עריכת תוכנית"
+  if (String(after['תחילת קטיף מקורית']).slice(0, 10) !== '2038-04-01') throw new Error(`המקורי השתנה! ${after['תחילת קטיף מקורית']}`);
+  if (String(after['סוף קטיף מקורי']).slice(0, 10) !== '2038-04-30') throw new Error(`סוף המקורי השתנה! ${after['סוף קטיף מקורי']}`);
+  // שלב השתילה לא נגע
+  if (String(after['תחילת שתילה מעודכנת']).slice(0, 10) !== '2038-03-01') throw new Error('שלב השתילה נגע');
+
+  const periods = await akPeriodsOf(plan.id);
+  periods.forEach((p) => { if (!cleanup.some((c) => c.id === p.id)) cleanup.push({ table: 'תקופות תוכנית', id: p.id }); });
+  const harvestRows = periods.filter((p) => p['סטטוס'] === 'קטיף');
+  if (harvestRows.length !== 1) throw new Error(`${harvestRows.length} שורות קטיף, צפוי 1 (הידנית הייתה אמורה להימחק)`);
+  if (harvestRows[0]['מקור'] !== 'מערכת') throw new Error(`מקור השורה: ${harvestRows[0]['מקור']}`);
+  if (String(harvestRows[0]['מתאריך']).slice(0, 10) !== '2038-04-04') throw new Error(`שורת המערכת לא עודכנה: ${harvestRows[0]['מתאריך']}`);
+  if (periods.some((p) => p['מקור'] === 'שינוי ידני')) throw new Error('נשארה שורה ידנית');
+  const manualGone = await api('GET', `${enc('תקופות תוכנית')}/${manual.id}?includeTest=1`).then(() => false).catch(() => true);
+  if (!manualGone) throw new Error('השורה הידנית לא נמחקה בפועל');
+  const i = cleanup.findIndex((c) => c.table === 'תקופות תוכנית' && c.id === manual.id);
+  if (i >= 0) cleanup.splice(i, 1);
+
+  // התחזית נבנתה מחדש לטווח החדש (04-04..05-03 → 5 שבועות תפעוליים)
+  if (!res.forecast.ok) throw new Error(`התחזית לא נבנתה: ${res.forecast.missing.join(' | ')}`);
+  const fc = await akForecastsOf(plan.id);
+  fc.forEach((f) => cleanup.push({ table: 'תחזית שתילה שבועית', id: f.id }));
+  if (fc.length !== res.forecast.weeks) throw new Error(`${fc.length} שורות מול ${res.forecast.weeks} בדוח`);
+  const starts = fc.map((f) => String(f['תחילת שבוע']).slice(0, 10)).sort();
+  if (starts[0] !== '2038-04-03' || starts[starts.length - 1] > '2038-05-03') throw new Error(`טווח השבועות: ${starts.join(',')}`);
+  return `מעודכן 04-04..05-03 · מקורי לא נגע · שורת מערכת אחת עודכנה · הידנית נמחקה · ${fc.length} שבועות נבנו (${starts[0]}→${starts[starts.length - 1]})`;
+}, 40000);
+
+await test('AK חי: ולידציה — קטיף לפני שתילה ו-from>to מוחזרים ב-400 בלי לשנות כלום', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const crop = await akCrop('ak-valid');
+  const plan = await akPlan(crop.id);
+  const snapshot = async () => {
+    const p = await api('GET', `${enc('תוכניות שתילה')}/${plan.id}?includeTest=1`);
+    return ['תחילת שתילה מעודכנת', 'סוף שתילה מעודכן', 'תחילת קטיף מעודכנת', 'סוף קטיף מעודכן']
+      .map((f) => String(p[f] || '').slice(0, 10)).join('|');
+  };
+  const before = await snapshot();
+  for (const [body, label] of [
+    [{ phase: 'harvest', from: '2038-04-20', to: '2038-04-10' }, 'from>to'],
+    [{ phase: 'harvest', from: '2038-02-01', to: '2038-04-30' }, 'קטיף לפני שתילה'],
+    [{ phase: 'planting', from: '2038-03-01', to: '2038-06-01' }, 'סוף שתילה אחרי סוף קטיף'],
+    [{ phase: 'nope', from: '2038-04-01', to: '2038-04-10' }, 'שלב לא מוכר'],
+  ]) {
+    let got = null;
+    try { await api('POST', `plans/${plan.id}/period`, body); } catch (e) { got = String(e.message); }
+    if (!got || !got.startsWith('400')) throw new Error(`${label}: צפוי 400, התקבל ${got}`);
+  }
+  if (await snapshot() !== before) throw new Error('בקשה שנדחתה בכל זאת שינתה תאריכים');
+  return '4 בקשות לא-חוקיות → 400, והתאריכים לא זזו';
+}, 30000);
+
+await test('AK חי: חפיפה — אותו גידול מציע מיזוג, גידול שונה רק מתריע', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const crop = await akCrop('ak-ov');
+  const a = await akPlan(crop.id);
+  const b = await akPlan(crop.id, { 'תחילת שתילה מעודכנת': '2038-04-15', 'סוף קטיף מעודכן': '2038-06-01' });
+  const res = await api('POST', `plans/${a.id}/period`, { phase: 'harvest', from: '2038-04-04', to: '2038-05-03' });
+  (await akForecastsOf(a.id)).forEach((f) => cleanup.push({ table: 'תחזית שתילה שבועית', id: f.id }));
+  (await akPeriodsOf(a.id)).forEach((p) => cleanup.push({ table: 'תקופות תוכנית', id: p.id }));
+  const mine = (res.overlaps || []).find((o) => o.planId === b.id);
+  if (!mine) throw new Error(`החפיפה לא זוהתה: ${JSON.stringify(res.overlaps)}`);
+  if (!mine.canMerge || !mine.sameCrop) throw new Error(`אותו גידול לא סומן כניתן-למיזוג: ${JSON.stringify(mine)}`);
+
+  // גידול שונה באותו מבנה → התראה בלבד
+  const other = await akCrop('ak-ov2');
+  const c = await akPlan(other.id, { 'תחילת שתילה מעודכנת': '2038-04-20', 'סוף קטיף מעודכן': '2038-06-10' });
+  const res2 = await api('GET', `plans/${a.id}/overlaps`);
+  const diff = (res2.overlaps || []).find((o) => o.planId === c.id);
+  if (!diff) throw new Error('חפיפת גידול-שונה לא זוהתה');
+  if (diff.canMerge) throw new Error('גידול שונה הוצע למיזוג — אסור');
+  if (!/שימו לב/.test(diff.message)) throw new Error(`הודעה: ${diff.message}`);
+  return `חפיפה עם ${b.id.slice(-4)} (אותו גידול) → מיזוג · עם ${c.id.slice(-4)} (גידול אחר) → התראה בלבד`;
+}, 40000);
+
+await test('AK חי: מיזוג — טווח מאוחד, הנבלעת נמחקה, קטיף הועבר, ושגיאות 400', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const crop = await akCrop('ak-merge');
+  const early = await akPlan(crop.id);
+  const late = await akPlan(crop.id, {
+    'תחילת שתילה מעודכנת': '2038-03-20', 'סוף שתילה מעודכן': '2038-03-28',
+    'תחילת קטיף מעודכנת': '2038-04-20', 'סוף קטיף מעודכן': '2038-05-25',
+  });
+  // לנבלעת: תחזית, תקופה, וקטיף מקושר (נתון אמת שחייב לעבור ולא להימחק)
+  const absForecast = await create('תחזית שתילה שבועית', { 'תוכנית שתילה': [late.id], 'תחילת שבוע': '2038-04-24', 'סוף שבוע': '2038-04-29', 'שבוע': `${MARK}-abs` });
+  const absPeriod = await create('תקופות תוכנית', { 'תוכנית שתילה': [late.id], 'מתאריך': '2038-04-20', 'עד תאריך': '2038-05-25', 'סטטוס': 'קטיף', 'מקור': 'מערכת' });
+  const harvest = await create('קטיפים', { 'תוכניות שתילה': [late.id], 'מבנה': [sId], 'תאריך': '2038-04-22', 'סוג קטיף': 'סוג א', 'כמות ק"ג': 7, 'הערות': `${MARK} מיזוג` });
+
+  // שגיאות קודם: גידול שונה ומבנה אחר → 400
+  const otherCrop = await akCrop('ak-merge2');
+  const otherCropPlan = await akPlan(otherCrop.id);
+  for (const [target, label] of [[otherCropPlan.id, 'גידול שונה'], [early.id, 'מיזוג עם עצמה']]) {
+    let got = null;
+    try { await api('POST', `plans/${early.id}/merge`, { otherId: target }); } catch (e) { got = String(e.message); }
+    if (!got || !got.startsWith('400')) throw new Error(`${label}: צפוי 400, התקבל ${got}`);
+  }
+
+  const res = await api('POST', `plans/${early.id}/merge`, { otherId: late.id });
+  if (!res.ok) throw new Error(`המיזוג נכשל: ${JSON.stringify(res)}`);
+  if (res.survivor.planId !== early.id) throw new Error(`השורדת לא המוקדמת: ${res.survivor.planNumber}`);
+  if (res.moved.harvests !== 1) throw new Error(`${res.moved.harvests} קטיפים הועברו, צפוי 1`);
+
+  // השורדת קיבלה את הטווח המאוחד
+  const sv = await api('GET', `${enc('תוכניות שתילה')}/${early.id}?includeTest=1`);
+  const span = ['תחילת שתילה מעודכנת', 'סוף שתילה מעודכן', 'תחילת קטיף מעודכנת', 'סוף קטיף מעודכן']
+    .map((f) => String(sv[f] || '').slice(0, 10)).join('|');
+  if (span !== '2038-03-01|2038-03-28|2038-04-01|2038-05-25') throw new Error(`טווח מאוחד שגוי: ${span}`);
+  // המקורי של השורדת לא נגע
+  if (String(sv['סוף קטיף מקורי']).slice(0, 10) !== '2038-04-30') throw new Error('המקורי של השורדת השתנה');
+
+  // הקטיף עבר ולא נמחק
+  const h = await api('GET', `${enc('קטיפים')}/${harvest.id}?includeTest=1`);
+  const hPlans = (Array.isArray(h['תוכניות שתילה']) ? h['תוכניות שתילה'] : []).map((x) => x?.id || x);
+  if (!hPlans.includes(early.id)) throw new Error(`הקטיף לא הועבר לשורדת: ${JSON.stringify(hPlans)}`);
+  if (hPlans.includes(late.id)) throw new Error('הקטיף נשאר מקושר לנבלעת שנמחקה');
+
+  // הנבלעת והילדים שלה נמחקו
+  const gone = async (t, id) => api('GET', `${enc(t)}/${id}?includeTest=1`).then(() => false).catch(() => true);
+  if (!await gone('תוכניות שתילה', late.id)) throw new Error('הנבלעת לא נמחקה');
+  if (!await gone('תחזית שתילה שבועית', absForecast.id)) throw new Error('שורת התחזית של הנבלעת נשארה יתומה');
+  if (!await gone('תקופות תוכנית', absPeriod.id)) throw new Error('התקופה של הנבלעת נשארה יתומה');
+  for (const [t, id] of [['תוכניות שתילה', late.id], ['תחזית שתילה שבועית', absForecast.id], ['תקופות תוכנית', absPeriod.id]]) {
+    const i = cleanup.findIndex((c) => c.table === t && c.id === id);
+    if (i >= 0) cleanup.splice(i, 1);
+  }
+  (await akForecastsOf(early.id)).forEach((f) => { if (!cleanup.some((c) => c.id === f.id)) cleanup.push({ table: 'תחזית שתילה שבועית', id: f.id }); });
+  (await akPeriodsOf(early.id)).forEach((p) => { if (!cleanup.some((c) => c.id === p.id)) cleanup.push({ table: 'תקופות תוכנית', id: p.id }); });
+
+  // התחזית של השורדת נבנתה לטווח המאוחד
+  if (!res.forecast.ok) throw new Error(`תחזית השורדת לא נבנתה: ${res.forecast.missing.join(' | ')}`);
+  const fc = await akForecastsOf(early.id);
+  const starts = fc.map((f) => String(f['תחילת שבוע']).slice(0, 10)).sort();
+  if (starts[starts.length - 1] < '2038-05-19') throw new Error(`התחזית לא כיסתה את הטווח המאוחד: ${starts.join(',')}`);
+  return `טווח מאוחד ${span} · הנבלעת+תחזית+תקופה נמחקו · קטיף #${harvest['מספר קטיף']} הועבר · ${fc.length} שבועות · גידול-שונה/עצמה → 400`;
+}, 60000);
+
+// ------------------------------------------------------------
+// תוספות AK (תמר, 13.10 13:15) — שני התיקונים
+// ------------------------------------------------------------
+await test('AK+ טהור: חישוב סוף-תקופה — יום ההתחלה הוא יום 1, ימי אי-עבודה מדולגים', () => {
+  const off = new Set(['2026-10-16', '2026-10-15', '2026-10-23']);
+  const bad = [];
+  const check = (start, days, expected, label) => {
+    const got = endOfWorkPeriod(start, days, off);
+    if (got !== expected) bad.push(`${label}: ${start}+${days} → ${got}, צפוי ${expected}`);
+  };
+  // יום ההתחלה הוא יום עבודה ונספר כיום 1
+  check('2026-10-12', 1, '2026-10-12', 'יום אחד');
+  check('2026-10-12', 3, '2026-10-14', 'שלושה ימים רצופים');
+  // 15 ו-16 אי-עבודה: 10-14(1), 10-17(2), 10-18(3)
+  check('2026-10-14', 3, '2026-10-18', 'דילוג על שני ימי אי-עבודה');
+  // יום ההתחלה **עצמו** אי-עבודה: אינו נספר
+  check('2026-10-15', 1, '2026-10-17', 'התחלה ביום אי-עבודה');
+  // זה המצב האמיתי של תוכנית 346 בבסיס (קטיף 15.10 + 3 = 19.10)
+  check('2026-10-15', 3, '2026-10-19', 'תוכנית 346 האמיתית');
+  // קלט לא תקין
+  if (endOfWorkPeriod('2026-10-12', 0, off) !== null) bad.push('0 ימים לא הוחזר null');
+  if (endOfWorkPeriod('שטות', 3, off) !== null) bad.push('תאריך לא תקין לא הוחזר null');
+  if (bad.length) throw new Error(bad.join('; '));
+  return '6 תרחישים · יום-התחלה=יום 1 · ימי אי-עבודה מדולגים · התחלה ביום אי-עבודה · קלט שגוי→null';
+});
+
+await test('AK+ טהור: ולידציה משולבת — שינוי שני השלבים יחד חוקי גם כשכל אחד לבדו לא', () => {
+  const plan = AK_PLAN();
+  // דחיפת השתילה קדימה **לבדה** אסורה (תעבור את סוף הקטיף)...
+  if (!validatePhaseChanges(plan, [{ phase: 'planting', from: '2038-05-01', to: '2038-05-20' }])) {
+    throw new Error('שינוי שתילה לבדו היה אמור להיחסם');
+  }
+  // ...אבל יחד עם דחיפת הקטיף — חוקי לגמרי
+  const both = validatePhaseChanges(plan, [
+    { phase: 'planting', from: '2038-05-01', to: '2038-05-20' },
+    { phase: 'harvest', from: '2038-06-01', to: '2038-06-30' },
+  ]);
+  if (both) throw new Error(`שינוי משולב חוקי נחסם: ${both}`);
+  // ושילוב שבאמת לא חוקי — נחסם
+  if (!validatePhaseChanges(plan, [
+    { phase: 'planting', from: '2038-05-01', to: '2038-05-20' },
+    { phase: 'harvest', from: '2038-04-01', to: '2038-04-30' },
+  ])) throw new Error('שילוב לא-חוקי עבר');
+  if (!validatePhaseChanges(plan, [])) throw new Error('רשימה ריקה עברה');
+  if (!validatePhaseChanges(plan, [{ phase: 'harvest', from: '2038-04-01', to: '2038-04-10' }, { phase: 'harvest', from: '2038-04-05', to: '2038-04-15' }])) {
+    throw new Error('אותו שלב פעמיים עבר');
+  }
+  return 'שתילה לבדה→נחסם · שתילה+קטיף יחד→עובר · שילוב לא-חוקי→נחסם · ריק/כפול→נחסם';
+});
+
+await test('AK+ חי: עריכת תוכנית משנה רק את המקורי — הזזה קודמת נשמרת', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  const crop = await akCrop('ak-orig');
+  // "הזזה קודמת": המעודכן שונה מהמקורי
+  const plan = await akPlan(crop.id, {
+    'תחילת שתילה מעודכנת': '2038-03-15', 'סוף שתילה מעודכן': '2038-03-24',
+    'תחילת קטיף מעודכנת': '2038-04-15', 'סוף קטיף מעודכן': '2038-05-14',
+  });
+  const res = await api('PATCH', `plans/${plan.id}/original`, {
+    plantStart: '2038-03-05', plantDays: 4, harvestStart: '2038-04-06', harvestDays: 10,
+    cropIds: [crop.id], structureIds: [sId],
+  });
+  if (!res.ok) throw new Error(`נכשל: ${JSON.stringify(res)}`);
+
+  const after = await api('GET', `${enc('תוכניות שתילה')}/${plan.id}?includeTest=1`);
+  const d = (f) => String(after[f] || '').slice(0, 10);
+  // המקורי השתנה, והסוף חושב בשרת
+  if (d('תחילת שתילה מקורית') !== '2038-03-05') throw new Error(`מקורי שתילה: ${d('תחילת שתילה מקורית')}`);
+  if (!d('סוף שתילה מקורי')) throw new Error('סוף שתילה מקורי לא חושב');
+  if (d('תחילת קטיף מקורית') !== '2038-04-06') throw new Error(`מקורי קטיף: ${d('תחילת קטיף מקורית')}`);
+  if (Number(after['מספר ימי קטיף']) !== 10) throw new Error(`ימי קטיף: ${after['מספר ימי קטיף']}`);
+  if (Number(after['שנת תוכנית']) !== 2038) throw new Error(`שנת תוכנית: ${after['שנת תוכנית']}`);
+  // **וההזזה נשמרה** — ארבעת השדות המעודכנים לא זזו. זה כל התיקון.
+  const kept = ['תחילת שתילה מעודכנת', 'סוף שתילה מעודכן', 'תחילת קטיף מעודכנת', 'סוף קטיף מעודכן'].map(d).join('|');
+  if (kept !== '2038-03-15|2038-03-24|2038-04-15|2038-05-14') throw new Error(`ההזזה נמחקה! ${kept}`);
+  if (res.forecast) throw new Error('נבנתה תחזית למרות שרק תאריכים מקוריים השתנו');
+
+  // שינוי **גידול** בעריכה כן בונה תחזית (התחזית תלויה בו)
+  const crop2 = await akCrop('ak-orig2');
+  const res2 = await api('PATCH', `plans/${plan.id}/original`, {
+    plantStart: '2038-03-05', plantDays: 4, harvestStart: '2038-04-06', harvestDays: 10,
+    cropIds: [crop2.id], structureIds: [sId],
+  });
+  if (!res2.cropChanged) throw new Error('שינוי הגידול לא זוהה');
+  if (!res2.forecast) throw new Error('שינוי גידול לא בנה תחזית');
+  (await akForecastsOf(plan.id)).forEach((f) => cleanup.push({ table: 'תחזית שתילה שבועית', id: f.id }));
+  const after2 = await api('GET', `${enc('תוכניות שתילה')}/${plan.id}?includeTest=1`);
+  if (['תחילת שתילה מעודכנת', 'סוף שתילה מעודכן', 'תחילת קטיף מעודכנת', 'סוף קטיף מעודכן']
+    .map((f) => String(after2[f] || '').slice(0, 10)).join('|') !== kept) throw new Error('שינוי גידול הזיז את המעודכן');
+
+  // ולידציות
+  for (const [body, label] of [
+    [{ plantStart: '2038-03-05', plantDays: 0, harvestStart: '2038-04-06', harvestDays: 10 }, '0 ימי שתילה'],
+    [{ plantStart: '2038-05-05', plantDays: 4, harvestStart: '2038-04-06', harvestDays: 10 }, 'קטיף לפני שתילה'],
+    [{ plantDays: 4, harvestStart: '2038-04-06', harvestDays: 10 }, 'בלי תחילת שתילה'],
+  ]) {
+    let got = null;
+    try { await api('PATCH', `plans/${plan.id}/original`, body); } catch (e) { got = String(e.message); }
+    if (!got || !got.startsWith('400')) throw new Error(`${label}: צפוי 400, התקבל ${got}`);
+  }
+  return `מקורי 03-05/04-06 (סוף חושב בשרת: ${res.after['סוף שתילה מקורי']}/${res.after['סוף קטיף מקורי']}) · המעודכן נשאר ${kept} · שינוי גידול בנה תחזית · 3 ולידציות → 400`;
+}, 60000);
+
+await test('AK+ חי: חישוב סוף-המקורי בשרת זהה לתוצאה של "חשב תוכנית" ב-Airtable', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  // ההשוואה האמיתית: יוצרים תוכנית-QA בשנת **2026**, שבה יש 54 ימי
+  // אי-עבודה אמיתיים בטבלה, נותנים ל-`חשב תוכנית` של Airtable לחשב,
+  // ואז מריצים את החישוב שלנו על אותם נתונים ומשווים.
+  const crop = await akCrop('ak-cmp');
+  const plan = await create('תוכניות שתילה', {
+    'מבנה': [sId], 'גידולים': [crop.id], 'שנת תוכנית': 2026,
+    'תחילת שתילה מקורית': '2026-10-11', 'מספר ימי שתילה': 5,
+    'תחילת קטיף מקורית': '2026-10-14', 'מספר ימי קטיף': 9,
+  });
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': false });
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': true });
+  let airtable = null;
+  for (let i = 0; i < 12; i++) {
+    await new Promise((r) => setTimeout(r, 2500));
+    const p = await api('GET', `${enc('תוכניות שתילה')}/${plan.id}?includeTest=1`);
+    if (p['סוף שתילה מקורי'] && p['סוף קטיף מקורי']) { airtable = p; break; }
+  }
+  if (!airtable) return 'דולג — "חשב תוכנית" לא סיים תוך 30 שניות';
+  (await akPeriodsOf(plan.id)).forEach((x) => cleanup.push({ table: 'תקופות תוכנית', id: x.id }));
+  (await akForecastsOf(plan.id)).forEach((f) => cleanup.push({ table: 'תחזית שתילה שבועית', id: f.id }));
+
+  // התקופות שהאוטומציה תיצור לתוכנית הזו נכתבות אחרי הניקוי — מצהירים
+  // על הטווח כדי שסורק "חלק 4.5" יאסוף אותן בסוף הריצה.
+  forecastSyncOrphanRanges.push({ from: '2026-10-11', to: '2026-10-26' });
+  const off = new Set((await directFetchRecords('ימי אי עבודה', {}))
+    .map((d) => String(d['תאריך'] || '').slice(0, 10)).filter(Boolean));
+  const mine = {
+    plantEnd: endOfWorkPeriod('2026-10-11', 5, off),
+    harvestEnd: endOfWorkPeriod('2026-10-14', 9, off),
+  };
+  const theirs = {
+    plantEnd: String(airtable['סוף שתילה מקורי']).slice(0, 10),
+    harvestEnd: String(airtable['סוף קטיף מקורי']).slice(0, 10),
+  };
+  if (mine.plantEnd !== theirs.plantEnd || mine.harvestEnd !== theirs.harvestEnd) {
+    throw new Error(`סטייה מ-Airtable: שלנו ${JSON.stringify(mine)}, שלו ${JSON.stringify(theirs)}`);
+  }
+  return `זהה ל-Airtable: שתילה 2026-10-11+5=${theirs.plantEnd}, קטיף 2026-10-14+9=${theirs.harvestEnd} (עם ימי אי-עבודה אמיתיים בטווח)`;
+}, 60000);
+
+await test('AK+ חי: הזזה — התקופות עקביות עם התאריכים המעודכנים בסוף הפעולה', async () => {
+  if (!sId) return 'דולג — אין מבנה אמיתי לקשר אליו';
+  // הבאג שתמר דיווחה עליו: הפולינג בלקוח עצר על שינוי התאריכים, לפני
+  // שהאוטומציה השנייה עדכנה את התקופות. הבדיקה כאן מאמתת את מה שתנאי-
+  // העצירה החדש (planIsConsistent) מחכה לו: **עקביות** בין התאריכים
+  // המעודכנים לשורות ה-`מערכת`.
+  const crop = await akCrop('ak-shift');
+  const plan = await akPlan(crop.id);
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': false });
+  await patch('תוכניות שתילה', plan.id, { 'חשב תוכנית': true });
+  await new Promise((r) => setTimeout(r, 12000)); // שהתקופות ייווצרו
+  await patch('תוכניות שתילה', plan.id, { 'מספר ימי הזזה': 6 });
+  await patch('תוכניות שתילה', plan.id, { 'הזז תוכנית': false });
+  await patch('תוכניות שתילה', plan.id, { 'הזז תוכנית': true });
+
+  const consistent = (p, rows) => {
+    const d = (v) => String(v || '').slice(0, 10);
+    for (const [status, from, to] of [['שתילה', 'תחילת שתילה מעודכנת', 'סוף שתילה מעודכן'], ['קטיף', 'תחילת קטיף מעודכנת', 'סוף קטיף מעודכן']]) {
+      const row = rows.find((x) => String(x['סטטוס'] || '') === status && String(x['מקור'] || '') === 'מערכת');
+      if (!row) return false;
+      if (d(row['מתאריך']) !== d(p[from]) || d(row['עד תאריך']) !== d(p[to])) return false;
+    }
+    return true;
+  };
+  let elapsed = null;
+  const t0 = Date.now();
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 4000));
+    const p = await api('GET', `${enc('תוכניות שתילה')}/${plan.id}?includeTest=1`);
+    const rows = await akPeriodsOf(plan.id);
+    if (String(p['תחילת קטיף מעודכנת']).slice(0, 10) !== '2038-04-01' && consistent(p, rows)) {
+      elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+      rows.forEach((x) => cleanup.push({ table: 'תקופות תוכנית', id: x.id }));
+      (await akForecastsOf(plan.id)).forEach((f) => cleanup.push({ table: 'תחזית שתילה שבועית', id: f.id }));
+      const shifted = String(p['תחילת קטיף מעודכנת']).slice(0, 10);
+      const row = rows.find((x) => x['סטטוס'] === 'קטיף' && x['מקור'] === 'מערכת');
+      return `עקביות הושגה אחרי ${elapsed} שנ' (בתוך חלון ה-70 שנ' של הפולינג): קטיף מעודכן ${shifted}, שורת מערכת ${String(row['מתאריך']).slice(0, 10)}`;
+    }
+  }
+  (await akPeriodsOf(plan.id)).forEach((x) => cleanup.push({ table: 'תקופות תוכנית', id: x.id }));
+  (await akForecastsOf(plan.id)).forEach((f) => cleanup.push({ table: 'תחזית שתילה שבועית', id: f.id }));
+  throw new Error('ההזזה לא הגיעה לעקביות תוך 80 שניות — חלון הפולינג (70 שנ\') עלול להיות קצר מדי');
+}, 120000);
+
+await test('AK חי: הרשאות — period/merge למנהלת ראשית בלבד, overlaps לכל תפקיד', async () => {
+  const problems = [];
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  if (manager) {
+    const ml = await apiAs(null, 'POST', 'admin-login', { email: manager['מייל'], code: manager['קוד אישי'] });
+    for (const path of ['plans/recX/period', 'plans/recX/merge']) {
+      try { await apiAs(ml.token, 'POST', path, {}); problems.push(`מנהל עבודה עבר ${path}`); }
+      catch (e) { if (!/^403/.test(String(e.message))) problems.push(`manager ${path}: ${e.message}`); }
+    }
+    try { await apiAs(ml.token, 'GET', 'plans/recNONEXISTENT00000/overlaps'); problems.push('overlaps למזהה שלא קיים עבר'); }
+    catch (e) { if (!/^404/.test(String(e.message))) problems.push(`manager overlaps: ${e.message}`); }
+  }
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  if (w) {
+    const wl = await apiAs(null, 'POST', 'worker-login', { email: w['מייל'], passport: w['מספר דרכון'] });
+    for (const path of ['plans/recX/period', 'plans/recX/merge']) {
+      try { await apiAs(wl.token, 'POST', path, {}); problems.push(`עובד עבר ${path}`); }
+      catch (e) { if (!/^403/.test(String(e.message))) problems.push(`worker ${path}: ${e.message}`); }
+    }
+  }
+  for (const path of ['plans/recX/period', 'plans/recX/merge']) {
+    try { await apiAs(null, 'POST', path, {}); problems.push(`בלי טוקן עבר ${path}`); }
+    catch (e) { if (!/^401/.test(String(e.message))) problems.push(`בלי טוקן ${path}: ${e.message}`); }
+  }
+  if (problems.length) throw new Error(problems.join('; '));
+  return `${manager ? 'manager 403 בשניהם, overlaps 404' : '(אין מנהל עבודה)'} · ${w ? 'worker 403 בשניהם' : '(אין עובד)'} · בלי טוקן 401`;
+}, 30000);
+
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
 // שרדה את הניקוי בריצה קודמת ונשארה בטבלה החיה עד שאותרה ידנית למחרת —
@@ -4411,22 +4903,49 @@ if (cleanFailed.length) {
 // טבעי מריצת שאר הבדיקות — יותר סיכוי שהאוטומציה כבר סיימה), כל שורת-
 // "תחזית שתילה שבועית" בלי תוכנית-מקושרת שתאריך תחילת-השבוע שלה נופל
 // באחד מטווחי-התאריכים ש-forecast-sync.js-tests דיווחו עליהם כ"דולג".
+// ⚠️ הורחב במשימה AK (13.10.2026) — **הסורק הזה לא היה מספיק, ונמדד**:
+// לפני ההרחבה הוא כיסה רק את טבלת `תחזית שתילה שבועית`, ורק בטווחי-
+// התאריכים שבדיקות שדילגו הודיעו עליהם. בפועל כל הרצת-סוויטה השאירה
+// אחריה עשרות **שורות-תקופה** יתומות וגם שורות-תחזית בשנות-הבדיקה
+// שלא היו ברשימת-הטווחים (נמדד: 88 תחזיות + 28 תקופות ב-2038/2026
+// אחרי שלוש הרצות של חלקי AL/AK). הסיבה זהה בשני המקרים: אוטומציות
+// Airtable (`חשב תוכנית` ואחריה סקריפט-התקופות) כותבות את השורות
+// **אחרי** שהניקוי הרגיל כבר מחק את התוכנית, והקישור נשאר ריק.
+//
+// לכן הסורק עובד עכשיו על **שתי** הטבלאות, ולפי שני קריטריונים:
+//   1. טווחי-התאריכים שבדיקות דיווחו עליהם (כמו קודם), ו-
+//   2. **שנות-הבדיקה** (QA_YEARS) — שנים שבהן אין ולא יהיה שום נתון
+//      אמיתי בבסיס, ושכל תוכניות-ה-QA של הסוויטה יושבות בהן.
+//
+// ⚠️ הקריטריון מכוון בצמצום **בכוונה**: תמר הנחתה במפורש לא למחוק את
+// התקופות והתחזיות היתומות שקיימות בבסיס (2031/2032/2034/2036), ולכן
+// השנים האלה **אינן** ב-QA_YEARS ואינן נגועות כאן לעולם.
+const QA_YEARS = ['2035', '2037', '2038'];
 let sweepDeleted = 0;
-if (forecastSyncOrphanRanges.length) {
-  try {
-    const forecastAll = await directFetchRecords('תחזית שתילה שבועית', {});
-    const inAnyRange = (dateStr) => {
-      if (!dateStr) return false;
-      return forecastSyncOrphanRanges.some(({ from, to }) => dateStr >= from && dateStr <= to);
-    };
-    const orphans = forecastAll.filter((f) => !f['תוכנית שתילה'] && inAnyRange(f['תחילת שבוע']));
-    for (const o of orphans) {
-      try { await del('תחזית שתילה שבועית', o.id); sweepDeleted++; } catch {}
+{
+  const inAnyRange = (dateStr) => !!dateStr
+    && forecastSyncOrphanRanges.some(({ from, to }) => dateStr >= from && dateStr <= to);
+  const isQaYear = (dateStr) => !!dateStr && QA_YEARS.includes(String(dateStr).slice(0, 4));
+  let scanned = 0;
+  for (const [table, dateField] of [['תחזית שתילה שבועית', 'תחילת שבוע'], ['תקופות תוכנית', 'מתאריך']]) {
+    try {
+      const all = await directFetchRecords(table, {});
+      const orphans = all.filter((r) => {
+        const linked = Array.isArray(r['תוכנית שתילה']) ? r['תוכנית שתילה'] : [];
+        if (linked.length) return false;
+        const d = String(r[dateField] || '').slice(0, 10);
+        return isQaYear(d) || inAnyRange(d);
+      });
+      scanned += orphans.length;
+      for (const o of orphans) {
+        try { await del(table, o.id); sweepDeleted++; } catch {}
+      }
+      if (orphans.length) console.log(`\n🧹 ניקוי יתומי-בדיקות ב"${table}": ${orphans.length} שורות בלי תוכנית-מקושרת בשנות-הבדיקה/בטווחים שדולגו`);
+    } catch (e) {
+      console.log(`\n⚠️ ניקוי יתומי-בדיקות ב"${table}" נכשל: ${e.message} — בדוק ידנית ב-Airtable`);
     }
-    if (orphans.length) console.log(`\n🧹 ניקוי יתומי forecast-sync: ${sweepDeleted}/${orphans.length} שורות-תחזית יתומות (ללא תוכנית-מקושרת) נוקו מטווחי-התאריכים של הבדיקות שדולגו`);
-  } catch (e) {
-    console.log(`\n⚠️ ניקוי יתומי forecast-sync נכשל: ${e.message} — בדוק ידנית ב-Airtable טבלת "תחזית שתילה שבועית"`);
   }
+  if (scanned) console.log(`🧹 סה"כ ${sweepDeleted}/${scanned} יתומי-בדיקות נוקו (שנות ${QA_YEARS.join('/')} + טווחים שדולגו; שנות 2031/2032/2034/2036 **לא** נגעו — הנחיית תמר)`);
 }
 
 // ============ 5. דוח ============
