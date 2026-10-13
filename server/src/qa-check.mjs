@@ -39,6 +39,7 @@ import { stripInventoryAiMarker, withPreservedInventoryTags, inventoryAiSummary 
 import { yearFromWeekValue, dateFromWeekValue, invoiceDate } from '../../client/src/utils/weekYear.js';
 import { shouldResetOption } from '../../client/src/utils/selectGuard.js';
 import { groupWeeksByMonth, totalsOfWeeks } from '../../client/src/utils/planSummary.js';
+import { splitExpenses, isRecentUpload, RECENT_UPLOAD_DAYS } from '../../client/src/utils/expenseList.js';
 import { computeActuals, dedupeDocuments, cartonWeightIndex, KG_PER_CARTON } from './actuals-sync.js';
 import {
   computeForecastRows, planReconciliation, buildForecastForPlan, fetchForecastSources,
@@ -4876,6 +4877,82 @@ await test('AK חי: הרשאות — period/merge למנהלת ראשית בל�
   if (problems.length) throw new Error(problems.join('; '));
   return `${manager ? 'manager 403 בשניהם, overlaps 404' : '(אין מנהל עבודה)'} · ${w ? 'worker 403 בשניהם' : '(אין עובד)'} · בלי טוקן 401`;
 }, 30000);
+
+// ============================================================
+// חלק AM-1 (13.10.2026) — "הוצאה שהעליתי עכשיו נעלמת"
+// ------------------------------------------------------------
+// המסך מסנן לפי **תאריך החשבונית** וברירת המחדל "החודש", ולכן חשבונית
+// שהועלתה היום עם תאריך ינואר לא הופיעה בכלל (קרה בשלוש מתוך שמונה
+// ההוצאות בבסיס: #174/#175/#176).
+//
+// הבדיקה **טהורה בכוונה**: טבלת "הוצאות" מנוטרת ע"י Make, וכל רשומת
+// בדיקה שם שורפת קרדיטים אמיתיים (ר' הכותרת למעלה). הלוגיקה הוצאה
+// ל-`client/src/utils/expenseList.js` בדיוק כדי שתהיה נבדקת בלי זה.
+// ============================================================
+await test('AM-1 טהור: הוצאה שהועלתה לאחרונה מופיעה מחוץ לתקופה — ולא נספרת בסכום', () => {
+  const now = '2026-10-13';
+  const e = (id, invoiceDate, uploadDate, amount = 100, supplier = 'ספק א') =>
+    ({ id, 'תאריך חשבונית-AI': invoiceDate, 'תאריך העלאת החשבונית': uploadDate, amount, supplier });
+  const october = (x) => String(x['תאריך חשבונית-AI'] || '').startsWith('2026-10');
+  const split = splitExpenses([
+    e('inPeriod', '2026-10-02', '2026-10-02'),                 // בתקופה — נספר
+    e('recent1', '2026-01-31', '2026-10-13', 24314),           // #174 האמיתית
+    e('recent2', '2026-07-28', '2026-10-12', 8048),            // #173 האמיתית
+    e('oldUpload', '2026-01-31', '2026-10-05', 3151),          // הועלתה לפני 8 ימים — לא "חדש"
+    e('wayOld', '2025-05-05', '2025-05-05'),                   // ישנה לגמרי
+  ], {
+    matches: () => true,
+    inRange: october,
+    uploadOf: (x) => x['תאריך העלאת החשבונית'],
+    sortKey: (x) => x['תאריך חשבונית-AI'],
+    now,
+  });
+
+  if (split.inPeriod.map((x) => x.id).join(',') !== 'inPeriod') throw new Error(`בתקופה: ${split.inPeriod.map((x) => x.id)}`);
+  // ה"חדשות" ממוינות לפי תאריך ההעלאה, האחרונה קודם
+  if (split.recentOutside.map((x) => x.id).join(',') !== 'recent1,recent2') throw new Error(`חדשות: ${split.recentOutside.map((x) => x.id)}`);
+  // הטבלה: החדשות בראש ואחריהן אלה שבתקופה
+  if (split.rows.map((x) => x.id).join(',') !== 'recent1,recent2,inPeriod') throw new Error(`סדר הטבלה: ${split.rows.map((x) => x.id)}`);
+  // **הנקודה המרכזית**: הסכום לא זז. אם ה"חדשות" היו נספרות, 100 היה הופך ל-32,462.
+  const total = split.inPeriod.reduce((s2, x) => s2 + x.amount, 0);
+  if (total !== 100) throw new Error(`הסכום הושפע מה"חדשות": ${total} (צפוי 100)`);
+
+  // הסינון שאינו-תקופה חל גם על ה"חדשות" — "חדש" לא עוקף חיפוש/ספק
+  const bySupplier = splitExpenses([e('a', '2026-01-31', '2026-10-13', 1, 'ספק א'), e('b', '2026-01-31', '2026-10-13', 1, 'ספק ב')], {
+    matches: (x) => x.supplier === 'ספק א',
+    inRange: october, uploadOf: (x) => x['תאריך העלאת החשבונית'], sortKey: (x) => x['תאריך חשבונית-AI'], now,
+  });
+  if (bySupplier.recentOutside.map((x) => x.id).join(',') !== 'a') throw new Error(`סינון-ספק לא חל על החדשות: ${bySupplier.recentOutside.map((x) => x.id)}`);
+
+  // גבולות החלון: היום, 6 ימים אחורה (בפנים), 7 ימים אחורה (בחוץ)
+  const bad = [];
+  if (!isRecentUpload('2026-10-13', now)) bad.push('היום לא נחשב');
+  if (!isRecentUpload('2026-10-07', now)) bad.push('6 ימים אחורה לא נחשב (החלון הוא 7 ימים כולל היום)');
+  if (isRecentUpload('2026-10-06', now)) bad.push('7 ימים אחורה כן נחשב');
+  if (!isRecentUpload('2026-10-20', now)) bad.push('תאריך-העלאה עתידי (שעון שגוי) נעלם');
+  if (isRecentUpload(null, now) || isRecentUpload('שטות', now)) bad.push('תאריך ריק/שבור נחשב "חדש"');
+  if (RECENT_UPLOAD_DAYS !== 7) bad.push(`חלון ה"לאחרונה" השתנה: ${RECENT_UPLOAD_DAYS}`);
+  if (bad.length) throw new Error(bad.join('; '));
+  return 'חדשות בראש (ממוינות לפי העלאה) · הסכום נשאר 100 ולא 32,462 · סינון-ספק חל גם עליהן · גבולות החלון 7 ימים · תאריך שבור/עתידי';
+});
+
+await test('AM-1: ההוצאות האמיתיות שהיו "נעלמות" אכן נתפסות עכשיו', async () => {
+  // קריאה בלבד מול הבסיס החי — בלי ליצור שום רשומה בטבלת Make.
+  const expenses = await directFetchRecords('הוצאות', {});
+  const now = new Date().toISOString().slice(0, 10);
+  const monthPrefix = now.slice(0, 7);
+  const split = splitExpenses(expenses, {
+    matches: () => true,
+    inRange: (e) => String(e['תאריך חשבונית-AI'] || '').startsWith(monthPrefix),
+    uploadOf: (e) => e['תאריך העלאת החשבונית'],
+    sortKey: (e) => e['תאריך חשבונית-AI'],
+    now,
+  });
+  const nums = split.recentOutside.map((e) => '#' + e['מספר הוצאה']);
+  // לפני AM-1 כל אלה לא היו מופיעות במסך כלל בברירת המחדל
+  if (!split.recentOutside.length && !split.inPeriod.length) throw new Error('אין בכלל הוצאות — לא ניתן לאמת');
+  return `${split.inPeriod.length} בתקופה (${monthPrefix}) · ${split.recentOutside.length} הועלו לאחרונה מחוץ לתקופה: ${nums.join(', ') || 'אין'}`;
+}, READ_WARN_MS);
 
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)

@@ -338,7 +338,19 @@ export async function buildForecastForPlan(planId, opts = {}) {
  */
 async function buildForecastForPlanUnlocked(planId, { dryRun = false, sources = null, clearTrigger = true } = {}) {
   const data = sources || await fetchForecastSources();
-  const plan = data.plans.find((p) => p.id === planId);
+  // ⚠️ באג שנתפס בבדיקה (AM-1, 13.10.2026): בנייה אמיתית שקיבלה
+  // `sources` עבדה על **תאריכי-תוכנית מצילום מיושן**. התרחיש: תמר
+  // משנה מחיר (forecast-sync מצלם את הטבלאות ומתזמן בנייה בעוד 3
+  // שניות), ובשלוש השניות האלה "שינוי תקופה" מרחיב את טווח הקטיף
+  // ובונה. הבנייה המדובנסת רצה אחר כך עם הטווח **הישן**, מחשבת פחות
+  // שבועות, ומוחקת את השבוע שזה עתה נוסף כ"עודף". נמדד: 4 שורות → 3.
+  //
+  // לכן בבנייה אמיתית התוכנית ושורות-התחזית נקראות **עכשיו**. מה
+  // שנשאר מהצילום הוא התפוקות/המחירים/הגידולים — שלושת הדברים שבגללם
+  // הועבר `sources` מלכתחילה (הם משתנים לעיתים רחוקות, וכל שינוי בהם
+  // מתזמן בנייה חדשה בעצמו).
+  const freshPlans = (dryRun || !sources) ? data.plans : await fetchRecords(PLANS_TABLE, {});
+  const plan = freshPlans.find((p) => p.id === planId);
   if (!plan) {
     return { ok: false, planId, planNumber: null, missing: ['התוכנית לא נמצאה'], notFound: true };
   }
