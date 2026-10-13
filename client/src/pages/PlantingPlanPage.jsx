@@ -169,6 +169,10 @@ function actualKg(row) {
 
 const CHART_COLORS = ['#3578E5', '#2E9B62', '#E8B20B', '#7C4DFF', '#09A7B2', '#F04444', '#F79009', '#8B5CF6'];
 
+// מתי לרענן (עם עקיפת-מטמון) אחרי פעולה שמפעילה אוטומציה ב-Airtable.
+// ר' ההסבר המלא ליד pollAfterAutomation (משימה AI, 13.10.2026).
+const AUTOMATION_POLL_MS = [5000, 12000, 25000, 45000];
+
 // ============================================================
 // רכיבים קטנים
 // ============================================================
@@ -268,31 +272,57 @@ export default function PlantingPlanPage() {
   // טעינת נתונים
   // ============================================================
   // רענון אחרי פעולה אינו מציג שלד ואינו מאפס טאב/לוח — נשארים באותו מקום
-  const load = useCallback(async ({ silent = false } = {}) => {
+  //
+  // ⚠️ fresh (משימה AI, 13.10.2026 — הבאג "לא רואים את החישוב עד רענון
+  // ידני"): `GET /api/:table` שומר כל תוצאה ל-30 שניות (READ_TTL_MS
+  // ב-server.js). האוטומציות של Airtable ("חשב תוכנית"/"הזז תוכנית"/
+  // "רענן תחזית") כותבות את התקופות והתחזיות **ישירות ל-Airtable**, בלי
+  // לעבור בשרת שלנו — ולכן אין שום invalidateReads שיודע לנקות את
+  // המטמון כשהן מסיימות. אומת בלוג (תוכנית recaSLXdni2DtYxpR, 07:14
+  // UTC): הקריאה שאחרי השמירה הספיקה לשמור את המצב *לפני* האוטומציה,
+  // והקריאה החוזרת 6 שניות אחר-כך קיבלה HIT מאותו מצב בדיוק. התוצאה
+  // הייתה שרק רענון ידני אחרי יותר מ-30 שניות הראה את החישוב.
+  // `?fresh=1` עוקף את המטמון בשני הכיוונים (אותו פתרון קיים משמש
+  // בדיוק מאותה סיבה ב-UploadDocumentPage.jsx מול Make). מופעל רק על
+  // שלוש הטבלאות שהאוטומציה נוגעת בהן — אין טעם לעקוף מטמון של
+  // מבנים/גידולים/ימי-אי-עבודה שאף אוטומציה לא כותבת להם.
+  //
+  // מחזיר את הנתונים שנטענו (ולא רק קובע state) כדי שהפולינג למטה יוכל
+  // לבדוק את תנאי-העצירה על הערך הטרי מיד, בלי לחכות לרינדור ובלי ref.
+  const load = useCallback(async ({ silent = false, fresh = false } = {}) => {
     if (!silent) setLoading(true);
     setLoadError('');
+    const F = fresh ? '&fresh=1' : '';
     try {
       const weekFields = ['קוד שבוע', 'JSON לפי ימים מאוחד'].map(encodeURIComponent).join(',');
       const [p, pe, f, s, c, nw, ws] = await Promise.all([
-        app.api.get('תוכניות שתילה', '?maxRecords=500'),
-        app.api.get('תקופות תוכנית', '?maxRecords=1000'),
-        app.api.get('תחזית שתילה שבועית', '?maxRecords=1000'),
+        app.api.get('תוכניות שתילה', `?maxRecords=500${F}`),
+        app.api.get('תקופות תוכנית', `?maxRecords=1000${F}`),
+        app.api.get('תחזית שתילה שבועית', `?maxRecords=1000${F}`),
         app.api.get('מבנים', '?maxRecords=300'),
         app.api.get('גידולים', '?maxRecords=300'),
         app.api.get('ימי אי עבודה', '?maxRecords=500'),
         app.api.get('סיכום שבועי', `?maxRecords=300&raw=1&fields=${weekFields}`).catch(() => []),
       ]);
-      setPlans(Array.isArray(p) ? p : []);
-      setPeriods(Array.isArray(pe) ? pe : []);
-      setForecasts(Array.isArray(f) ? f : []);
+      const data = {
+        plans: Array.isArray(p) ? p : [],
+        periods: Array.isArray(pe) ? pe : [],
+        forecasts: Array.isArray(f) ? f : [],
+      };
+      setPlans(data.plans);
+      setPeriods(data.periods);
+      setForecasts(data.forecasts);
       setStructures(Array.isArray(s) ? s : []);
       setCrops(Array.isArray(c) ? c : []);
       setNonWorkDays(Array.isArray(nw) ? nw : []);
       setWeeklySummaries(Array.isArray(ws) ? ws : []);
+      setLoading(false);
+      return data;
     } catch (e) {
       setLoadError(e.message || 'לא ניתן היה לטעון את הנתונים.');
+      setLoading(false);
+      return null;
     }
-    setLoading(false);
   }, [app.api]);
 
   useEffect(() => { load(); }, [load]);
@@ -600,21 +630,108 @@ export default function PlantingPlanPage() {
   const forecastsRef = useRef(forecasts);
   useEffect(() => { forecastsRef.current = forecasts; }, [forecasts]);
 
+  // ------------------------------------------------------------
+  // פולינג-אחרי-אוטומציה (משימה AI, 13.10.2026)
+  // ------------------------------------------------------------
+  // האוטומציות של Airtable מסיימות באיחור משתנה (שניות עד דקות — ר'
+  // המדידות ב-qa-check.mjs, חלק C2). קודם היה כאן רענון-שקט בודד אחרי
+  // 6 שניות, שגם הגיע מוקדם מדי וגם קיבל תשובה-מהמטמון — כלומר לא
+  // הראה כלום. עכשיו: ארבעה רענונים עם `fresh` (עקיפת מטמון) אחרי
+  // 5/12/25/45 שניות, שנעצרים ברגע שהתוצאה בפועל הגיעה.
+  // התנאי הוא תמיד **על הנתונים** ולא על תיבת-הסימון של הטריגר:
+  // Airtable מאפס אותה בעצמו, ולא ניתן לדעת מהממשק אם זה קורה בתחילת
+  // הריצה או בסופה — תנאי כזה היה עלול להכריז "הסתיים" לפני שהתקופות
+  // נכתבו. המחיר של תנאי-על-הנתונים: עריכה שלא שינתה שום ערך בפועל
+  // תסתיים באזהרה-שווא אחרי 45 שניות. אין נזק לנתונים.
+  const [computing, setComputing] = useState({}); // planId -> תווית חיווי
+  const pollTimersRef = useRef([]);
+  // ניקוי כל הטיימרים ב-unmount — אחרת רענון-שקט (וקביעת state) ממשיך
+  // לרוץ אחרי שהמסך נסגר.
+  useEffect(() => () => {
+    pollTimersRef.current.forEach(clearTimeout);
+    pollTimersRef.current = [];
+  }, []);
+
+  const dropComputing = useCallback((key) => {
+    if (!key) return;
+    setComputing((m) => {
+      if (!(key in m)) return m;
+      const next = { ...m };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  /** @param {{key?: string, label?: string, isDone: (data) => boolean}} waitFor */
+  const pollAfterAutomation = useCallback((waitFor) => {
+    const { key, label, isDone } = waitFor;
+    if (key) setComputing((m) => ({ ...m, [key]: label || '⏳ מחשב תוכנית…' }));
+    const mine = [];
+    let stopped = false;
+    const stop = () => {
+      stopped = true;
+      mine.forEach(clearTimeout);
+      pollTimersRef.current = pollTimersRef.current.filter((t) => !mine.includes(t));
+      dropComputing(key);
+    };
+    AUTOMATION_POLL_MS.forEach((delay, i) => {
+      const t = setTimeout(async () => {
+        if (stopped) return;
+        const data = await load({ silent: true, fresh: true });
+        if (stopped) return;
+        if (data && isDone(data)) { stop(); return; }
+        if (i === AUTOMATION_POLL_MS.length - 1) {
+          stop();
+          toast('החישוב ב-Airtable עדיין לא הסתיים — רענני בעוד דקה', 'warn');
+        }
+      }, delay);
+      mine.push(t);
+      pollTimersRef.current.push(t);
+    });
+  }, [load, dropComputing]);
+
+  // חתימת-מצב של תוכנית: התאריכים שהאוטומציה מחשבת + התקופות שהיא
+  // כותבת. שינוי בחתימה = "חשב תוכנית"/"הזז תוכנית" סיימו בפועל.
+  const planStateSignature = useCallback((planId, plans_, periods_) => {
+    const p = plans_.find((x) => x.id === planId);
+    const dates = ['תחילת שתילה מעודכנת', 'סוף שתילה מעודכן', 'תחילת קטיף מעודכנת', 'סוף קטיף מעודכן']
+      .map((f) => String(p?.[f] || '')).join('|');
+    const per = periods_
+      .filter((x) => firstId(x['תוכנית שתילה']) === planId)
+      .map((x) => `${x.id}:${x['מתאריך']}:${x['עד תאריך']}:${x['סטטוס']}`)
+      .sort().join(',');
+    return `${dates}#${per}`;
+  }, []);
+
+  const forecastCountFor = (planId, rows) =>
+    rows.filter((f) => firstId(f['תוכנית שתילה']) === planId).length;
+
   // watchdog: אם 3 דקות אחרי הפעלת "רענן תחזית" אין שורת-תחזית חדשה
   // לתוכנית הזו — ייתכן שהאוטומציה "נתקעה בשקט" על נתוני-בסיס חסרים
   // (בדיוק התקרית שגרמה למשימה הזו). רק התרעה — לא פעולה אוטומטית נוספת.
+  // נשאר כגב-מערך ארוך-טווח *מעל* הפולינג הקצר (45 שניות) — האוטומציה
+  // הזו נמדדה בפועל גם בעיכובים של דקות, ואז הפולינג כבר הרים ידיים.
   const startRefreshWatchdog = useCallback((planId, beforeCount) => {
-    setTimeout(() => {
-      const afterCount = forecastsRef.current.filter((f) => firstId(f['תוכנית שתילה']) === planId).length;
+    const t = setTimeout(() => {
+      const afterCount = forecastCountFor(planId, forecastsRef.current);
       if (afterCount <= beforeCount) {
         toast('הרענון לא הצליח — ייתכן שחסרים נתונים, בדוק preflight', 'warn');
       }
     }, 3 * 60 * 1000);
+    pollTimersRef.current.push(t);
   }, []);
 
   const doRefreshForecast = async (planId) => {
-    const beforeCount = forecasts.filter((f) => firstId(f['תוכנית שתילה']) === planId).length;
-    const ok = await runAction(() => forceTrigger('תוכניות שתילה', planId, 'רענן תחזית'));
+    const beforeCount = forecastCountFor(planId, forecasts);
+    const ok = await runAction(async () => {
+      await forceTrigger('תוכניות שתילה', planId, 'רענן תחזית');
+      // תנאי-העצירה: מספר שורות התחזית של התוכנית עלה.
+      return {
+        key: planId,
+        label: '⏳ מחשב תחזית…',
+        isDone: ({ forecasts: rows }) => forecastCountFor(planId, rows) > beforeCount,
+      };
+    });
     if (ok) {
       toast('הרענון הופעל — התחזית תתעדכן בעוד רגע');
       startRefreshWatchdog(planId, beforeCount);
@@ -636,15 +753,24 @@ export default function PlantingPlanPage() {
   // ============================================================
   // כתיבה ל-Airtable (סעיף 44 — Loading, נטרול כפתור, רענון)
   // ============================================================
+  // `fn` יכול להחזיר מתאר-המתנה ({ key, label, isDone }) לפעולה שמפעילה
+  // אוטומציה ב-Airtable — ואז מתחיל פולינג-עם-fresh עד שהתוצאה בפועל
+  // מגיעה (ר' pollAfterAutomation). בלי מתאר נשאר רענון-יחיד כמו קודם
+  // (פעולות ישירות, למשל יצירת תקופה ידנית, שאין להן אוטומציה לחכות לה)
+  // — אבל גם הוא עם `fresh`, כי המטמון בן 30 השניות חל גם עליהן.
   const runAction = async (fn) => {
     if (busy) return false; // מניעת Double Click
     setBusy(true);
     setActionError('');
     try {
-      await fn();
-      await load({ silent: true }); // בהצלחה — קרא מחדש מ-Airtable בלי לקפוץ מהמסך
-      // רענון שקט נוסף — האוטומציה של Airtable (חשב תוכנית / הזזה) מסיימת באיחור קטן
-      setTimeout(() => { load({ silent: true }).catch(() => {}); }, 6000);
+      const waitFor = await fn();
+      await load({ silent: true, fresh: true }); // בהצלחה — קרא מחדש מ-Airtable בלי לקפוץ מהמסך
+      if (waitFor?.isDone) {
+        pollAfterAutomation(waitFor);
+      } else {
+        const t = setTimeout(() => { load({ silent: true, fresh: true }).catch(() => {}); }, 6000);
+        pollTimersRef.current.push(t);
+      }
       setBusy(false);
       return true;
     } catch (e) {
@@ -664,8 +790,17 @@ export default function PlantingPlanPage() {
       confirmLabel: 'עדכן תוכנית',
     });
     if (!yes) return;
+    // חתימת-המצב של כל התוכניות *לפני* ההפעלה — תנאי-העצירה הוא שכולן
+    // השתנו בפועל (ולא "אחת מהן", שהיה נעצר אחרי הראשונה ומשאיר את
+    // השאר בלי חיווי ובלי רענון).
+    const before = new Map(list.map((pl) => [pl.id, planStateSignature(pl.id, plans, periods)]));
     const ok = await runAction(async () => {
       for (const pl of list) await forceTrigger('תוכניות שתילה', pl.id, 'חשב תוכנית');
+      return {
+        key: `year:${year}`,
+        label: `⏳ מחשב ${list.length} תוכניות…`,
+        isDone: (data) => list.every((pl) => planStateSignature(pl.id, data.plans, data.periods) !== before.get(pl.id)),
+      };
     });
     if (ok) toast('החישוב הופעל — התוכנית תתעדכן בעוד רגע');
   };
@@ -681,25 +816,45 @@ export default function PlantingPlanPage() {
       'מספר ימי קטיף': Number(form.harvestDays) || null,
       'שנת תוכנית': Number(form.year) || null,
     };
+    const beforeEdit = form.mode === 'edit' ? planStateSignature(form.id, plans, periods) : null;
     const ok = await runAction(async () => {
       if (form.mode === 'edit') {
         await app.api.update('תוכניות שתילה', form.id, fields);
         await forceTrigger('תוכניות שתילה', form.id, 'חשב תוכנית');
-      } else {
-        const created = await app.api.create('תוכניות שתילה', fields);
-        // הפעלת מנגנון החישוב הקיים ב-Airtable — Zite אינו מחשב תאריכים
-        if (created?.id) await forceTrigger('תוכניות שתילה', created.id, 'חשב תוכנית');
+        return {
+          key: form.id,
+          label: '⏳ מחשב תוכנית…',
+          isDone: (data) => planStateSignature(form.id, data.plans, data.periods) !== beforeEdit,
+        };
       }
+      const created = await app.api.create('תוכניות שתילה', fields);
+      // הפעלת מנגנון החישוב הקיים ב-Airtable — Zite אינו מחשב תאריכים
+      if (created?.id) await forceTrigger('תוכניות שתילה', created.id, 'חשב תוכנית');
+      if (!created?.id) return null;
+      // ליצירה: התנאי הוא שנוצרו לתוכנית תקופות — זה *בדיוק* מה שלא
+      // נראה בממשק עד עכשיו בלי רענון ידני.
+      return {
+        key: created.id,
+        label: '⏳ מחשב תוכנית…',
+        isDone: (data) => data.periods.some((p) => firstId(p['תוכנית שתילה']) === created.id),
+      };
     });
     if (ok) { setPlanForm(null); setPlanDrawer(null); }
   };
 
   const submitShift = async () => {
+    const planId = shiftForm.planId;
+    const before = planStateSignature(planId, plans, periods);
     const ok = await runAction(async () => {
-      await app.api.update('תוכניות שתילה', shiftForm.planId, {
+      await app.api.update('תוכניות שתילה', planId, {
         'מספר ימי הזזה': Number(shiftForm.days) || 0,
       });
-      await forceTrigger('תוכניות שתילה', shiftForm.planId, 'הזז תוכנית');
+      await forceTrigger('תוכניות שתילה', planId, 'הזז תוכנית');
+      return {
+        key: planId,
+        label: '⏳ מזיז תוכנית…',
+        isDone: (data) => planStateSignature(planId, data.plans, data.periods) !== before,
+      };
     });
     if (ok) { setShiftForm(null); setPlanDrawer(null); }
   };
@@ -715,6 +870,64 @@ export default function PlantingPlanPage() {
       });
     });
     if (ok) { setPeriodForm(null); setPlanDrawer(null); }
+  };
+
+  // ------------------------------------------------------------
+  // מחיקת תוכנית שלמה (משימה AI, 13.10.2026)
+  // ------------------------------------------------------------
+  // המחיקה המדורגת עצמה בשרת (DELETE /api/plans/:id, ר' plan-delete.js) —
+  // הלקוח רק מציג מה יימחק ומבקש אישור. הספירה לתצוגה נלקחת
+  // מ-`delete-preview` בשרת (אותה סריקה שהמחיקה תעשה), ולא מהמערכים
+  // שבמסך: הם מוגבלים ל-maxRecords=1000 ועלולים להיות חלקיים, ו"יימחקו
+  // 0 שורות תחזית" במסך שבאמת ימחק 300 הוא בדיוק סוג האישור שאין
+  // לבקש מהמשתמשת.
+  const deletePlan = async (plan) => {
+    const info = planInfo(plan);
+    const label = `תוכנית ${info.number ?? ''} — ${info.crop} ב${info.structure}`.trim();
+    setActionError('');
+    let preview;
+    try {
+      const r = await authFetch(`/api/plans/${plan.id}/delete-preview`);
+      preview = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(preview?.error || 'שגיאת שרת');
+    } catch (e) {
+      setActionError(`לא ניתן היה לבדוק מה מקושר לתוכנית לפני המחיקה — המחיקה לא בוצעה. (${e.message || e})`);
+      return;
+    }
+    // קטיפים = נתוני אמת שכבר נקטפו. חוסם, לא מוחק. (אותה חסימה נאכפת
+    // שוב בשרת ב-409 — זו כאן רק כדי להסביר למשתמשת במקום להיכשל.)
+    if (preview.harvests > 0) {
+      await confirmDialog({
+        title: 'לא ניתן למחוק את התוכנית',
+        message: `ל${label} יש ${preview.harvests} דיווחי קטיף — לא ניתן למחוק.\nאפשר להזיז או לערוך אותה.`,
+        confirmLabel: 'הבנתי',
+      });
+      return;
+    }
+    const yes = await confirmDialog({
+      title: 'מחיקת תוכנית שתילה',
+      message: [
+        `למחוק את ${label}?`,
+        '',
+        `יימחקו גם ${preview.periods} תקופות ו-${preview.forecasts} שורות תחזית.`,
+        'לא ניתן לבטל.',
+        '',
+        '(Airtable שומר רשומות שנמחקו בסל המחזור כ-7 ימים.)',
+      ].join('\n'),
+      confirmLabel: 'מחק תוכנית',
+      danger: true,
+    });
+    if (!yes) return;
+    const ok = await runAction(async () => {
+      const r = await authFetch(`/api/plans/${plan.id}`, { method: 'DELETE' });
+      const body = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(body?.error || 'שגיאת שרת');
+      return null; // מחיקה היא פעולה ישירה — אין אוטומציה לחכות לה
+    });
+    if (ok) {
+      setPlanDrawer(null);
+      toast(`התוכנית נמחקה (${preview.periods} תקופות, ${preview.forecasts} שורות תחזית)`);
+    }
   };
 
   const openNewPlan = (base) => {
@@ -902,6 +1115,18 @@ export default function PlantingPlanPage() {
 
       {loadError && <div className="badge badge-error" style={{ marginBottom: 14 }}>⚠️ {loadError}</div>}
 
+      {/* חיווי "האוטומציה עוד רצה" (משימה AI) — האוטומציה ב-Airtable
+          מסיימת אחרי שהבקשה שלנו כבר חזרה, ועד עכשיו לא היה שום סימן
+          שמשהו עוד קורה. נעלם מעצמו ברגע שהתוצאה מגיעה (או אחרי 45
+          שניות עם toast אזהרה). */}
+      {Object.keys(computing).length > 0 && (
+        <div style={{ marginBottom: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {Object.entries(computing).map(([k, label]) => (
+            <span key={k} className="badge badge-warn">{label}</span>
+          ))}
+        </div>
+      )}
+
       <div className="filter-bar" style={{ marginBottom: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <div>
           <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>שנה</label>
@@ -1082,8 +1307,10 @@ export default function PlantingPlanPage() {
           forecasts={forecasts.filter((f) => firstId(f['תוכנית שתילה']) === planDrawer.id)}
           periods={periods.filter((p) => firstId(p['תוכנית שתילה']) === planDrawer.id)}
           canWrite={canEdit}
+          computing={computing[planDrawer.id]}
           preflight={preflightByPlan[planDrawer.id]}
           onRefreshForecast={() => refreshForecast(planDrawer.id)}
+          onDelete={() => deletePlan(planDrawer)}
           onDeletePeriod={async (p) => {
             const yes = await confirmDialog({
               title: 'מחיקת תקופה',
@@ -1130,8 +1357,10 @@ export default function PlantingPlanPage() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>⚠ חוסרי נתונים לפני רענון תחזית</h3>
             <div style={{ marginBottom: 12, color: 'var(--text-secondary)', fontSize: 13 }}>
+              {/* שם המפתחת הוסר מהממשק (משימה AI, סעיף 3) — האפליקציה
+                  נמסרת ללקוח ואין לו הקשר לשם הזה. */}
               נמצאו נתוני-בסיס חסרים בגידולים/מחירים — "רענן תחזית" עשוי לא ליצור שורות
-              תחזית חדשות עד שהחוסרים האלה יתוקנו ב-Airtable (ע"י תמר). ניתן להפעיל בכל
+              תחזית חדשות עד שהחוסרים האלה יתוקנו ב-Airtable. ניתן להפעיל בכל
               זאת, אבל סביר שלא תתקבל תוצאה.
             </div>
             <ul style={{ margin: '0 0 16px', paddingInlineStart: 20 }}>
@@ -1444,7 +1673,7 @@ function ForecastReadinessChip({ preflight }) {
   );
 }
 
-function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate, onDeletePeriod, onRefreshForecast, preflight, canWrite = true }) {
+function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShift, onPeriod, onEdit, onDuplicate, onDeletePeriod, onDelete, onRefreshForecast, preflight, computing, canWrite = true }) {
   useEscapeClose(onClose, !busy); // סגירה במקש Escape
   const [openWeek, setOpenWeek] = useState(null); // מזהה רשומת תחזית שפתוחה לפירוט יומי
   const pairs = [
@@ -1468,6 +1697,8 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
           <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {info.icon} כרטיס תוכנית — תוכנית {info.number ?? 'חדשה'}
             <ForecastReadinessChip preflight={preflight} />
+            {/* האוטומציה ב-Airtable עוד רצה על התוכנית הזו (משימה AI) */}
+            {computing && <span className="badge badge-warn">{computing}</span>}
           </span>
           <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
         </div>
@@ -1647,7 +1878,7 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
             )}
           </div>
 
-          {canWrite && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {canWrite && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <button className="btn btn-primary" disabled={busy} onClick={onEdit}>עריכת תוכנית</button>
             <button className="btn btn-ghost" disabled={busy} onClick={onShift}>הזז תוכנית</button>
             <button className="btn btn-ghost" disabled={busy} onClick={onPeriod}>שינוי תקופה</button>
@@ -1655,6 +1886,10 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
             <button className="btn btn-ghost" disabled={busy || preflight?.loading} onClick={onRefreshForecast}>
               🔄 רענן תחזית
             </button>
+            {/* מחיקת התוכנית השלמה (משימה AI) — אחרונה ברשימה ומופרדת,
+                כי זו הפעולה היחידה כאן שאי-אפשר לבטל. */}
+            <div style={{ flex: 1 }} />
+            <button className="btn btn-danger" disabled={busy} onClick={onDelete}>🗑 מחיקת תוכנית</button>
           </div>}
         </div>
       </div>
