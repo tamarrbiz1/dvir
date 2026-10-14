@@ -7,6 +7,7 @@ import PageHeader from '../components/PageHeader.jsx';
 import { confirmDialog, toast } from '../utils/ui.js';
 import { cascadeDeleteMessage } from '../components/RecordForm.jsx';
 import { readInventoryAiState, inventoryAiSummary, logisticsAiSummary } from '../utils/inventoryAi.js';
+import { imageToJpeg, shrinkImage, isConvertibleImage, conversionErrorMessage } from '../utils/image.js';
 
 // ============================================================
 // העלאת מסמך — "גרסה סופית" באיפיון (שורות 3845–4118)
@@ -86,44 +87,8 @@ function fmtAnalysis(v, kind) {
 // הוא נדחה עם "סוג קובץ לא נתמך" שלא אמר מה לעשות.
 const ACCEPT = '.pdf,.jpg,.jpeg,.png,.heic,.heif,.webp,application/pdf,image/jpeg,image/png,image/heic,image/heif,image/webp';
 const MAX_MB = 15;
-/** פורמטים שהדפדפן אמור להצליח לפענח ואנחנו ממירים ל-JPG לפני השליחה */
-const CONVERTIBLE_RE = /\.(heic|heif|webp|bmp|tiff?|gif)$/i;
-const CONVERTIBLE_TYPES = ['image/heic', 'image/heif', 'image/webp', 'image/bmp', 'image/tiff', 'image/gif'];
-
-// תמונות גדולות מוקטנות בצד הלקוח לפני השליחה — מקצר משמעותית את זמן ההעלאה
-// (המסמך נשאר קריא לניתוח; PDF אינו משתנה)
-async function shrinkImage(f, maxDim = 2000, quality = 0.85) {
-  if (!f.type.startsWith('image/') || f.size < 1.2 * 1024 * 1024) return f;
-  try {
-    return await imageToJpeg(f, maxDim, quality) || f;
-  } catch { return f; }
-}
-
-/**
- * תמונה → JPEG דרך canvas. מחזיר null אם הקובץ לא קטן בפועל (ואז אין
- * טעם להמיר) ו**זורק** אם הדפדפן לא מצליח לפענח את הפורמט.
- *
- * AM-3: אותה פונקציה משמשת גם להקטנה (JPG/PNG גדולים) וגם להמרה
- * (HEIC/WebP). `createImageBitmap` הוא מה שקובע אם הפורמט נתמך —
- * iOS/Safari מפענחים HEIC, וזה בדיוק המקום שממנו HEIC מגיע. בדפדפן
- * שלא מפענח, הזריקה נתפסת ב-acceptFile והמשתמשת מקבלת הסבר מה לעשות
- * במקום "סוג קובץ לא נתמך".
- *
- * **בלי תלות חדשה בכלל** — אין ספריית HEIC ב-node_modules, ולא הוספתי
- * אחת (הן שוקלות מגה-בייטים של wasm).
- */
-async function imageToJpeg(f, maxDim = 2000, quality = 0.85) {
-  const bmp = await createImageBitmap(f);
-  const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(bmp.width * scale));
-  canvas.height = Math.max(1, Math.round(bmp.height * scale));
-  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
-  const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
-  if (!blob) throw new Error('המרת התמונה נכשלה');
-  const name = f.name.replace(/\.[^.]+$/i, '') + '.jpg';
-  return new File([blob], name, { type: 'image/jpeg' });
-}
+// AS-3: ההמרה/ההקטנה עברו ל-utils/image.js (בלי שינוי לוגי) כדי שגם
+// גלריית התמונות של הטיפול תשתמש באותה פונקציה בדיוק.
 
 // ---------- שבוע עסקי: שבת → חמישי ----------
 const pad = (n) => String(n).padStart(2, '0');
@@ -288,7 +253,7 @@ export default function UploadDocumentPage() {
     // AM-3: פורמט שהדפדפן יודע לפענח (HEIC מאייפון, WebP מהורדה) מומר
     // ל-JPG **לפני** השליחה, במקום להידחות. אם הדפדפן לא מפענח — הודעה
     // שאומרת בדיוק מה לעשות, ולא "סוג קובץ לא נתמך".
-    const convertible = !okType && (CONVERTIBLE_RE.test(f.name) || CONVERTIBLE_TYPES.includes(f.type));
+    const convertible = !okType && isConvertibleImage(f);
     if (!okType && !convertible) { setStatus('error'); setMessage('סוג קובץ לא נתמך. יש להעלות PDF, JPG או PNG.'); return; }
     if (f.size > MAX_MB * 1024 * 1024) { setStatus('error'); setMessage(`הקובץ גדול מדי (מקסימום ${MAX_MB}MB).`); return; }
     let ready = f;
@@ -298,9 +263,7 @@ export default function UploadDocumentPage() {
         ready = await imageToJpeg(f);
       } catch {
         setStatus('error');
-        setMessage(/heic|heif/i.test(f.name) || /heic|heif/i.test(f.type)
-          ? 'הדפדפן הזה לא יודע לפתוח HEIC (הפורמט של צילום באייפון). צלמי שוב במצב "תואם ביותר" (JPG), או שתפי את התמונה מהגלריה — השיתוף ממיר אותה ל-JPG. אפשר גם לשלוח PDF.'
-          : 'לא ניתן היה להמיר את התמונה. יש להעלות PDF, JPG או PNG.');
+        setMessage(conversionErrorMessage(f));
         return;
       }
     }

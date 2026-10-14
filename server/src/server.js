@@ -15,6 +15,7 @@ import { scheduleFridaysCheck } from './fridays.js';
 import { analyzeExpenseInventory, approvePendingDeduction, approveAllPendingDeductions, readState, createManualExpense, runManualExpenseInventoryDeduction, validateManualExpenseInput, manualExpenseSubmitKey, claimManualExpenseSubmission, updateExpenseFreeNotes, updateInventoryFreeNotes, hideInventoryLedgerLine, markAnalysisGaveUp } from './inventory-deduction.js';
 import { startAnalysisRetrySweep } from './analysis-retry.js';
 import { getWorkerPassport, setWorkerPassport, deleteWorkerPassport, WORKERS_TABLE } from './worker-documents.js';
+import { getTreatmentPhotos, addTreatmentPhoto, deleteTreatmentPhoto, TREATMENTS_TABLE as PHOTO_TREATMENTS_TABLE } from './treatment-photos.js';
 import { listItemSkus, createItemSku, deleteItemSku, SKU_TABLE } from './skus.js';
 import { analyzeLogisticsInventory, shouldRetryLogistics, MAX_LOGISTICS_ATTEMPTS } from './logistics-deduction.js';
 import { cascadeDocumentDelete, summarizeCascade } from './document-cascade.js';
@@ -1360,7 +1361,7 @@ function invalidateReads(table) {
 // טבלה שאינה קיימת ב-Base → 404 עם הודעה ברורה בעברית
 // (Airtable מחזיר לזה 403 עמום: "You are not authorized...")
 // ============================================================
-const RESERVED_PATHS = new Set(['tables', 'meta', 'select-options', 'upload-document', 'spray-reports', 'documents', 'workers']);
+const RESERVED_PATHS = new Set(['tables', 'meta', 'select-options', 'upload-document', 'spray-reports', 'documents', 'workers', 'treatments']);
 let tableNamesCache = { at: 0, names: null };
 async function knownTableNames() {
   if (tableNamesCache.names && Date.now() - tableNamesCache.at < 5 * 60 * 1000) return tableNamesCache.names;
@@ -1456,6 +1457,52 @@ app.delete('/api/workers/:id/passport', authenticate, async (req, res) => {
   try {
     const result = await deleteWorkerPassport(req.params.id, req.auth.role);
     invalidateReads(WORKERS_TABLE);
+    res.json(result);
+  } catch (e) { sendApiError(res, e); }
+});
+
+// ============================================================
+// תמונות לטיפול — שדה `תמונות` בטבלת `ריסוסים` (משימה AS-3, 14.10.2026)
+// ------------------------------------------------------------
+// בלוק נתיבים נפרד עם `authenticate` משלו, בדיוק כמו צילום הדרכון:
+// `treatments` ב-RESERVED_PATHS ולכן ה-middleware הגנרי של `/api/:table`
+// **אינו** רץ כאן. ההרשאה נגזרת מ-canWriteTable(role,'ריסוסים') הקיים —
+// מנהלת ראשית בלבד, בלי שינוי ב-auth.js (ר' treatment-photos.js).
+// שום טריגר Make/ניתוח/מלאי אינו מופעל מכאן, במתכוון, ובפרט אין נגיעה
+// בשדה `דוח ריסוסים` (ה-attachment של הדוח, זה שכן עובר ניתוח).
+// ============================================================
+/**
+ * תמונה לטיפול היא **תמונה**, לא מסמך: PDF נדחה כאן במפורש (לגלריה אין
+ * מה לעשות איתו), והשאר עובר את אותו זיהוי-בתים של AM-3 כדי שההודעה
+ * תאמר מה זוהה ("זוהה קובץ HEIC…") ולא "הקובץ אינו תקין".
+ */
+function checkTreatmentPhotoFile(buffer) {
+  const d = detectDocumentFormat(buffer);
+  if (!d.ok) return { ok: false, message: d.message };
+  if (d.format === 'PDF') {
+    return { ok: false, message: 'זוהה קובץ PDF — בגלריית התמונות של הטיפול מתקבלות תמונות בלבד (JPG או PNG).' };
+  }
+  return { ok: true };
+}
+
+app.get('/api/treatments/:id/photos', authenticate, async (req, res) => {
+  try {
+    res.json(await getTreatmentPhotos(req.params.id, req.auth.role));
+  } catch (e) { sendApiError(res, e); }
+});
+
+app.post('/api/treatments/:id/photos', authenticate, upload.single('file'), async (req, res) => {
+  try {
+    const result = await addTreatmentPhoto(req.params.id, req.auth.role, req.file, { checkFile: checkTreatmentPhotoFile });
+    invalidateReads(PHOTO_TREATMENTS_TABLE);
+    res.status(201).json(result);
+  } catch (e) { sendApiError(res, e); }
+});
+
+app.delete('/api/treatments/:id/photos/:attId', authenticate, async (req, res) => {
+  try {
+    const result = await deleteTreatmentPhoto(req.params.id, req.auth.role, req.params.attId);
+    invalidateReads(PHOTO_TREATMENTS_TABLE);
     res.json(result);
   } catch (e) { sendApiError(res, e); }
 });

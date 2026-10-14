@@ -13,6 +13,9 @@ import { CHART_MARGIN_ROTATED, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisPro
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { activatable } from '../utils/a11y.js';
 import DeliveryNoteDrawer, { CheckBadge } from '../components/DeliveryNoteDrawer.jsx';
+import { SprayerBlock, SprayerTag, sprayerInfo } from '../components/SprayerInfo.jsx';
+import TreatmentPhotos from '../components/TreatmentPhotos.jsx';
+import { planIdList } from '../utils/treatmentPlans.js';
 import { DELIVERY_TABLE, noteNumber, noteDate, noteCartons, noteWeight, noteMarketer, noteWeekCode, noteDocument, notesOfStructure } from '../utils/deliveryNotes.js';
 
 const TABS = ['סקירה', 'תוכנית שתילה', 'עבודות', 'קטיפים', 'ריסוסים', 'תפוקה', 'כספים', 'מסמכים'];
@@ -389,7 +392,7 @@ function TabPlanting({ list }) {
   );
 }
 
-function Table({ head, rows }) {
+function Table({ head, rows, onRowClick }) {
   if (!rows.length) return <div className="empty-state">אין נתונים לתקופה זו</div>;
   return (
     <div className="card">
@@ -397,7 +400,12 @@ function Table({ head, rows }) {
         <table className="data-table">
           <thead><tr>{head.map((h, i) => <th key={i}>{h}</th>)}</tr></thead>
           <tbody>
-            {rows.map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j}>{c}</td>)}</tr>)}
+            {rows.map((r, i) => (
+              <tr key={i} style={onRowClick ? { cursor: 'pointer' } : undefined}
+                onClick={onRowClick ? () => onRowClick(i) : undefined}>
+                {r.map((c, j) => <td key={j}>{c}</td>)}
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
@@ -437,15 +445,20 @@ function TabHarvests({ list }) {
 }
 
 // ============================================================
-// היסטוריית ריסוסים של מבנה — סעיף AR (14.10.2026)
+// היסטוריית ריסוסים של מבנה — סעיפים AR + AS-1 (14.10.2026)
 // ------------------------------------------------------------
-// נוספו יחידת מינון, כמות כוללת ועלות, וסיכום עלות לפי תוכנית שתילה.
+// AR: יחידת מינון, כמות כוללת ועלות, וסיכום עלות לפי תוכנית שתילה.
 // הלוגיקה כולה ב-client/src/utils/sprayCost.js — אותו חישוב שבמסך
 // הטיפולים, כדי שהמספרים יהיו זהים בשני המקומות.
 // (אגב: המינון הוצג כאן תמיד "—", כי השדה החי נקרא "מינון " עם רווח
 //  בסוף והקוד קרא `r['מינון']`. formatDosage תומך בשני האיותים.)
+// AS-1: תמר ביקשה שהמרסס המשויך יהיה נראה "בלחיצה" — גם כאן, לא רק
+// ביומן. לכן נוספה עמודת מרסס, סמן תמונות ליד שם החומר, והשורה פותחת
+// כרטיס-תצוגה עם בלוק המרסס, התוכניות והגלריה. **תצוגה בלבד**: העלאה
+// ומחיקה נשארו במסך הטיפולים, שהוא הבית של הטיפול (ושם ההרשאה נבדקת).
 // ============================================================
 function TabSprays({ list, materials, plans }) {
+  const [open, setOpen] = useState(null);
   const byMaterial = new Map((materials || []).map((m) => [m.id, m]));
   const rows = (list || []).map((r) => {
     const material = byMaterial.get(firstId(r['חומר ריסוס'])) || null;
@@ -453,18 +466,25 @@ function TabSprays({ list, materials, plans }) {
   });
   const totals = costSummary(rows);
 
-  // סה"כ לפי תוכנית שתילה — "תוכנית שתילה" בריסוסים הוא טקסט עם מזהה התוכנית
-  const planLabel = (id) => {
-    const p = (plans || []).find((x) => x.id === id);
-    if (!p) return id ? 'תוכנית שאינה במבנה זה' : 'בלי תוכנית שתילה';
-    const crop = displayName(p['גידולים'], '') || safeValue(p['סוג גידול'] || p['שם גידול']);
-    return `תוכנית ${p['מספר תוכנית'] ?? '—'} · ${crop}`;
+  // סה"כ לפי תוכנית שתילה — "תוכנית שתילה" בריסוסים הוא טקסט עם מזהה
+  // התוכנית. ⚠️ AS-2: מעכשיו הוא יכול להחזיק **כמה** מזהים מופרדים
+  // בפסיק, או להיות ריק. הקיבוץ נשאר לפי הערך השלם — כך כל טיפול נספר
+  // פעם אחת בלבד ואין כפל-עלות — והתווית מפרקת אותו לשמות.
+  const planLabel = (value) => {
+    const ids = planIdList(value);
+    if (!ids.length) return 'בלי תוכנית שתילה';
+    return ids.map((id) => {
+      const p = (plans || []).find((x) => x.id === id);
+      if (!p) return 'תוכנית שאינה במבנה זה';
+      const crop = displayName(p['גידולים'], '') || safeValue(p['סוג גידול'] || p['שם גידול']);
+      return `תוכנית ${p['מספר תוכנית'] ?? '—'} · ${crop}`;
+    }).join(' + ');
   };
   const byPlan = new Map();
   rows.forEach((x) => {
-    const id = typeof x.raw['תוכנית שתילה'] === 'string' ? x.raw['תוכנית שתילה'] : '';
-    if (!byPlan.has(id)) byPlan.set(id, []);
-    byPlan.get(id).push(x);
+    const key = planIdList(x.raw['תוכנית שתילה']).join(',');
+    if (!byPlan.has(key)) byPlan.set(key, []);
+    byPlan.get(key).push(x);
   });
 
   return (
@@ -502,19 +522,73 @@ function TabSprays({ list, materials, plans }) {
         </div>
       )}
       <Table
-        head={['תאריך', 'חומר', 'מבצע', 'מינון', 'כמות', 'עלות', 'סטטוס']}
+        head={['תאריך', 'חומר', 'מבצע', 'מינון', 'כמות', 'עלות', 'מרסס', 'סטטוס']}
+        onRowClick={(i) => setOpen(rows[i])}
         rows={rows.map(({ raw: r, material, cost }) => [
           formatDate(r['תאריך']),
-          linkName(r['חומר ריסוס']),
+          <span style={{ display: 'inline-flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>
+            {linkName(r['חומר ריסוס'])}
+            {/* AS-3: סמן תמונות — רואים שיש גלריה בלי לפתוח */}
+            {Array.isArray(r['תמונות']) && r['תמונות'].length
+              ? <span className="muted" style={{ fontSize: 11 }} title={`${r['תמונות'].length} תמונות`}>🖼️ {r['תמונות'].length}</span>
+              : null}
+          </span>,
           linkName(r['מבצע']),
           formatDosage(r['מינון '] ?? r['מינון'], r['בסיס מינון'], material) ?? '—',
           formatAmount(cost.quantity.total, material, cost.quantity.unitKind)
             ?? <span title={missingText(cost.quantity.missing)}>—</span>,
           cost.value == null ? <span title={missingText(cost.missing)}>—</span> : formatMoney(cost.value),
+          sprayerInfo(r).any ? <SprayerTag raw={r} /> : 'לא צוין',
           r['בוצע'] ? 'בוצע' : 'לא בוצע',
         ])}
       />
+      {open && <SprayDrawer entry={open} planText={planLabel(open.raw['תוכנית שתילה'])} onClose={() => setOpen(null)} />}
     </>
+  );
+}
+
+/**
+ * AS-1: כרטיס הטיפול מתוך היסטוריית המבנה — **תצוגה בלבד**. מציג את אותם
+ * מספרים של AR (מינון/כמות/עלות, מאותו sprayCost.js), את בלוק המרסס ואת
+ * גלריית התמונות. העלאה/מחיקה אינן כאן: הבית של הטיפול הוא מסך הטיפולים.
+ */
+function SprayDrawer({ entry, planText, onClose }) {
+  const { raw, material, cost } = entry;
+  const ids = planIdList(raw['תוכנית שתילה']);
+  useEscapeClose(onClose, true);
+  const row = (l, v) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '5px 0', borderBottom: '1px solid rgba(0,0,0,0.05)', fontSize: 13 }}>
+      <span style={{ color: 'var(--text-secondary)' }}>{l}</span><b>{v}</b>
+    </div>
+  );
+  return (
+    <div className="drawer-overlay" onClick={onClose}>
+      <div className="drawer" onClick={(e) => e.stopPropagation()}>
+        <div className="drawer-header">
+          <span>🧴 טיפול — {formatDate(raw['תאריך'])}</span>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="סגירה" title="סגירה">✕</button>
+        </div>
+        <div className="drawer-body">
+          <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 6 }}>{linkName(raw['חומר ריסוס'])}</div>
+          {row('תאריך', formatDate(raw['תאריך']))}
+          {row('מבצע', linkName(raw['מבצע']))}
+          {row('מינון', formatDosage(raw['מינון '] ?? raw['מינון'], raw['בסיס מינון'], material) ?? 'לא זמין')}
+          {/* אותה מילה בדיוק כמו בכרטיס שבמסך הטיפולים (AR): ריק = 1 בחישוב */}
+          {row('מספר מרססים', raw['מספר המרססים'] ?? <span title="לא הוזן — בחישוב נחשב כמרסס אחד">1 (ברירת מחדל)</span>)}
+          {row('כמות חומר', formatAmount(cost.quantity.total, material, cost.quantity.unitKind)
+            ?? <span title={missingText(cost.quantity.missing)}>—</span>)}
+          {row('עלות', cost.value == null ? <span title={missingText(cost.missing)}>—</span> : formatMoney(cost.value))}
+          {/* AS-2: שלושת המצבים של השדה — ריק / מזהה בודד / מופרד בפסיקים */}
+          {row(ids.length > 1 ? `תוכניות (${ids.length})` : 'תוכנית שתילה', planText)}
+          {row('סטטוס', raw['בוצע'] ? 'בוצע' : (raw['סטטוס'] || 'לא בוצע'))}
+          {/* `count` מוצג למעלה בניסוח של AR, ונפח המים נגזר ממנו — מושמטים
+              כאן כדי שלא תהיה שורה כפולה עם שני ניסוחים שונים לאותו נתון */}
+          <SprayerBlock raw={raw} row={row} omit={['count', 'water']} />
+          <TreatmentPhotos treatmentId={raw.id} raw={raw} canManage={false} />
+          {raw['הערות'] && <div style={{ fontSize: 13, marginTop: 8, whiteSpace: 'pre-line' }}>{raw['הערות']}</div>}
+        </div>
+      </div>
+    </div>
   );
 }
 
