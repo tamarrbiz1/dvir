@@ -316,7 +316,14 @@ export default function PlantingPlanPage() {
   });
 
   // חלוניות
-  const [planDrawer, setPlanDrawer] = useState(null);
+  // ------------------------------------------------------------
+  // משימה AN-2 (14.10.2026, תמר: "שישאר באותו מקום"): הכרטיס מחזיק
+  // **מזהה** ולא צילום של התוכנית. עד AN הוא החזיק את האובייקט עצמו,
+  // ולכן אחרי עריכה/הזזה הוא היה מציג נתונים ישנים — וזו הסיבה שכל
+  // פעולה סגרה אותו (setPlanDrawer(null)) במקום לרענן אותו. עכשיו
+  // התוכנית נשלפת מ-`plans` אחרי כל `load`, והכרטיס נשאר פתוח ומתעדכן.
+  // ------------------------------------------------------------
+  const [planDrawerId, setPlanDrawerId] = useState(null);
   const [weekDrawer, setWeekDrawer] = useState(null);
   const [execWeekKey, setExecWeekKey] = useState(null); // השבוע הפעיל בלוח השנה היומי
   const [execMode, setExecMode] = useState('combined'); // תכנון / בפועל / משולב — אותה משמעות כמו בגיליון השבועי
@@ -487,6 +494,10 @@ export default function PlantingPlanPage() {
     for (const p of plans) map.set(p.id, p);
     return map;
   }, [plans]);
+
+  // התוכנית שהכרטיס פתוח עליה — **נגזרת** מ-`plans` בכל רנדר (AN-2).
+  // תוכנית שנמחקה/נבלעה במיזוג פשוט נעלמת מהמפה והכרטיס נסגר מעצמו.
+  const planDrawer = planDrawerId ? planById.get(planDrawerId) || null : null;
 
   const planInfo = useCallback((plan) => {
     if (!plan) return null;
@@ -811,9 +822,19 @@ export default function PlantingPlanPage() {
     });
   }, []);
 
-  /** @param {{key?: string, label?: string, isDone: (data) => boolean}} waitFor */
+  /**
+   * ⚠️ **משימה AN-3 (14.10.2026, תמר): חיווי הצלחה רק אחרי `isDone`.**
+   * תמר: "לא רוצה לראות שמסמן מוכן לפני שהסימון 'מזיז תוכנית' מסתיים
+   * להופיע". עד AN-3 ה-toast של "התוכנית הוזזה" נכתב בתוך הפעולה —
+   * כלומר אחרי ה-PATCH ולפני שהאוטומציה ב-Airtable סיימה — וכך הופיעה
+   * הודעת-הצלחה ליד חיווי "⏳ מזיז תוכנית…" שעוד רץ. מעתה ה-toast עובר
+   * ב-`onDone`, שנקרא **רק** כשתנאי-הסיום התקיים על נתונים טריים.
+   * `onDone` מקבל את ה-data של הקריאה שבה התנאי התקיים, כדי שההודעה
+   * תוכל לנקוב בתאריכים/מספרים האמיתיים שנכתבו.
+   * @param {{key?: string, label?: string, isDone: (data) => boolean, onDone?: (data) => void}} waitFor
+   */
   const pollAfterAutomation = useCallback((waitFor) => {
-    const { key, label, isDone } = waitFor;
+    const { key, label, isDone, onDone } = waitFor;
     if (key) setComputing((m) => ({ ...m, [key]: label || '⏳ מחשב תוכנית…' }));
     const mine = [];
     let stopped = false;
@@ -828,7 +849,7 @@ export default function PlantingPlanPage() {
         if (stopped) return;
         const data = await load({ silent: true, fresh: true });
         if (stopped) return;
-        if (data && isDone(data)) { stop(); return; }
+        if (data && isDone(data)) { stop(); onDone?.(data); return; }
         if (i === AUTOMATION_POLL_MS.length - 1) {
           stop();
           toast('החישוב ב-Airtable עדיין לא הסתיים — רענני בעוד דקה', 'warn');
@@ -902,6 +923,9 @@ export default function PlantingPlanPage() {
   // אוטומציות Airtable פעילות (לא נגענו בהן), ועליהן הפולינג כן נחוץ.
   // ------------------------------------------------------------
   const doRefreshForecast = async (planId) => {
+    // AN-3: ההודעות נאספות ויוצאות אחרי ה-`load` של `runAction`, כדי
+    // שהמסך והטקסט יספרו את אותו סיפור באותו רגע.
+    const pending = [];
     const ok = await runAction(async () => {
       const res = await authFetch(`/api/plans/${planId}/forecast`, { method: 'POST' });
       const data = await res.json().catch(() => null);
@@ -917,15 +941,16 @@ export default function PlantingPlanPage() {
       if (data.updated) detail.push(`${data.updated} עודכנו`);
       if (data.deleted) detail.push(`${data.deleted} נמחקו`);
       if (!detail.length) detail.push('ללא שינוי');
-      toast(`נבנו ${data.weeks?.length ?? 0} שבועות (${detail.join(', ')})`);
+      pending.push([`נבנו ${data.weeks?.length ?? 0} שבועות (${detail.join(', ')})`, 'ok']);
       if (data.keptWithActual?.length) {
-        toast(`${data.keptWithActual.length} שבועות מחוץ לטווח הקטיף נשמרו כי יש בהם ק"ג בפועל`, 'warn');
+        pending.push([`${data.keptWithActual.length} שבועות מחוץ לטווח הקטיף נשמרו כי יש בהם ק"ג בפועל`, 'warn']);
       }
       return null;
     });
     if (ok) {
       setForecastFailures((m) => { const n = { ...m }; delete n[planId]; return n; });
       fetchPreflight(planId);
+      for (const [text, kind] of pending) toast(text, kind);
     }
   };
 
@@ -984,16 +1009,18 @@ export default function PlantingPlanPage() {
     // השתנו בפועל (ולא "אחת מהן", שהיה נעצר אחרי הראשונה ומשאיר את
     // השאר בלי חיווי ובלי רענון).
     const before = new Map(list.map((pl) => [pl.id, planStateSignature(pl.id, plans, periods)]));
-    const ok = await runAction(async () => {
+    await runAction(async () => {
       for (const pl of list) await forceTrigger('תוכניות שתילה', pl.id, 'חשב תוכנית');
       return {
         key: `year:${year}`,
         label: `⏳ מחשב ${list.length} תוכניות…`,
         isDone: (data) => list.every((pl) => planStateSignature(pl.id, data.plans, data.periods) !== before.get(pl.id)
           && planIsConsistent(pl.id, data.plans, data.periods)),
+        // AN-3: ההודעה "החישוב הופעל — התוכנית תתעדכן בעוד רגע" הוסרה.
+        // היא נשמעה כהצלחה אף שכלום לא הסתיים; ההצלחה מדווחת רק כאן.
+        onDone: () => toast(`${list.length} תוכניות חושבו מחדש לפי ימי אי העבודה`),
       };
     });
-    if (ok) toast('החישוב הופעל — התוכנית תתעדכן בעוד רגע');
   };
 
   const savePlan = async () => {
@@ -1009,6 +1036,10 @@ export default function PlantingPlanPage() {
     };
     // מזהה התוכנית שנגעה בפועל — ליצירה הוא נודע רק בתוך ה-closure
     let touchedId = form.mode === 'edit' ? form.id : null;
+    // AN-3: הודעת ההצלחה של **העריכה** (פעולה סינכרונית) נדחית עד אחרי
+    // ש-`runAction` החזיר — כלומר אחרי ש-`load` הביא את הנתונים החדשים —
+    // כדי שהצ'יפ והטקסט במסך לא יסתרו זה את זה.
+    let editToast = null;
     const ok = await runAction(async () => {
       if (form.mode === 'edit') {
         // ----------------------------------------------------------
@@ -1035,7 +1066,7 @@ export default function PlantingPlanPage() {
         const bits = [`התכנון המקורי עודכן (שתילה ${formatDate(data.after['תחילת שתילה מקורית'])}–${formatDate(data.after['סוף שתילה מקורי'])}, קטיף ${formatDate(data.after['תחילת קטיף מקורית'])}–${formatDate(data.after['סוף קטיף מקורי'])})`];
         if (data.forecast) bits.push(data.forecast.ok ? `התחזית נבנתה מחדש (${data.forecast.reason})` : `התחזית לא נבנתה: ${data.forecast.missing?.[0] || ''}`);
         else bits.push('התאריכים המעודכנים והתחזית לא שונו');
-        toast(bits.join(' · '));
+        editToast = bits.join(' · ');
         return null; // תשובה סינכרונית — אין אוטומציה לחכות לה
       }
       const created = await app.api.create('תוכניות שתילה', fields);
@@ -1053,14 +1084,25 @@ export default function PlantingPlanPage() {
         // באוטומציה נפרדת שרצה אחרי זו שכותבת את התאריכים).
         isDone: (data) => data.periods.some((p) => firstId(p['תוכנית שתילה']) === created.id)
           && planIsConsistent(created.id, data.plans, data.periods),
+        // AN-3: ההודעה מופיעה רק כאן, עם המספרים שנכתבו בפועל.
+        // AK §2: בדיקת-החפיפה רצה **מתוך onDone** ולא ב-setTimeout(7000)
+        //        — עד AN-3 היא רצה אחרי 7 שניות קבועות, לפני שהאוטומציה
+        //        בכלל סיימה, ולכן יכלה לפספס חפיפה שנוצרה.
+        onDone: (data) => {
+          const periodsCount = data.periods.filter((p) => firstId(p['תוכנית שתילה']) === created.id).length;
+          const weeks = forecastCountFor(created.id, data.forecasts);
+          toast(`התוכנית נוצרה — ${periodsCount} תקופות, ${formatNumber(weeks, 0)} שבועות תחזית`);
+          checkOverlaps(created.id);
+        },
       };
     });
     if (ok) {
       setPlanForm(null);
-      setPlanDrawer(null);
-      // AK §2: עריכה/יצירה יכולה ליצור חפיפה עם תוכנית אחרת באותו מבנה.
-      // הבדיקה רצה אחרי שהאוטומציה של Airtable סיימה (ר' AUTOMATION_POLL_MS).
-      if (touchedId) setTimeout(() => checkOverlaps(touchedId), 7000);
+      if (editToast) toast(editToast);
+      // AN-2: הכרטיס **נשאר פתוח** על אותה תוכנית אחרי עריכה; ביצירה/
+      // שכפול הוא נפתח על התוכנית **החדשה** (הוראת תמר).
+      if (form.mode === 'edit') checkOverlaps(form.id); // סינכרוני — אין מה לחכות
+      else if (touchedId) setPlanDrawerId(touchedId);
     }
   };
 
@@ -1078,18 +1120,24 @@ export default function PlantingPlanPage() {
         // AK תוספת 1: עקביות, לא "משהו השתנה" — ר' planIsConsistent
         isDone: (data) => planStateSignature(planId, data.plans, data.periods) !== before
           && planIsConsistent(planId, data.plans, data.periods),
+        // AN-3: ההודעה "התוכנית הוזזה" מופיעה רק כשהתקופות באמת זזו,
+        // ועם התאריכים החדשים. בזמן ההמתנה יש רק "⏳ מזיז תוכנית…".
+        onDone: (data) => {
+          const p = data.plans.find((x) => x.id === planId);
+          const span = (from, to) => `${formatDate(p?.[from])}–${formatDate(p?.[to])}`;
+          toast(`התוכנית הוזזה (שתילה ${span('תחילת שתילה מעודכנת', 'סוף שתילה מעודכן')}, קטיף ${span('תחילת קטיף מעודכנת', 'סוף קטיף מעודכן')})`);
+          checkOverlaps(planId); // AK §2 — מתוך onDone, לא ב-setTimeout קבוע
+        },
       };
     });
-    if (ok) {
-      setShiftForm(null);
-      setPlanDrawer(null);
-      setTimeout(() => checkOverlaps(planId), 7000); // AK §2
-    }
+    // AN-2: המודאל נסגר, הכרטיס **נשאר פתוח** על אותה תוכנית ומתעדכן
+    // מהנתונים החדשים אחרי ה-polling.
+    if (ok) setShiftForm(null);
   };
 
-  // בדיקת-חפיפה אחרי פעולה שהזיזה תאריכים (AK §2). נקראת גם אחרי
-  // עריכה/הזזה — שם האוטומציות של Airtable אסינכרוניות, ולכן הבדיקה
-  // רצה אחרי שהפולינג הקיים כבר ראה את התוצאה, ולא לפניה.
+  // בדיקת-חפיפה אחרי פעולה שהזיזה תאריכים (AK §2). מאז AN-3 היא נקראת
+  // **מתוך `onDone`** של הפעולה (או מיד אחרי `load` בפעולה סינכרונית),
+  // ולא אחרי השהיה קבועה — כך היא תמיד רצה על המצב הסופי.
   const checkOverlaps = useCallback(async (planId) => {
     try {
       const res = await authFetch(`/api/plans/${planId}/overlaps`);
@@ -1117,6 +1165,9 @@ export default function PlantingPlanPage() {
       .filter((ph) => periodForm[ph]?.enabled)
       .map((ph) => ({ phase: ph, from: periodForm[ph].from, to: periodForm[ph].to }));
     if (!changes.length) { setActionError('בחרי לפחות שלב אחד לשינוי'); return; }
+    // AN-3: גם כאן ההודעה יוצאת רק אחרי ש-`runAction` סיים את ה-`load`
+    // (הפעולה עצמה סינכרונית, אבל הצ'יפ והטבלאות קוראים מהנתונים).
+    let periodToast = null;
     const ok = await runAction(async () => {
       const res = await authFetch(`/api/plans/${periodForm.planId}/period`, {
         method: 'POST',
@@ -1131,7 +1182,7 @@ export default function PlantingPlanPage() {
       });
       const bits = [parts.join(' · ')];
       if (data.forecast?.ok) bits.push(`התחזית נבנתה מחדש (${data.forecast.weeks} שבועות)`);
-      toast(bits.join(' · '));
+      periodToast = bits.join(' · ');
       if (!data.forecast?.ok && data.forecast?.missing?.length) {
         // התאריכים כן השתנו; רק התחזית לא נבנתה (חסר נתון-בסיס).
         setPreflightModal({ planId: periodForm.planId, missing: data.forecast.missing, buildFailed: true });
@@ -1139,7 +1190,11 @@ export default function PlantingPlanPage() {
       handleOverlaps(data);
       return null;
     });
-    if (ok) setPeriodForm(null);
+    // AN-2: רק המודאל נסגר — הכרטיס נשאר פתוח ומציג את התקופה החדשה.
+    if (ok) {
+      setPeriodForm(null);
+      if (periodToast) toast(periodToast);
+    }
   };
 
   // חפיפה עם תוכנית אחרת באותו מבנה (AK §2): אותו גידול → הצעת מיזוג
@@ -1158,6 +1213,10 @@ export default function PlantingPlanPage() {
 
   const submitMerge = async () => {
     const { planId, other } = mergeModal;
+    // AN-2: אחרי מיזוג הכרטיס עובר לתוכנית ה**שורדת** (התוכנית שנבלעה
+    // נמחקה — אין מה להציג עליה). השרת מחזיר את מזהה השורדת.
+    let survivorId = null;
+    let mergeToast = null;
     const ok = await runAction(async () => {
       const res = await authFetch(`/api/plans/${planId}/merge`, {
         method: 'POST',
@@ -1167,10 +1226,15 @@ export default function PlantingPlanPage() {
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || `שגיאה ${res.status}`);
       const moved = data.moved?.harvests || 0;
-      toast(`מוזג לתוכנית ${data.survivor.planNumber} (נמחקה ${data.deleted.planNumber}${moved ? `, הועברו ${moved} קטיפים` : ''})`);
+      survivorId = data.survivor?.planId || null;
+      mergeToast = `מוזג לתוכנית ${data.survivor.planNumber} (נמחקה ${data.deleted.planNumber}${moved ? `, הועברו ${moved} קטיפים` : ''})`;
       return null;
     });
-    if (ok) { setMergeModal(null); setPlanDrawer(null); }
+    if (ok) {
+      setMergeModal(null);
+      if (survivorId) setPlanDrawerId(survivorId);
+      if (mergeToast) toast(mergeToast);
+    }
   };
 
   // ------------------------------------------------------------
@@ -1226,7 +1290,10 @@ export default function PlantingPlanPage() {
       return null; // מחיקה היא פעולה ישירה — אין אוטומציה לחכות לה
     });
     if (ok) {
-      setPlanDrawer(null);
+      // AN-2: מחיקה היא המקרה היחיד שבו הכרטיס **כן** נסגר — אין תוכנית
+      // להציג. הלוח/הגיליון לא זזים: `cursor` (חודש/שבוע) ו-`screen` לא
+      // נוגעים, והרענון הוא silent ולכן אין remount ואין קפיצת גלילה.
+      setPlanDrawerId(null);
       toast(`התוכנית נמחקה (${preview.periods} תקופות, ${preview.forecasts} שורות תחזית)`);
     }
   };
@@ -1387,15 +1454,16 @@ export default function PlantingPlanPage() {
   // תצוגה
   // ============================================================
   const openPlanCard = (planId) => {
-    const plan = planById.get(planId);
-    if (plan) { setActionError(''); setPlanDrawer(plan); }
+    if (planById.has(planId)) { setActionError(''); setPlanDrawerId(planId); }
   };
 
   // צ'יפ-הסטטוס על כרטיס התוכנית נטען lazily ברגע שהכרטיס נפתח — לא לכל
-  // התוכניות בגיליון יחד (ר' הערה למעלה על preflightByPlan)
+  // התוכניות בגיליון יחד (ר' הערה למעלה על preflightByPlan).
+  // AN-2: התלות היא ב**מזהה** ולא באובייקט התוכנית — אחרת כל רענון-שקט
+  // (שמחליף את זהות האובייקט) היה מריץ את ה-preflight מחדש.
   useEffect(() => {
-    if (planDrawer?.id) fetchPreflight(planDrawer.id);
-  }, [planDrawer, fetchPreflight]);
+    if (planDrawerId) fetchPreflight(planDrawerId);
+  }, [planDrawerId, fetchPreflight]);
 
   if (loading) {
     return (
@@ -1645,9 +1713,11 @@ export default function PlantingPlanPage() {
             const ok = await runAction(() => app.api.remove('תקופות תוכנית', p.id));
             if (ok) toast('התקופה נמחקה בהצלחה');
           }}
-          busy={busy}
+          /* AN-3: כל זמן שהאוטומציה של התוכנית הזו עוד רצה — הכפתורים
+             שלה חסומים. זה מה שמונע "הזזה כפולה" (קרה בפועל 13.10). */
+          busy={busy || !!computing[planDrawer.id]}
           error={actionError}
-          onClose={() => setPlanDrawer(null)}
+          onClose={() => setPlanDrawerId(null)}
           onShift={() => { setActionError(''); setShiftForm({ planId: planDrawer.id, days: '' }); }}
           onPeriod={() => {
             setActionError('');
@@ -2088,7 +2158,10 @@ function ForecastReadinessChip({ preflight, buildFailure, pendingBuild }) {
   }
   const missing = preflight.data?.missing || [];
   if (missing.length === 0) {
-    return <span className="badge" style={{ background: '#E5F7EE', color: '#0F3D22', fontSize: 11 }}>✓ מוכן</span>;
+    // AN-3 (תמר, 14.10): הטקסט היה "✓ מוכן" ונקרא כ"הפעולה הסתיימה
+    // בהצלחה" — אף שהוא בודק רק שיש תפוקה רבעונית ומחיר, כלומר שבנייה
+    // של התחזית לא תסרב. השם החדש אומר את מה שהוא באמת בודק.
+    return <span className="badge" style={{ background: '#E5F7EE', color: '#0F3D22', fontSize: 11 }} title="יש תפוקה רבעונית ומחיר — בנייה של התחזית לא תסרב">✓ נתוני-בסיס מלאים</span>;
   }
   return (
     <span className="badge badge-warn" style={{ fontSize: 11 }} title={missing.join('\n')}>
@@ -2120,7 +2193,10 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
         <div className="drawer-header">
           <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {info.icon} כרטיס תוכנית — תוכנית {info.number ?? 'חדשה'}
-            <ForecastReadinessChip preflight={preflight} buildFailure={buildFailure} pendingBuild={!!plan['רענן תחזית']} />
+            {/* AN-3 (תמר): כל זמן שהאוטומציה רצה **לא** מציגים את צ'יפ
+                המוכנות — הוא בודק נתוני-בסיס, לא את סיום הפעולה, ושני
+                סימנים סותרים זה לצד זה היו בדיוק התלונה. */}
+            {!computing && <ForecastReadinessChip preflight={preflight} buildFailure={buildFailure} pendingBuild={!!plan['רענן תחזית']} />}
             {/* האוטומציה ב-Airtable עוד רצה על התוכנית הזו (משימה AI) */}
             {computing && <span className="badge badge-warn">{computing}</span>}
           </span>
@@ -2359,7 +2435,15 @@ function PlanCard({ plan, info, forecasts, periods, busy, error, onClose, onShif
             )}
           </div>
 
-          {canWrite && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {/* AN-3: בזמן שהאוטומציה של התוכנית רצה — החיווי מוצג **במקום**
+              הכפתורים, כדי שלא תילחץ אותה פעולה פעמיים (זה מה שגרם
+              ל"הזזה כפולה" ב-13.10). הכפתורים חוזרים כש-isDone התקיים. */}
+          {canWrite && computing && (
+            <div className="badge badge-warn" style={{ width: '100%', textAlign: 'start', padding: '10px 12px', lineHeight: 1.6 }}>
+              {computing} — הכפתורים יחזרו כשהחישוב ב-Airtable יסתיים (עד ~70 שניות). הכרטיס יתעדכן לבד.
+            </div>
+          )}
+          {canWrite && !computing && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <button className="btn btn-primary" disabled={busy} onClick={onEdit}>עריכת תוכנית</button>
             <button className="btn btn-ghost" disabled={busy} onClick={onShift}>הזז תוכנית</button>
             <button className="btn btn-ghost" disabled={busy} onClick={onPeriod}>שינוי תקופה</button>
