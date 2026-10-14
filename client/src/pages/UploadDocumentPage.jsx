@@ -623,6 +623,16 @@ function ProcessingCard({ created, rec, tracking }) {
           {filled.map(([l, v]) => <Row key={l} l={l} v={v} />)}
         </div>
       )}
+      {/* משימה AN (14.10.2026): דוח ריסוסים **אינו** מיובא אוטומטית
+          לטיפולים יותר — הוא ממתין לאישור במסך הטיפולים. בלי המשפט הזה
+          המשתמשת מניחה שהטיפולים כבר ביומן. */}
+      {created.key === 'spray' && (
+        <div className="badge badge-warn" style={{ width: '100%', marginTop: 10, textAlign: 'start', lineHeight: 1.6, whiteSpace: 'normal' }}>
+          {tracking === 'analyzed'
+            ? 'הדוח נקלט ונותח. לייבוא לטיפולים — מסך טיפולים ← דוחות ← ייבא'
+            : 'הדוח נקלט. אחרי הניתוח הוא ימתין לאישור — לייבוא לטיפולים: מסך טיפולים ← דוחות ← ייבא'}
+        </div>
+      )}
     </div>
   );
 }

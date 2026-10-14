@@ -380,9 +380,10 @@ app.post('/api/upload-document', authenticate, upload.single('file'), async (req
     // או חשבונית — ר' logistics-deduction.js. fire-and-forget, עם
     // backoff לתת ל-Make זמן למלא את "כמות קרטונים"/"מספר משטחים".
     if (table === 'תעודות משלוח' || table === 'חשבוניות') autoAnalyzeLogisticsInventory(table, created.id);
-    // דוח ריסוסים: ברקע מחכים שהניתוח של Make יתמלא ואז מייבאים את
-    // השורות לטיפולים (ר' spray-report-import.js). fire-and-forget.
-    if (table === SPRAY_REPORTS_TABLE) scheduleSprayReportImport(created.id, { afterImport: onSprayImported });
+    // דוח ריסוסים: ברקע מחכים שהניתוח של Make יתמלא ואז מסמנים את הדוח
+    // "ממתין לאישור". **אין ייבוא אוטומטי לטיפולים** (החלטת תמר 14.10 —
+    // ר' spray-report-import.js). fire-and-forget.
+    if (table === SPRAY_REPORTS_TABLE) scheduleSprayReportImport(created.id, { onChange: onSprayReportChanged });
     // "בפועל": משקל-ממוצע-לקרטון נלקח מתעודות המשלוח של אותו יום וזן,
     // ולכן תעודה חדשה יכולה לשנות ק"ג-בפועל של שבוע קיים. מדובנס, ואם
     // הניתוח של Make טרם הסתיים — הסריקה התקופתית (15 דק') תתפוס.
@@ -953,10 +954,19 @@ app.post('/api/suppliers/auto-link', authenticate, requireOwner, async (req, res
 // דוחות ריסוסים → טיפולים (2026-10-06). קריאה: owner + manager (מנהל
 // העבודה רואה את היומן); ייבוא: owner בלבד (יוצר רשומות "ריסוסים"
 // ו"חומרי ריסוס"). חייב להיות לפני '/api/:table' (ר' RESERVED_PATHS).
+//
+// משימה AN (14.10.2026): הייבוא הוא **הנתיב היחיד** שיוצר טיפולים מדוח,
+// והוא נקרא רק מלחיצה מפורשת של המנהלת הראשית ("ייבא לטיפולים" עם
+// אישור). הרקע כבר לא מייבא — ר' spray-report-import.js.
 // ============================================================
 function onSprayImported() {
   invalidateReads('ריסוסים');
   invalidateReads('חומרי ריסוס');
+}
+// משימה AN: שינוי שאינו ייבוא (הניתוח הסתיים → "ממתין לאישור") — מנקה
+// את מטמון הקריאה של טבלת הדוחות עצמה, כדי שהתג יופיע במסך מיד.
+function onSprayReportChanged() {
+  invalidateReads(SPRAY_REPORTS_TABLE);
 }
 function requireOwnerOrManager(req, res, next) {
   if (req.auth.role !== 'owner' && req.auth.role !== 'manager') return res.status(403).json({ error: 'אין הרשאה לצפות בדוחות הריסוסים' });
@@ -974,12 +984,14 @@ app.get('/api/spray-reports/history', authenticate, requireOwnerOrManager, async
   }
 });
 
-// מחיקת דוח ריסוסים — owner בלבד, כי היא מוחקת גם טיפולים שיובאו ממנו.
-// הטיפולים שסומנו ידנית "בוצע" נשארים (ר' deleteSprayReport).
+// מחיקת דוח ריסוסים — owner בלבד. משימה AN (14.10): מוחקת **רק את
+// רשומת הדוח**; הטיפולים שיובאו ממנו נשארים ביומן ומקבלים בהערות
+// "הדוח המקורי נמחק (DD.MM.YYYY)" (ר' deleteSprayReport).
 app.delete('/api/spray-reports/:id', authenticate, requireOwner, async (req, res) => {
   try {
     const result = await deleteSprayReport(req.params.id);
     onSprayImported();
+    onSprayReportChanged();
     res.json(result);
   } catch (e) {
     console.error(`[api] DELETE /api/spray-reports/${req.params.id}: ${e.message}`);
@@ -1888,9 +1900,10 @@ app.listen(PORT, () => {
   console.log(`[cli-token] מקור הטוקן: ${tokenSource().source}`);
   warmUpLinkIndex();
   scheduleFridaysCheck(); // ימי שישי תמיד ב"ימי אי עבודה" — ר' fridays.js
-  // דוחות ריסוסים שנותחו אבל טרם יובאו לטיפולים — איסוף ~60 שניות אחרי
-  // העלייה ואז כל 10 דקות (רק דוחות מאחרי תאריך-הסף; ר' spray-report-import.js)
-  startSprayImportSweep({ afterImport: onSprayImported });
+  // דוחות ריסוסים שנותחו אבל טרם יובאו לטיפולים — סריקה ~60 שניות אחרי
+  // העלייה ואז כל 10 דקות. **מסמנת "ממתין לאישור" בלבד ולא מייבאת**
+  // (החלטת תמר 14.10 — ר' spray-report-import.js)
+  startSprayImportSweep({ onChange: onSprayReportChanged });
   // "task Y": אותה תבנית בדיוק, להורדת-מלאי נגזרת מתעודות-משלוח/חשבוניות
   // שהריטריי-החי-בזיכרון החמיץ (למשל restart באמצע המתנה ל-Make) —
   // ר' logistics-sweep.js להסבר המלא ולתיחום-הבטיחות (cutoff).
