@@ -6128,6 +6128,191 @@ await test('AS-3: תמונות הטיפול — worker/manager נחסמים (403
   return `manager: ${manager ? '403' : 'דולג'}; worker: ${w ? '403' : 'דולג'}; בלי טוקן: 401; owner על מזהה שגוי: 404`;
 }, READ_WARN_MS);
 
+// ============================================================
+// חלק AS-4 (14.10.2026) — הגמעה אינה עובדת עם מרסס
+// ------------------------------------------------------------
+// תמר: "טיפול מסוג הגמעה לא אמור לקבל נתוני מרסס." **בטופס הידני בלבד**:
+// בהגמעה אין ברירת מחדל 200 לגודל מרסס, אין מילוי אוטומטי של מספר
+// מרססים, וגודל המרסס אינו חובה. בריסוס — בדיוק כמו היום.
+// ⚠️ **הייבוא מדוח לא שונה** (הוראת תמר) — הוא ממשיך לקבל 200 בשורות
+// הגמעה מברירת-המחדל של השדה, ואין כאן בדיקה שמצפה לאחרת.
+// ============================================================
+await test('AS-4 טהור: בהגמעה אין מרסס — חובה/ברירות-מחדל, ובלי לאבד ערך שמור', async () => {
+  const { usesSprayer, sprayerSizeRequired, sprayerFieldsOnTypeChange, NEW_TREATMENT_SPRAYER_SIZE, NEW_TREATMENT_SPRAYER_COUNT } =
+    await import('../../shared/treatment-defaults.js');
+  // סוג ריק/לא-מוכר מתנהג כמו ריסוס — ההתנהגות הקיימת לא משתנית
+  for (const t of ['ריסוס', '', null, 'משהו אחר']) {
+    if (!usesSprayer(t) || !sprayerSizeRequired(t)) throw new Error(`"${t}" אמור להתנהג כמו ריסוס (מרסס + חובה)`);
+  }
+  for (const t of ['הגמעה', 'הגמעות', 'טפטוף']) {
+    if (usesSprayer(t) || sprayerSizeRequired(t)) throw new Error(`"${t}" זוהה כטיפול עם מרסס`);
+  }
+  // טיפול חדש: ברירות המחדל שהטופס מילא לבד מתנקות במעבר להגמעה
+  const auto = sprayerFieldsOnTypeChange({ nextType: 'הגמעה', sprayerSize: NEW_TREATMENT_SPRAYER_SIZE, sprayers: NEW_TREATMENT_SPRAYER_COUNT, isNew: true });
+  if (auto.sprayerSize !== '' || auto.sprayers !== '') throw new Error(`ברירות המחדל לא נוקו: ${JSON.stringify(auto)}`);
+  // בחירה ידנית לא נדרסת
+  const manual = sprayerFieldsOnTypeChange({ nextType: 'הגמעה', sprayerSize: '1000', sprayers: '4', isNew: true });
+  if (manual.sprayerSize !== '1000' || manual.sprayers !== '4') throw new Error(`בחירה ידנית נדרסה: ${JSON.stringify(manual)}`);
+  // ⚠️ עריכת רשומה קיימת — **לעולם** לא מאפסים, גם בהגמעה (אובדן נתון)
+  const saved = sprayerFieldsOnTypeChange({ nextType: 'הגמעה', sprayerSize: NEW_TREATMENT_SPRAYER_SIZE, sprayers: NEW_TREATMENT_SPRAYER_COUNT, isNew: false });
+  if (saved.sprayerSize !== NEW_TREATMENT_SPRAYER_SIZE || saved.sprayers !== NEW_TREATMENT_SPRAYER_COUNT) {
+    throw new Error(`ערך שמור אופס בעריכה: ${JSON.stringify(saved)}`);
+  }
+  // מעבר חזרה לריסוס אינו ממלא כלום מחדש
+  const back = sprayerFieldsOnTypeChange({ nextType: 'ריסוס', sprayerSize: '', sprayers: '', isNew: true });
+  if (back.sprayerSize !== '' || back.sprayers !== '') throw new Error(`מעבר לריסוס מילא ערכים מעצמו: ${JSON.stringify(back)}`);
+  return 'הגמעה/טפטוף → בלי מרסס ולא חובה; ריק/ריסוס → כמו היום; ידני ושמור לא נדרסים';
+}, READ_WARN_MS);
+
+await test('AS-4 טהור: החישוב "לדונם" לא נפגע מגודל מרסס ריק, ובבסיסים אחרים "—" עם הסבר', async () => {
+  const { treatmentQuantity, treatmentCost, missingText } = await import('../../client/src/utils/sprayCost.js');
+  const mat = { 'מחיר': 100, 'גודל האריזה': 1, 'יחידת תמחור': 'ליטר' };
+  // הגמעה: הבסיס "לדונם" (ברירת המחדל של AP), והחישוב נגזר מהשטח — גודל
+  // המרסס ומספר המרססים **אינם** נכנסים אליו בכלל. זה מה שתמר ביקשה לוודא.
+  const drip = { 'בסיס מינון': 'לדונם', 'מינון ': 2, 'חישוב שטח בדונם של כלל המבנים': 3 };
+  const q = treatmentQuantity(drip);
+  if (q.total !== 6) throw new Error(`חישוב לדונם נפגע: total=${q.total} (צפוי 6)`);
+  if (q.missing.length) throw new Error(`לדונם דיווח חוסר למרות שלא צריך מרסס: ${q.missing.join(', ')}`);
+  if (q.sprayers !== 1) throw new Error(`מספר מרססים ריק לא נחשב 1: ${q.sprayers}`);
+  const cost = treatmentCost(drip, mat);
+  if (!Number.isFinite(cost.value) || cost.value <= 0) throw new Error(`עלות לדונם לא חושבה: ${cost.value}`);
+  // ואותו דבר כשהשדות קיימים אך null במפורש (כפי שנשמר בהגמעה)
+  const dripNull = { ...drip, 'גודל מרסס בליטר': null, 'מספר המרססים': null };
+  if (treatmentQuantity(dripNull).total !== 6) throw new Error('null מפורש שינה את החישוב לדונם');
+  // שאר הבסיסים אכן תלויים בגודל המרסס → "—" עם הסבר, ולא NaN/0
+  for (const basis of ['לליטר', 'ל-100 ליטר', 'אחוז']) {
+    const t = { 'בסיס מינון': basis, 'מינון ': 50, 'גודל מרסס בליטר': null };
+    const r = treatmentQuantity(t);
+    if (r.total !== null) throw new Error(`${basis} בלי גודל מרסס החזיר ${r.total} במקום null`);
+    if (!r.missing.includes('חסר גודל מרסס')) throw new Error(`${basis} לא דיווח "חסר גודל מרסס": ${r.missing.join(', ')}`);
+    const c = treatmentCost(t, mat);
+    if (c.value !== null) throw new Error(`${basis} בלי גודל מרסס החזיר עלות ${c.value}`);
+    if (!missingText(c.missing).includes('חסר גודל מרסס')) throw new Error(`ההסבר ל-${basis} לא אומר מה חסר: ${missingText(c.missing)}`);
+  }
+  return 'לדונם: 6 ועלות חושבה בלי מרסס בכלל; לליטר/ל-100 ליטר/אחוז: null + "חסר גודל מרסס"';
+}, READ_WARN_MS);
+
+await test('AS-4 חי: הגמעה נשמרת בלי גודל מרסס ובלי מספר מרססים; ריסוס מקבל 200 כמו היום', async () => {
+  const base = { 'תאריך': today, 'מבנה': [sId], 'חומר ריסוס': [mId], 'מינון ': 100, 'הערות': MARK };
+  const read = async (id) => api('GET', `${enc('ריסוסים')}/${id}?raw=1`);
+
+  // ⚠️ זה הלב: לשדה `גודל מרסס בליטר` יש ברירת-מחדל "200" ב-Airtable
+  // עצמו, ולכן **דילוג על הכתיבה לא מספיק** — הטופס כותב null במפורש.
+  const drip = await create('ריסוסים', { ...base, 'סוג טיפול': 'הגמעה', 'בסיס מינון': 'לדונם', 'גודל מרסס בליטר': null });
+  const d = await read(drip.id);
+  if (d['גודל מרסס בליטר']) throw new Error(`הגמעה נשמרה עם גודל מרסס "${d['גודל מרסס בליטר']}" — null לא ניצח את ברירת המחדל`);
+  if (d['מספר המרססים'] != null) throw new Error(`הגמעה נשמרה עם מספר מרססים ${d['מספר המרססים']}`);
+  if (d['סוג טיפול'] !== 'הגמעה') throw new Error(`סוג הטיפול לא נשמר: ${d['סוג טיפול']}`);
+
+  // ומחרוזת ריקה אכן **נדחית** בשדה בחירה — מתועד כאן כדי שלא ינסו שוב
+  let emptyStringRejected = false;
+  try { await patch('ריסוסים', drip.id, { 'גודל מרסס בליטר': '' }); }
+  catch { emptyStringRejected = true; }
+  const after = await read(drip.id);
+  if (after['גודל מרסס בליטר']) throw new Error('הניסיון במחרוזת ריקה מילא את השדה בכל זאת');
+
+  // ריסוס — ההתנהגות הקיימת: בלי כתיבה, Airtable ממלא 200
+  const spray = await create('ריסוסים', { ...base, 'סוג טיפול': 'ריסוס' });
+  const s = await read(spray.id);
+  if (String(s['גודל מרסס בליטר'] || '') !== '200') {
+    throw new Error(`ריסוס לא קיבל 200 כברירת מחדל (${s['גודל מרסס בליטר']}) — ההתנהגות הקיימת השתנתה`);
+  }
+  return `הגמעה: גודל מרסס ריק + מספר מרססים ריק · ריסוס: 200 כמו היום · מחרוזת ריקה ${emptyStringRejected ? 'נדחתה כצפוי' : 'לא נדחתה (אך לא מילאה)'}`;
+});
+
+// ============================================================
+// חלק AS-5 (14.10.2026) — בלוק הערות-הייבוא מוסתר **בתצוגה בלבד**
+// ------------------------------------------------------------
+// תמר: הבלוק "[מדוח ריסוסים #255] שורה 4 / סוג טיפול: ... / מיקום: ..."
+// חוזר על מה שהכרטיס מציג ממילא. 🔒 **אסור לשנות את מה שנכתב להערות
+// ב-Airtable** — שלוש מערכות תלויות בשורות האלה בנתונים:
+// אידמפוטנטיות הייבוא (`importedLinesOf`), ספירת "יובאו" ומחיקת דוח
+// (`FIND('[מדוח ריסוסים #N]', {הערות})`), וטווח התאריכים של הטיפול
+// (`treatmentRange` קורא את שורת `תאריך סיום:`). הבדיקות כאן מכסות את
+// שלושתן אחרי round-trip של עריכה.
+// ⚠️ לא נוצר כאן שום דוח ריסוסים ולא מופעל Make — הסמן נכתב לרשומת-QA
+// בטבלת `ריסוסים` בלבד, שאין לה אוטומציית ניתוח.
+// ============================================================
+await test('AS-5 טהור: הסתרת שורות-הייבוא בתצוגה, והחזרתן בשמירה', async () => {
+  const { visibleNotes, importNoteLines, reportNumberFromNotes, composeNotes } =
+    await import('../../client/src/utils/treatmentNotes.js');
+  const importBlock = [
+    '[מדוח ריסוסים #255] שורה 4', 'סוג טיפול: ריסוס', 'מיקום: חממה 3',
+    'גידול/זן: עגבנייה · 67', 'מספר ריסוס: 12', 'מינון מהדוח: 40', 'תאריך סיום: 23/07/2026',
+  ].join('\n');
+
+  // 1. טיפול מיובא בלי הערה חופשית → אין **כלום** להציג (לא בלוק ריק)
+  if (visibleNotes(importBlock) !== '') throw new Error(`הבלוק לא הוסתר: ${JSON.stringify(visibleNotes(importBlock))}`);
+  if (reportNumberFromNotes(importBlock) !== '255') throw new Error('מספר הדוח לא חולץ לתג');
+  if (importNoteLines(importBlock).length !== 7) throw new Error(`לא כל שורות-הייבוא נשמרו: ${importNoteLines(importBlock).length}`);
+
+  // 2. הערה חופשית אמיתית **כן** מוצגת, בלי שורות-הייבוא סביבה
+  const free = 'לבדוק את הטפטפות בשורה 2';
+  const withFree = `${importBlock}\n${free}`;
+  if (visibleNotes(withFree) !== free) throw new Error(`ההערה החופשית לא הוצגה נכון: ${JSON.stringify(visibleNotes(withFree))}`);
+
+  // 3. טיפול ידני — לא נוגעים בו, ואין לו תג-דוח
+  if (visibleNotes('סתם הערה של תמר') !== 'סתם הערה של תמר') throw new Error('הערה ידנית סוננה');
+  if (reportNumberFromNotes('סתם הערה של תמר') !== null) throw new Error('הערה ידנית קיבלה מספר דוח');
+  for (const empty of ['', null, undefined]) {
+    if (visibleNotes(empty) !== '') throw new Error(`ערך ריק (${JSON.stringify(empty)}) לא החזיר ''`);
+    if (reportNumberFromNotes(empty) !== null) throw new Error('ערך ריק קיבל מספר דוח');
+  }
+
+  // 4. **ה-round-trip המסוכן**: טופס טוען מסונן → המשתמשת עורכת → שומר
+  const edited = composeNotes({
+    hiddenLines: importNoteLines(withFree),
+    freeText: 'הערה חדשה שתמר הקלידה',
+    endDateLine: 'תאריך סיום: 23/07/2026',
+  });
+  const marker = /\[מדוח ריסוסים #(\d+)\] שורה (\d+)/.exec(edited); // זהה ל-MARKER_RE בשרת
+  if (!marker || marker[1] !== '255' || marker[2] !== '4') throw new Error(`הסמן לא שרד את העריכה: ${JSON.stringify(edited)}`);
+  const endLine = /תאריך סיום:\s*(\d{1,2}\/\d{1,2}\/\d{4})/.exec(edited); // זהה ל-treatmentRange בלקוח
+  if (!endLine || endLine[1] !== '23/07/2026') throw new Error('שורת תאריך-הסיום לא שרדה — טווח הטיפול היה נשבר');
+  if (!edited.includes('הערה חדשה שתמר הקלידה')) throw new Error('ההערה החדשה לא נשמרה');
+  if (!edited.includes('מיקום: חממה 3')) throw new Error('שורות-הייבוא האחרות לא הוחזרו');
+  if (edited.split('\n').filter((l) => l.startsWith('תאריך סיום:')).length !== 1) throw new Error('שורת תאריך-סיום הוכפלה');
+  // ושינוי טווח בטופס אכן מחליף את שורת הסיום ולא מוסיף שנייה
+  const moved = composeNotes({ hiddenLines: importNoteLines(withFree), freeText: free, endDateLine: 'תאריך סיום: 30/07/2026' });
+  if (!moved.includes('תאריך סיום: 30/07/2026') || moved.includes('23/07/2026')) throw new Error('שינוי הטווח לא עדכן את שורת הסיום');
+  return 'בלוק מוסתר · הערה חופשית מוצגת · תג #255 · round-trip שומר סמן + תאריך-סיום';
+}, READ_WARN_MS);
+
+await test('AS-5 חי: אחרי עריכה, הסמן בהערות עדיין מאתר את הטיפול (ייבוא חוזר ומחיקת דוח)', async () => {
+  const { visibleNotes, importNoteLines, composeNotes } = await import('../../client/src/utils/treatmentNotes.js');
+  // מספר דוח שאינו קיים — הבדיקה בודקת את **מפתח האיתור**, לא דוח אמיתי,
+  // ולכן אין כאן שום יצירה בטבלת "דוחות ריסוסים" ואין Make.
+  const fakeReport = '999999';
+  const marker = `[מדוח ריסוסים #${fakeReport}]`;
+  const original = [`${marker} שורה 4`, 'סוג טיפול: ריסוס', 'מיקום: חממה 3', 'תאריך סיום: 23/07/2026', MARK].join('\n');
+  const rec = await create('ריסוסים', { 'תאריך': today, 'מבנה': [sId], 'חומר ריסוס': [mId], 'מינון ': 100, 'הערות': original });
+
+  // כך בדיוק מאתרים את הטיפולים של דוח — importedLinesOf, sprayReportsHistory
+  // ו-deleteSprayReport, כולם בנוסחה הזו בצד Airtable.
+  const findByMarker = async () => (await directFetchRecords('ריסוסים', {
+    filterByFormula: `FIND('${marker}', {הערות})`, fields: ['הערות'],
+  })).filter((r) => String(r['הערות'] || '').includes(MARK));
+  if ((await findByMarker()).length !== 1) throw new Error('הסמן לא נמצא אפילו לפני העריכה');
+
+  // round-trip של הטופס: טוען מסונן, המשתמשת מחליפה את ההערה החופשית, שומר
+  const loaded = await api('GET', `${enc('ריסוסים')}/${rec.id}?raw=1`);
+  const hidden = importNoteLines(loaded['הערות']);
+  if (visibleNotes(loaded['הערות']) !== MARK) throw new Error(`הטופס לא טען את ההערה החופשית: ${JSON.stringify(visibleNotes(loaded['הערות']))}`);
+  const saved = composeNotes({ hiddenLines: hidden, freeText: `${MARK} עודכן`, endDateLine: 'תאריך סיום: 23/07/2026' });
+  await patch('ריסוסים', rec.id, { 'הערות': saved });
+
+  // אחרי השמירה: הסמן עדיין מאתר (ייבוא חוזר יזהה "כבר קיים", ומחיקת דוח
+  // תמשיך למצוא את הטיפול), ושורת תאריך-הסיום עדיין שם (טווח הטיפול)
+  const found = await findByMarker();
+  if (found.length !== 1) throw new Error('הסמן נעלם אחרי עריכת ההערות — האידמפוטנטיות ומחיקת-הדוח היו נשברות!');
+  const after = String(found[0]['הערות'] || '');
+  if (!/\[מדוח ריסוסים #999999\] שורה 4/.test(after)) throw new Error(`שורת הסמן אינה שלמה: ${after}`);
+  if (!/תאריך סיום:\s*23\/07\/2026/.test(after)) throw new Error('שורת תאריך-הסיום נמחקה — הטווח היה מתכווץ ליום אחד');
+  if (!after.includes(`${MARK} עודכן`)) throw new Error('ההערה החדשה לא נשמרה');
+  if (visibleNotes(after) !== `${MARK} עודכן`) throw new Error(`בתצוגה נשארו שורות-ייבוא: ${JSON.stringify(visibleNotes(after))}`);
+  return 'אחרי עריכה: הסמן נמצא בנוסחת FIND, שורת תאריך-הסיום שרדה, ובתצוגה רק ההערה החופשית';
+});
+
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
 // שרדה את הניקוי בריצה קודמת ונשארה בטבלה החיה עד שאותרה ידנית למחרת —

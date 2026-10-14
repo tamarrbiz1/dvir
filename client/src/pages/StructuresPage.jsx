@@ -16,6 +16,7 @@ import DeliveryNoteDrawer, { CheckBadge } from '../components/DeliveryNoteDrawer
 import { SprayerBlock, SprayerTag, sprayerInfo } from '../components/SprayerInfo.jsx';
 import TreatmentPhotos from '../components/TreatmentPhotos.jsx';
 import { planIdList } from '../utils/treatmentPlans.js';
+import { visibleNotes } from '../utils/treatmentNotes.js';
 import { DELIVERY_TABLE, noteNumber, noteDate, noteCartons, noteWeight, noteMarketer, noteWeekCode, noteDocument, notesOfStructure } from '../utils/deliveryNotes.js';
 
 const TABS = ['סקירה', 'תוכנית שתילה', 'עבודות', 'קטיפים', 'ריסוסים', 'תפוקה', 'כספים', 'מסמכים'];
@@ -585,7 +586,11 @@ function SprayDrawer({ entry, planText, onClose }) {
               כאן כדי שלא תהיה שורה כפולה עם שני ניסוחים שונים לאותו נתון */}
           <SprayerBlock raw={raw} row={row} omit={['count', 'water']} />
           <TreatmentPhotos treatmentId={raw.id} raw={raw} canManage={false} />
-          {raw['הערות'] && <div style={{ fontSize: 13, marginTop: 8, whiteSpace: 'pre-line' }}>{raw['הערות']}</div>}
+          {/* AS-5: אותו סינון-תצוגה כמו בכרטיס שבמסך הטיפולים — שורות-הייבוא
+              חוזרות על הכרטיס. הנתונים ב-Airtable לא נוגעים (read-only כאן). */}
+          {visibleNotes(raw['הערות']) && (
+            <div style={{ fontSize: 13, marginTop: 8, whiteSpace: 'pre-line' }}>{visibleNotes(raw['הערות'])}</div>
+          )}
         </div>
       </div>
     </div>
