@@ -9,6 +9,10 @@ import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import { formatMoney } from '../utils/format.js';
 import { formatDate, formatNumber, kpiValueClass } from '../utils/format.js';
 import { pick } from '../utils/field.js';
+import {
+  dosageUnit, unitHint, formatDosage, formatAmount,
+  treatmentCost, unitPrice, formatUnitPrice, unitPriceLabel, costSummary, missingText,
+} from '../utils/sprayCost.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
@@ -246,8 +250,12 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       // "זן" אינו שדה בתוכנית השתילה (נבדק בסכימה 6.10.2026) — הוא "תיאור" ברשומת הגידול, למשל "זן 67" / "אדום"
       const cropRec = plan ? crops.find((x) => x.id === firstId(plan['גידולים'])) : null;
       const variety = cropRec ? String(cropRec['תיאור'] || '').trim() : '';
+      // סעיף AR: רשומת החומר נדרשת ליחידת המינון, למחיר ליחידה ולעלות
+      const materialRec = materials.find((m) => m.id === firstId(t['חומר ריסוס'])) || null;
       return {
         id: t.id, raw: t, ...range,
+        materialRec,
+        cost: treatmentCost(t, materialRec),
         type: inferType(t),
         source: treatmentSource(t),
         material: displayName(t['חומר ריסוס'], 'לא זמין'),
@@ -264,7 +272,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
         days: Math.round((range.end - range.start) / 86400000) + 1,
       };
     }).filter(Boolean);
-  }, [treatments, plans, crops]);
+  }, [treatments, plans, crops, materials]);
 
   const cropOptions = useMemo(() => [...new Set(events.map((e) => e.crop).filter((c) => c && c !== 'לא זמין'))].sort(), [events]);
   const varietyOptions = useMemo(() => [...new Set(events.map((e) => e.variety).filter(Boolean))].sort(), [events]);
@@ -333,6 +341,9 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       // ברירת מחדל על הבסיס. רק שינוי של "סוג טיפול" בטופס מפעיל אותה.
       treatmentType: r?.['סוג טיפול'] || '',
       basis: r?.['בסיס מינון'] || '',
+      // סעיף AR-3: ברירת מחדל 1 בטיפול חדש; בטיפול קיים מוצג הערך השמור
+      // (ריק נשאר ריק — ובחישוב נחשב 1, ולא נכתב ל-Airtable מיוזמתנו)
+      sprayers: r ? (r['מספר המרססים'] ?? '') : '1',
       dosage: r ? (pick(r, DOSAGE_FIELDS) ?? '') : '',
       status: r?.['סטטוס'] || '',
       notes: String(r?.['הערות'] || '').replace(/\n?תאריך סיום:.*$/m, '').trim(),
@@ -349,6 +360,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
     if (!f.sprayerSize) { setActionError('חסר שדה חובה: גודל מרסס'); return; }
     if (!f.basis) { setActionError('חסר שדה חובה: בסיס מינון'); return; }
     if (f.dosage === '' || f.dosage == null || Number.isNaN(Number(f.dosage)) || Number(f.dosage) <= 0) { setActionError('חסר שדה חובה: מינון (מספר גדול מאפס)'); return; }
+    if (f.sprayers !== '' && f.sprayers != null && (Number.isNaN(Number(f.sprayers)) || Number(f.sprayers) < 1)) { setActionError('מספר מרססים חייב להיות מספר שלם מ-1 ומעלה'); return; }
     // השדה "תאריך" ב-Airtable הוא תאריך בודד — טווח נשמר כתאריך התחלה + שורת סיום בהערות
     const fmt = (iso) => { const [y, m, d] = iso.split('-'); return `${d}/${m}/${y}`; };
     let notesValue = String(f.notes || '').replace(/\n?תאריך סיום:.*$/m, '').trim();
@@ -363,6 +375,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       'סוג טיפול': f.treatmentType || null,
       'בסיס מינון': f.basis || null,
       'מינון ': f.dosage === '' ? null : Number(f.dosage),
+      'מספר המרססים': f.sprayers === '' || f.sprayers == null ? null : Math.floor(Number(f.sprayers)),
       'סטטוס': f.status || null,
       'הערות': notesValue || null,
       'בוצע': !!f.done,
@@ -718,6 +731,48 @@ function Chips({ names }) {
   return <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>{names.map((n) => <span key={n} className="badge" style={{ background: 'var(--bg-secondary)' }}>{n}</span>)}</span>;
 }
 
+// ============================================================
+// סעיף AR — יחידת מינון, כמות כוללת ועלות
+// ------------------------------------------------------------
+// יחידת המינון נגזרת מ`יחידת תמחור` של החומר (ליטר→סמ"ק, ק"ג→גרם);
+// העלות = כמות כוללת ביחידה הגדולה × (מחיר ÷ גודל האריזה). חסר נתון →
+// "—" עם tooltip שאומר מה חסר, ולא 0 (כלל 16 באיפיון).
+// ============================================================
+
+/** "400 גרם לליטר" — מינון + יחידה + בסיס, או רמז מה חסר */
+function DosageText({ ev }) {
+  const text = formatDosage(ev.dosage, ev.basis, ev.materialRec);
+  if (!text) return 'לא זמין';
+  const hint = unitHint(ev.materialRec);
+  return <span title={hint || undefined}>{text}{hint ? <span style={{ color: 'var(--text-secondary)', fontWeight: 400 }}> ⚠</span> : null}</span>;
+}
+
+/** עלות מעוצבת, או "—" עם tooltip שמפרט מה חסר */
+function CostText({ cost }) {
+  if (cost?.value == null) return <span title={missingText(cost?.missing)}>—</span>;
+  return <span>{formatMoney(cost.value)}</span>;
+}
+
+/** שורות הכמות/המים/העלות בכרטיס הטיפול */
+function TreatmentAmounts({ ev, row }) {
+  const q = ev.cost.quantity;
+  const sizeN = Number(ev.raw['גודל מרסס בליטר']);
+  const water = q.basis && q.basis !== 'לדונם' && Number.isFinite(sizeN) && sizeN > 0
+    ? `${formatNumber(q.sprayers, 0)} ${q.sprayers === 1 ? 'מרסס' : 'מרססים'} × ${formatNumber(sizeN)} ל' = ${formatNumber(q.sprayers * sizeN)} ליטר מים`
+    : null;
+  const total = formatAmount(q.total, ev.materialRec, q.unitKind);
+  const per = formatAmount(q.perSprayer, ev.materialRec, q.unitKind);
+  return (
+    <>
+      {row('מספר מרססים', ev.raw['מספר המרססים'] ?? <span title="לא הוזן — בחישוב נחשב כמרסס אחד">1 (ברירת מחדל)</span>)}
+      {water && row('מים', water)}
+      {row('כמות חומר', total || <span title={missingText(q.missing)}>—</span>)}
+      {per && q.sprayers > 1 && row(q.basis === 'לדונם' ? 'כמות חומר לכל מרסס' : 'כמות למרסס אחד', per)}
+      {row('עלות', <CostText cost={ev.cost} />)}
+    </>
+  );
+}
+
 // ---------- כרטיס טיפול ----------
 function DayDrawer({ date, events, busy, error, onClose, onEdit, onToggle, onDelete }) {
   useEscapeClose(onClose, !busy); // סגירה במקש Escape
@@ -752,9 +807,10 @@ function DayDrawer({ date, events, busy, error, onClose, onEdit, onToggle, onDel
                 {row('גידול', ev.crop)}
                 {row('זן', ev.variety || '—')}
                 {row('מספר ריסוס', ev.number ?? '—')}
-                {row('מינון', ev.dosage != null && ev.dosage !== '' ? `${ev.dosage}${ev.basis ? ` ${ev.basis}` : ''}` : 'לא זמין')}
+                {row('מינון', <DosageText ev={ev} />)}
                 {row('מבצע', ev.executor || 'לא זמין')}
-                {row('כמות מחושבת', ev.raw['כמות מחושבת'] != null && typeof ev.raw['כמות מחושבת'] === 'number' ? formatNumber(ev.raw['כמות מחושבת']) : 'לא זמין')}
+                {/* AR-2/AR-3: כמות כוללת, נפח מים ועלות — ר' client/src/utils/sprayCost.js */}
+                <TreatmentAmounts ev={ev} row={row} />
                 {ev.notes && <div style={{ fontSize: 13, marginTop: 8 }}>{ev.notes}</div>}
               </div>
             );
@@ -771,6 +827,14 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
   const set = (k, v) => setForm({ ...form, [k]: v });
   const toggleStruct = (id) => set('structures', form.structures.includes(id) ? form.structures.filter((x) => x !== id) : [...form.structures, id]);
   const mat = materials.find((m) => m.id === form.material);
+  // AR-1/AR-3: יחידת המינון ונפח המים מתעדכנים בזמן אמת מהחומר שנבחר
+  const matHint = form.material ? unitHint(mat) : null;
+  const dosageLabel = formatDosage(form.dosage, form.basis, mat);
+  const sprayerN = form.sprayers === '' || form.sprayers == null ? 1 : Math.floor(Number(form.sprayers));
+  const sprayerSizeN = Number(form.sprayerSize);
+  const waterText = sprayerN >= 1 && Number.isFinite(sprayerSizeN) && sprayerSizeN > 0 && form.basis !== 'לדונם'
+    ? `${formatNumber(sprayerN, 0)} ${sprayerN === 1 ? 'מרסס' : 'מרססים'} × ${formatNumber(sprayerSizeN)} ל' = ${formatNumber(sprayerN * sprayerSizeN)} ליטר מים`
+    : '';
   const relevantPlans = plans.filter((p) => !form.structures.length || form.structures.includes(firstId(p['מבנה'])));
   const planLabel = (p) => `תוכנית ${p['מספר תוכנית'] ?? ''} · ${displayName(p['מבנה'], '')} · ${displayName(p['גידולים'], '') || displayName(p['סוג גידול'], '')}`;
   const withCurrent = (list, current) => (current && !list.includes(current) ? [current, ...list] : list);
@@ -857,8 +921,19 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
                 <option value="">בחר בסיס...</option>
                 {withCurrent(options.basis, form.basis).map((s) => <option key={s} value={s}>{s}</option>)}
               </select></div>
-            <div className="form-group"><label>מינון <span className="required" /></label>
-              <input className="input" type="number" step="any" min="0.0001" required style={{ width: '100%' }} value={form.dosage} onChange={(e) => set('dosage', e.target.value)} /></div>
+            {/* AR-3: מספר המרססים (מיכלים) — מכפיל את הכמות בבסיסים לליטר/ל-100 ליטר/אחוז */}
+            <div className="form-group"><label>מספר מרססים</label>
+              <input className="input" type="number" step="1" min="1" style={{ width: '100%' }} value={form.sprayers}
+                onChange={(e) => set('sprayers', e.target.value)} />
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
+                {waterText || 'כמה מיכלים מולאו בטיפול הזה (ריק = 1)'}
+              </div></div>
+            <div className="form-group"><label>מינון <span className="required" />{dosageUnit(mat) ? <span style={{ color: 'var(--text-secondary)', fontWeight: 400 }}> ({dosageUnit(mat)})</span> : null}</label>
+              <input className="input" type="number" step="any" min="0.0001" required style={{ width: '100%' }} value={form.dosage} onChange={(e) => set('dosage', e.target.value)} />
+              {/* AR-1: יחידת המינון נגזרת מ"יחידת תמחור" של החומר ומתעדכנת בבחירתו */}
+              <div style={{ fontSize: 11, color: matHint ? 'var(--warning)' : 'var(--text-secondary)', marginTop: 2 }}>
+                {dosageLabel || matHint || 'בחרו חומר כדי לראות את יחידת המינון'}
+              </div></div>
           </div>
 
           <div className="form-group"><label>הערות</label>
@@ -883,18 +958,29 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
 function ListTab({ rows, search, setSearch, canEdit, busy, limit, onMore, onOpen, onEdit, onToggle, onDelete }) {
   const rangeLabel = (e) => (e.start.getTime() === e.end.getTime()
     ? formatDate(e.start) : `${formatDate(e.start)} – ${formatDate(e.end)}`);
+  // AR-2: סה"כ עלות לתקופה/לפילטרים שנבחרו — סכום השורות שאפשר לחשב
+  const totals = useMemo(() => costSummary(rows), [rows]);
   return (
     <div className="card">
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
         <input className="input no-print" aria-label="חיפוש טיפול" placeholder="חיפוש..." value={search} onChange={(e) => setSearch(e.target.value)} />
         <span className="muted" style={{ fontSize: 13 }}>{formatNumber(rows.length, 0)} טיפולים</span>
+        <span style={{ fontSize: 13 }}>
+          סה"כ עלות: <b>{totals.counted ? formatMoney(totals.total) : '—'}</b>
+          <span className="muted"> ({formatNumber(totals.counted, 0)} מתוך {formatNumber(rows.length, 0)} טיפולים)</span>
+        </span>
+        {totals.unknown > 0 && (
+          <span className="badge badge-warn" title={missingText(totals.missing)}>
+            {formatNumber(totals.unknown, 0)} ללא עלות — חסרים נתונים
+          </span>
+        )}
       </div>
       {rows.length === 0 ? <div className="empty-state"><div className="icon">🧴</div>אין נתונים לתקופה זו</div> : (
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
-                <th>תאריך</th><th>סוג</th><th>מבנה</th><th>חומר</th><th>גידול / זן</th><th>מינון</th><th>סטטוס</th><th>בוצע</th>
+                <th>תאריך</th><th>סוג</th><th>מבנה</th><th>חומר</th><th>גידול / זן</th><th>מינון</th><th>כמות</th><th>עלות</th><th>סטטוס</th><th>בוצע</th>
                 {canEdit && <th className="no-print">פעולות</th>}
               </tr>
             </thead>
@@ -908,7 +994,9 @@ function ListTab({ rows, search, setSearch, canEdit, busy, limit, onMore, onOpen
                     <td>{e.structNames.length ? e.structNames.map((n, i) => <span key={i} className="obj-chip static">🏗️ {n}</span>) : 'לא זמין'}</td>
                     <td style={{ fontWeight: 600 }}>{e.material}</td>
                     <td>{[e.crop === 'לא זמין' ? '' : e.crop, e.variety].filter(Boolean).join(' · ') || '—'}</td>
-                    <td>{e.dosage != null && e.dosage !== '' ? `${formatNumber(e.dosage)}${e.basis ? ` (${e.basis})` : ''}` : '—'}</td>
+                    <td><DosageText ev={e} /></td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{formatAmount(e.cost.quantity.total, e.materialRec, e.cost.quantity.unitKind) || <span title={missingText(e.cost.quantity.missing)}>—</span>}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}><CostText cost={e.cost} /></td>
                     <td>{e.status || '—'}</td>
                     <td><span className={`badge ${e.done ? 'badge-ok' : 'badge-warn'}`}>{e.done ? '✓ בוצע' : '● לא בוצע'}</span></td>
                     {canEdit && (
@@ -954,7 +1042,7 @@ function MaterialsTab({ materials, search, setSearch, canEdit, api, onChanged, o
           <table className="data-table">
             <thead>
               <tr>
-                <th>שם חומר</th><th>יחידת תמחור</th><th>מחיר</th><th>גודל אריזה</th><th>מינון ברירת מחדל</th><th>מחיר לדונם</th>
+                <th>שם חומר</th><th>יחידת תמחור</th><th>מחיר לאריזה</th><th>גודל אריזה</th><th title="מחיר ÷ גודל האריזה">מחיר ליחידה</th><th>מינון ברירת מחדל</th><th>מחיר לדונם</th>
                 {canEdit && <th className="no-print">פעולות</th>}
               </tr>
             </thead>
@@ -962,10 +1050,14 @@ function MaterialsTab({ materials, search, setSearch, canEdit, api, onChanged, o
               {list.map((m) => (
                 <tr key={m.id}>
                   <td><b>🧪 {m['שם חומר'] || 'חומר'}</b></td>
-                  <td>{m['יחידת תמחור'] ? <span className="badge" style={{ background: 'var(--spray-soft)', color: 'var(--spray)' }}>{m['יחידת תמחור']}</span> : '—'}</td>
+                  <td>{m['יחידת תמחור'] ? <span className="badge" style={{ background: 'var(--spray-soft)', color: 'var(--spray)' }}>{m['יחידת תמחור']}</span> : <span title="חסרה יחידת תמחור — אין יחידת מינון להצגה">—</span>}</td>
                   <td>{m['מחיר'] != null ? formatMoney(m['מחיר']) : '—'}</td>
                   <td>{m['גודל האריזה'] != null ? formatNumber(m['גודל האריזה']) : '—'}</td>
-                  <td>{m['מינון בסמ"ק'] != null ? formatNumber(m['מינון בסמ"ק']) : '—'}</td>
+                  {/* AR-2: מחיר ליחידה = מחיר ÷ גודל האריזה (ר' sprayCost.js) */}
+                  <td style={{ whiteSpace: 'nowrap' }} title={unitPriceLabel(m)}>
+                    {formatUnitPrice(m) || <span title={`אין מחיר ליחידה: ${unitPrice(m).missing.join(' · ')}`}>—</span>}
+                  </td>
+                  <td>{m['מינון בסמ"ק'] != null ? `${formatNumber(m['מינון בסמ"ק'])}${dosageUnit(m) ? ` ${dosageUnit(m)}` : ''}` : '—'}</td>
                   <td>{m['מחיר לדונם בריסוס'] != null ? formatMoney(m['מחיר לדונם בריסוס']) : '—'}</td>
                   {canEdit && (
                     <td className="no-print">
