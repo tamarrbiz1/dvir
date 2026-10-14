@@ -14,6 +14,10 @@ import PageHeader from '../components/PageHeader.jsx';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { confirmDialog, toast } from '../utils/ui.js';
 import { PERIOD_PRESETS, periodRange, inPeriod, periodDisclosure } from '../utils/period.js';
+// מקור אמת אחד לסוג הטיפול ולברירת המחדל של בסיס המינון — אותו קובץ
+// שהשרת מייבא בייבוא מדוח (משימה AP), כדי שהטופס הידני והייבוא לא
+// יחשבו דברים שונים על אותו סוג.
+import { canonicalTreatmentType, basisOnTypeChange } from '../../../shared/treatment-defaults.js';
 
 // ============================================================
 // תכנון טיפולים — סעיפים 22 ו-25 באיפיון
@@ -75,8 +79,23 @@ const dateKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2
 const toISO = dateKey;
 const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
 
+/**
+ * סוג הטיפול לתצוגה ביומן. משימה AP: **קודם** השדה האמיתי "סוג טיפול"
+ * (singleSelect, קיים מ-14.10.2026), ורק אם הוא ריק — ההיסק הישן
+ * מ"סוג מרסס"/בסיס/שם החומר, שנשאר בשביל טיפולים שנוצרו לפני השדה.
+ */
 function inferType(t) {
-  const tag = [t['סוג טיפול'], t['סוג מרסס'], t['בסיס מינון'], displayName(t['חומר ריסוס'], '')].join(' ').toLowerCase();
+  const declared = String(t['סוג טיפול'] || '').trim();
+  if (declared) {
+    // אפשרות שיש לה צבע ביומן — כמו שהיא. אחרת זיהוי סובלני, ואם גם הוא
+    // לא מכיר אותה (אפשרות חדשה שתמר תוסיף לשדה) — "אחר", עם צבע משלו.
+    if (TYPES[declared]) return declared;
+    const canon = canonicalTreatmentType(declared);
+    if (canon) return canon;
+    if (declared.includes('מועיל')) return 'פיזור מועילים';
+    return 'אחר';
+  }
+  const tag = [t['סוג מרסס'], t['בסיס מינון'], displayName(t['חומר ריסוס'], '')].join(' ').toLowerCase();
   if (tag.includes('הגמע') || tag.includes('טפטוף')) return 'הגמעה';
   if (tag.includes('מועיל')) return 'פיזור מועילים';
   if (tag.includes('ריסוס') || tag.includes('מרסס')) return 'ריסוס';
@@ -157,7 +176,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
   const [workers, setWorkers] = useState([]);
   const [plans, setPlans] = useState([]);
   const [crops, setCrops] = useState([]); // לזן: "תיאור" של הגידול (אין שדה "זן" בתוכנית השתילה)
-  const [options, setOptions] = useState({ status: [], sizes: [], basis: [] });
+  const [options, setOptions] = useState({ status: [], sizes: [], basis: [], types: [] });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
@@ -209,8 +228,8 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
         .then((r) => (r.ok ? r.json() : { choices: [] }))
         .then((d) => (Array.isArray(d.choices) ? d.choices : []))
         .catch(() => []);
-    Promise.all([fetchChoices('סטטוס'), fetchChoices('גודל מרסס בליטר'), fetchChoices('בסיס מינון')])
-      .then(([status, sizes, basis]) => setOptions({ status, sizes, basis }));
+    Promise.all([fetchChoices('סטטוס'), fetchChoices('גודל מרסס בליטר'), fetchChoices('בסיס מינון'), fetchChoices('סוג טיפול')])
+      .then(([status, sizes, basis, types]) => setOptions({ status, sizes, basis, types }));
   }, []);
 
   // ---------- אירועים מועשרים ----------
@@ -310,6 +329,9 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       sprayer: r?.['סוג מרסס'] || '',
       // ברירת מחדל לטיפול חדש: 200 ליטר (הגודל הנפוץ בפועל) — בעריכת טיפול קיים מוצג הערך השמור בפועל
       sprayerSize: ev ? (r?.['גודל מרסס בליטר'] || '') : '200',
+      // AP-2.3: בפתיחה מציגים את הערכים השמורים כמו שהם — **בלי** להחיל
+      // ברירת מחדל על הבסיס. רק שינוי של "סוג טיפול" בטופס מפעיל אותה.
+      treatmentType: r?.['סוג טיפול'] || '',
       basis: r?.['בסיס מינון'] || '',
       dosage: r ? (pick(r, DOSAGE_FIELDS) ?? '') : '',
       status: r?.['סטטוס'] || '',
@@ -336,8 +358,9 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       'מבנה': f.structures,
       'חומר ריסוס': [f.material],
       'תוכנית שתילה': f.plan || null,
-      'סוג מרסס': f.sprayer || null,
+      'סוג מרסס': f.sprayer || null, // שם המכשיר, טקסט חופשי — לא סוג הטיפול
       'גודל מרסס בליטר': f.sprayerSize || null,
+      'סוג טיפול': f.treatmentType || null,
       'בסיס מינון': f.basis || null,
       'מינון ': f.dosage === '' ? null : Number(f.dosage),
       'סטטוס': f.status || null,
@@ -752,6 +775,16 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
   const planLabel = (p) => `תוכנית ${p['מספר תוכנית'] ?? ''} · ${displayName(p['מבנה'], '')} · ${displayName(p['גידולים'], '') || displayName(p['סוג גידול'], '')}`;
   const withCurrent = (list, current) => (current && !list.includes(current) ? [current, ...list] : list);
 
+  // AP-2.2: בחירת "סוג טיפול" ממלאת את "בסיס מינון" לפי ברירת המחדל
+  // (ריסוס → ל-100 ליטר, הגמעה → לדונם; ר' shared/treatment-defaults.js),
+  // **אלא אם** המשתמשת בחרה בסיס בעצמה — אז לא דורסים. "בחרה בעצמה" =
+  // הבסיס הנוכחי אינו ריק ואינו ברירת המחדל של הסוג שהיה קודם.
+  const changeTreatmentType = (value) => setForm({
+    ...form,
+    treatmentType: value,
+    basis: basisOnTypeChange({ prevType: form.treatmentType, nextType: value, currentBasis: form.basis, basisChoices: options.basis }),
+  });
+
   return (
     <div className="modal-overlay" onClick={() => !busy && onCancel()}>
       <div className="modal" style={{ width: 560 }} onClick={(e) => e.stopPropagation()}>
@@ -808,11 +841,16 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
                 {withCurrent(options.status, form.status).map((s) => <option key={s} value={s}>{s}</option>)}
               </select></div>
             <div className="form-group"><label>סוג מרסס</label>
-              <input className="input" style={{ width: '100%' }} value={form.sprayer} onChange={(e) => set('sprayer', e.target.value)} /></div>
+              <input className="input" style={{ width: '100%' }} placeholder="שם המכשיר" value={form.sprayer} onChange={(e) => set('sprayer', e.target.value)} /></div>
             <div className="form-group"><label>גודל מרסס (ליטר) <span className="required" /></label>
               <select className="select" style={{ width: '100%' }} required value={form.sprayerSize} onChange={(e) => set('sprayerSize', e.target.value)}>
                 <option value="">בחר גודל...</option>
                 {withCurrent(options.sizes || [], String(form.sprayerSize || '')).filter(Boolean).map((s) => <option key={s} value={s}>{s}</option>)}
+              </select></div>
+            <div className="form-group"><label>סוג טיפול</label>
+              <select className="select" style={{ width: '100%' }} value={form.treatmentType} onChange={(e) => changeTreatmentType(e.target.value)}>
+                <option value="">ללא</option>
+                {withCurrent(options.types || [], form.treatmentType).map((s) => <option key={s} value={s}>{s}</option>)}
               </select></div>
             <div className="form-group"><label>בסיס מינון <span className="required" /></label>
               <select className="select" style={{ width: '100%' }} required value={form.basis} onChange={(e) => set('basis', e.target.value)}>
@@ -1183,11 +1221,18 @@ function ReportsTab({ canEdit, onImported, onOpenInCalendar }) {
 }
 
 /** תצוגה מקדימה של ייבוא (dry run): מה ייווצר, מה כבר קיים, ומה לא זוהה */
+/** מקור הערך שייכתב ל"בסיס מינון" בשורת תצוגה מקדימה (משימה AP) */
+const BASIS_SOURCE = { report: 'מהדוח', default: 'ברירת מחדל' };
+
 function ImportPreview({ report, result, canEdit, busy, onClose, onImport }) {
   useEscapeClose(onClose, true);
   const rows = Array.isArray(result?.rows) ? result.rows : [];
   const toCreate = rows.filter((r) => r.status === 'would-create').length;
   const STATUS = { 'would-create': ['ייווצר', 'badge-ok'], exists: ['כבר קיים', ''], 'no-date': ['ללא תאריך — לא ייובא', 'badge-error'] };
+  // שורה שכבר יובאה מוחזרת כ-{line, status:'exists'} בלבד, בלי שדות ניתוח —
+  // אין בה מה להציג ואין לספור אותה בכיסוי של "סוג טיפול".
+  const analyzed = rows.filter((r) => r.status !== 'exists');
+  const withType = analyzed.filter((r) => r.treatmentType).length;
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" style={{ width: 820, maxWidth: '96vw' }} onClick={(e) => e.stopPropagation()}>
@@ -1197,14 +1242,18 @@ function ImportPreview({ report, result, canEdit, busy, onClose, onImport }) {
           {result?.createdMaterials?.length ? ` · חומרים חדשים שייווצרו: ${result.createdMaterials.join(', ')}` : ''}
           {result?.unresolvedStructures?.length ? ` · מבנים שלא זוהו: ${result.unresolvedStructures.join(', ')}` : ''}
           <div style={{ marginTop: 4 }}>זו תצוגה בלבד — עד לחיצה על "ייבא" לא נוצר שום טיפול ביומן.</div>
+          {analyzed.length ? <div style={{ marginTop: 2 }}>
+            סוג טיפול יזוהה ב-{formatNumber(withType, 0)} מתוך {formatNumber(analyzed.length, 0)} שורות · "סוג מרסס" (שם המכשיר) נשאר ריק ומתמלא ידנית
+          </div> : null}
         </div>
         {rows.length === 0 ? <div className="empty-state">אין שורות בדוח</div> : (
           <div className="table-wrap" style={{ maxHeight: '55vh', overflow: 'auto' }}>
             <table className="data-table">
-              <thead><tr><th>#</th><th>תאריך</th><th>סוג</th><th>מבנה</th><th>חומר</th><th>מינון</th><th>גידול / זן</th><th>מצב</th></tr></thead>
+              <thead><tr><th>#</th><th>תאריך</th><th>סוג טיפול</th><th>מבנה</th><th>חומר</th><th>מינון · בסיס</th><th>גידול / זן</th><th>מצב</th></tr></thead>
               <tbody>
                 {rows.map((r) => {
                   const [label, cls] = STATUS[r.status] || [r.status, ''];
+                  const exists = r.status === 'exists'; // אין בה שדות ניתוח — מציגים "—"
                   // משימה AN: שורה שלא זוהתה במלואה מסומנת באדום **עם הסיבה**,
                   // כדי שההחלטה אם לייבא תתקבל מתוך ידיעה מה ייווצר חסר.
                   const { reasons } = previewProblems(r);
@@ -1212,10 +1261,22 @@ function ImportPreview({ report, result, canEdit, busy, onClose, onImport }) {
                     <tr key={r.line} style={reasons.length ? { background: '#FEF2F2' } : undefined}>
                       <td>{r.line}</td>
                       <td style={{ whiteSpace: 'nowrap' }}>{r.date ? formatDate(r.date) : '—'}{r.endDate ? ` – ${formatDate(r.endDate)}` : ''}</td>
-                      <td>{r.type || '—'}</td>
+                      {/* משימה AP: מה ייכתב לשדה "סוג טיפול"; הסוג הגולמי מהדוח מוצג
+                          מתחת רק כשהוא שונה, ו"לא זוהה" כשאין אפשרות מתאימה בשדה. */}
+                      <td>
+                        {r.treatmentType || (r.type ? <span style={{ color: '#991B1B' }}>לא זוהה</span> : '—')}
+                        {r.type && r.type !== r.treatmentType
+                          ? <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>בדוח: {r.type}</div> : null}
+                      </td>
                       <td>{(r.structureNames || []).map((n) => <span key={n} className="obj-chip static" style={(r.unresolvedStructures || []).includes(n) ? { background: '#FEE2E2', color: '#991B1B' } : undefined}>🏗️ {n}</span>)}</td>
                       <td>{r.material || '—'} {r.materialIsNew && <span className="badge badge-warn" style={{ fontSize: 10 }}>חדש</span>}</td>
-                      <td>{r.dosage != null ? `${formatNumber(r.dosage)}${r.basis ? ` ${r.basis}` : ''}` : (r.dosageText || '—')}</td>
+                      {/* מקור הבסיס: "מהדוח" = כתוב בטקסט המינון; "ברירת מחדל" = נגזר מסוג הטיפול */}
+                      <td>
+                        {r.dosage != null ? formatNumber(r.dosage) : (r.dosageText || '—')}
+                        {r.basis ? <div style={{ fontSize: 11 }}>{r.basis}
+                          <span style={{ color: 'var(--text-secondary)' }}> ({BASIS_SOURCE[r.basisSource] || 'מהדוח'})</span>
+                        </div> : (exists ? null : <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>בלי בסיס</div>)}
+                      </td>
                       <td>
                         {[r.crop, r.variety].filter(Boolean).join(' · ') || '—'}
                         {r.cropFromPlan && <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>לפי תוכנית {r.planNumber ?? '—'}: {r.cropFromPlan}</div>}

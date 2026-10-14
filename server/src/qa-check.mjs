@@ -34,7 +34,9 @@ import { fixFilenameEncoding } from './filename-utils.js';
 import { weekCodeFromDate, WEEK_CODE_RE } from './weekly-sync.js';
 import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggestions, summarizeSuggestions, AUTO_THRESHOLD } from './supplier-linking.js';
 import { parseSummary, parseDateRange, parseDosage, markerOf, isTestRecord as isSprayTestRecord,
-  isAwaitingApproval, deletedReportNote, DELETED_REPORT_NOTE_RE, sweepSprayReports } from './spray-report-import.js';
+  isAwaitingApproval, deletedReportNote, DELETED_REPORT_NOTE_RE, sweepSprayReports, buildRow } from './spray-report-import.js';
+import { TREATMENT_TYPES, BASIS_BY_TYPE, canonicalTreatmentType, defaultBasisForType,
+  treatmentTypeOption, basisOnTypeChange } from '../../shared/treatment-defaults.js';
 import { cascadeDocumentDelete } from './document-cascade.js';
 import { parseInventoryLedger, resolveExpenseLinks, documentLink } from '../../client/src/utils/inventoryLedger.js';
 import { stripInventoryAiMarker, withPreservedInventoryTags, inventoryAiSummary } from '../../client/src/utils/inventoryAi.js';
@@ -2797,6 +2799,16 @@ await test('דוח ריסוסים AN: ניתוח מדומה → 0 טיפולים
   made.forEach((t) => cleanup.push({ table: 'ריסוסים', id: t.id }));
   if (imp.created !== 2) problems.push(`ייבוא ראשון יצר ${imp.created} טיפולים (צפוי 2)`);
   if (made.length !== 2) problems.push(`ביומן ${made.length} טיפולים עם הסמן (צפוי 2)`);
+  // משימה AP, על הרשומות שנוצרו באמת: "סוג מרסס" (שם המכשיר) ריק תמיד,
+  // "סוג טיפול" מתמלא, והבסיס מהדוח ("1 ליטר לדונם" בשורה 2) גובר על
+  // ברירת המחדל של ריסוס ("ל-100 ליטר", שאמורה לחול על שורה 1).
+  for (const t of made) {
+    if (String(t['סוג מרסס'] || '').trim()) problems.push(`טיפול ${t.id.slice(-5)}: הייבוא כתב "סוג מרסס"=${t['סוג מרסס']} — אסור (AP-3.1)`);
+    if (t['סוג טיפול'] !== 'ריסוס') problems.push(`טיפול ${t.id.slice(-5)}: "סוג טיפול"=${JSON.stringify(t['סוג טיפול'])} (צפוי "ריסוס")`);
+  }
+  const byDosage = new Map(made.map((t) => [Number(t['מינון ']), t['בסיס מינון']]));
+  if (byDosage.get(40) !== 'ל-100 ליטר') problems.push(`שורת "40" (בלי בסיס בדוח): בסיס ${JSON.stringify(byDosage.get(40))}, צפוי ברירת המחדל "ל-100 ליטר"`);
+  if (byDosage.get(1) !== 'לדונם') problems.push(`שורת "1 ליטר לדונם": בסיס ${JSON.stringify(byDosage.get(1))}, צפוי "לדונם" מהדוח`);
 
   // 4. ייבוא שני — אידמפוטנטי
   const again = await api('POST', `spray-reports/${rec.id}/import`);
@@ -2845,6 +2857,134 @@ await test('אבטחה: /api/spray-reports — עובד 403 בשניהם, מנה
   catch (e) { if (!String(e.message).startsWith('401')) problems.push(`בלי טוקן: ${e.message}`); }
   if (problems.length) throw new Error(problems.join('; '));
   return `${w ? 'עובד 403×2' : 'אין עובד לבדיקה'}, ${manager ? 'מנהל 200/403' : 'אין מנהל עבודה לבדיקה'}, בלי טוקן 401`;
+});
+
+// ============ 3ב″. "סוג טיפול" + ברירת מחדל לבסיס מינון (AP, 14.10.2026) ============
+// הוראת תמר: "סוג מרסס" הוא שם המכשיר ("מרסס א") והייבוא מדוח לא כותב
+// אליו לעולם; סוג הטיפול יושב בשדה **"סוג טיפול"** (singleSelect חדש),
+// וממנו נגזרת ברירת המחדל של "בסיס מינון". המיפוי חי במקום אחד —
+// shared/treatment-defaults.js — ומיובא גם ע"י השרת וגם ע"י הטופס
+// בלקוח. ארבע הבדיקות הראשונות טהורות; החמישית קוראת את האפשרויות
+// החיות מ-Airtable (קריאה בלבד) כי כתיבת ערך שאינו ברשימה נדחית.
+
+await test('סוג טיפול: מיפוי ברירת המחדל של בסיס מינון — ריסוס→ל-100 ליטר, הגמעה/טפטוף→לדונם, אחר→ריק', () => {
+  const choices = ['לליטר', 'ל-100 ליטר', 'לדונם', 'אחוז'];
+  const cases = [
+    ['ריסוס', 'ריסוס', 'ל-100 ליטר'],
+    ['מרסס', 'ריסוס', 'ל-100 ליטר'],
+    ["מרסס א'", 'ריסוס', 'ל-100 ליטר'],
+    ['הגמעה', 'הגמעה', 'לדונם'],
+    ['הגמעות', 'הגמעה', 'לדונם'],
+    ['טפטוף', 'הגמעה', 'לדונם'],
+    ['פיזור מועילים', null, null],
+    ['', null, null],
+    [null, null, null],
+  ];
+  for (const [raw, canon, basis] of cases) {
+    if (canonicalTreatmentType(raw) !== canon) throw new Error(`"${raw}": סוג צפוי ${canon}, התקבל ${canonicalTreatmentType(raw)}`);
+    if ((defaultBasisForType(raw, choices) ?? null) !== basis) throw new Error(`"${raw}": בסיס צפוי ${basis}, התקבל ${defaultBasisForType(raw, choices)}`);
+  }
+  // התאמה לשם המדויק של האפשרות: אם ב-select כתוב "ל100 ליטר" (בלי מקף) —
+  // זה הערך שייכתב, ולא השם הקנוני שלנו. ואם האפשרות לא קיימת בכלל —
+  // null, כלומר לא כותבים כלום (ולא נופלים בשגיאת Airtable).
+  if (defaultBasisForType('ריסוס', ['ל100 ליטר', 'לדונם']) !== 'ל100 ליטר') throw new Error('התאמה לשם ללא מקף נכשלה');
+  if (defaultBasisForType('ריסוס', ['לדונם', 'אחוז']) !== null) throw new Error('בלי אפשרות מתאימה צפוי null — אסור לכתוב ערך שאינו ברשימה');
+  if (treatmentTypeOption('הגמעה', ['ריסוס']) !== null) throw new Error('"הגמעה" כשאינה אפשרות בשדה — צפוי null');
+  return `${cases.length} סוגים + התאמת-שם + אפשרות חסרה — כולם כצפוי`;
+});
+
+await test('סוג טיפול בטופס: שינוי סוג ממלא בסיס ברירת-מחדל, ולא דורס בסיס שנבחר ידנית', () => {
+  const choices = ['לליטר', 'ל-100 ליטר', 'לדונם', 'אחוז'];
+  const change = (prevType, nextType, currentBasis) => basisOnTypeChange({ prevType, nextType, currentBasis, basisChoices: choices });
+  const cases = [
+    // טופס חדש, בסיס ריק → ברירת המחדל של הסוג הנבחר
+    ['', 'ריסוס', '', 'ל-100 ליטר', 'טופס חדש: ריסוס'],
+    ['', 'הגמעה', '', 'לדונם', 'טופס חדש: הגמעה'],
+    // החלפת סוג כשהבסיס הוא ברירת המחדל של הסוג הקודם → מתחלף
+    ['ריסוס', 'הגמעה', 'ל-100 ליטר', 'לדונם', 'ריסוס→הגמעה על ברירת מחדל'],
+    ['הגמעה', 'ריסוס', 'לדונם', 'ל-100 ליטר', 'הגמעה→ריסוס על ברירת מחדל'],
+    // בסיס שנבחר ידנית — לא נדרס
+    ['ריסוס', 'הגמעה', 'אחוז', 'אחוז', 'בחירה ידנית "אחוז" לא נדרסת'],
+    ['', 'ריסוס', 'לדונם', 'לדונם', 'בחירה ידנית לפני בחירת סוג לא נדרסת'],
+    // עריכת טיפול קיים: הסוג היה ריק והבסיס שמור → נחשב בחירה ידנית
+    ['', 'הגמעה', 'ל-100 ליטר', 'ל-100 ליטר', 'ערך שמור מעריכה לא נדרס'],
+    // סוג בלי ברירת מחדל, והבסיס היה ברירת המחדל הקודמת → מתרוקן (שדה חובה)
+    ['ריסוס', '', 'ל-100 ליטר', '', 'ניקוי הסוג מרוקן את ברירת המחדל'],
+  ];
+  for (const [prev, next, basis, expected, why] of cases) {
+    const got = change(prev, next, basis);
+    if (got !== expected) throw new Error(`${why}: צפוי "${expected}", התקבל "${got}"`);
+  }
+  return `${cases.length} תרחישי שינוי-סוג בטופס — כולם כצפוי`;
+});
+
+await test('ייבוא מדוח: "סוג מרסס" לא נכתב לעולם · "סוג טיפול" מתמלא · בסיס מהדוח גובר על ברירת המחדל', async () => {
+  // buildRow טהורה כשמזריקים לה את התלויות (בלי Airtable ובלי Make)
+  const deps = {
+    number: 4242,
+    resolveStructure: () => 'recSTRUCT1',
+    materials: { resolve: async (name) => ({ id: 'recMAT1', name: String(name || ''), isNew: false }) },
+    attachment: null,
+    cropResolverFor: () => () => null,
+    typeChoices: ['ריסוס', 'הגמעה'],
+    basisChoices: ['לליטר', 'ל-100 ליטר', 'לדונם', 'אחוז'],
+  };
+  const build = (row, line = 1) => buildRow(row, { ...deps, line });
+  const base = { 'תאריך': '03/03/2031', 'מבנה': 'מבנה 3', 'חומר': 'קוצייד' };
+  const problems = [];
+
+  // 1. ריסוס בלי בסיס בדוח ("40") → ברירת מחדל ל-100 ליטר, ובלי "סוג מרסס"
+  const spray = await build({ ...base, 'סוג טיפול': 'ריסוס', 'מינון': '40' });
+  // "ריק תמיד": הייבוא כותב מחרוזת ריקה **במפורש**, כדי לנטרל את
+  // ברירת-המחדל "מרסס א" שיש לשדה ב-Airtable (ר' ההערה ב-buildRow).
+  if (spray.fields['סוג מרסס'] !== '') problems.push(`"סוג מרסס" צפוי ריק במפורש, התקבל ${JSON.stringify(spray.fields['סוג מרסס'])} — זה שדה לשם המכשיר (AP-3.1)`);
+  if (spray.fields['סוג טיפול'] !== 'ריסוס') problems.push(`"סוג טיפול" צפוי "ריסוס", התקבל ${JSON.stringify(spray.fields['סוג טיפול'])}`);
+  if (spray.fields['בסיס מינון'] !== 'ל-100 ליטר') problems.push(`ריסוס בלי בסיס בדוח: צפוי "ל-100 ליטר", התקבל ${JSON.stringify(spray.fields['בסיס מינון'])}`);
+  if (spray.summary.basisSource !== 'default') problems.push(`מקור הבסיס צפוי "default", התקבל ${spray.summary.basisSource}`);
+
+  // 2. הגמעה בלי בסיס בדוח → לדונם
+  const drench = await build({ ...base, 'סוג טיפול': 'הגמעה', 'מינון': '65' }, 2);
+  if (drench.fields['סוג מרסס'] !== '') problems.push(`שורת הגמעה: "סוג מרסס"=${JSON.stringify(drench.fields['סוג מרסס'])}, צפוי ריק`);
+  if (drench.fields['סוג טיפול'] !== 'הגמעה') problems.push(`הגמעה: "סוג טיפול" התקבל ${JSON.stringify(drench.fields['סוג טיפול'])}`);
+  if (drench.fields['בסיס מינון'] !== 'לדונם') problems.push(`הגמעה בלי בסיס בדוח: צפוי "לדונם", התקבל ${JSON.stringify(drench.fields['בסיס מינון'])}`);
+
+  // 3. הדוח עצמו נוקב בבסיס — הוא גובר על ברירת המחדל (AP-3.3)
+  const explicit = await build({ ...base, 'סוג טיפול': 'ריסוס', 'מינון': '1 ליטר לדונם' }, 3);
+  if (explicit.fields['בסיס מינון'] !== 'לדונם') problems.push(`בסיס מהדוח אמור לגבור: צפוי "לדונם", התקבל ${JSON.stringify(explicit.fields['בסיס מינון'])}`);
+  if (explicit.summary.basisSource !== 'report') problems.push(`מקור הבסיס צפוי "report", התקבל ${explicit.summary.basisSource}`);
+
+  // 4. סוג שאינו אפשרות בשדה → לא כותבים, והסוג הגולמי נשאר בהערות (AP-3.2)
+  const unknown = await build({ ...base, 'סוג טיפול': 'פיזור מועילים', 'מינון': '40' }, 4);
+  if ('סוג טיפול' in unknown.fields) problems.push('"פיזור מועילים" אינו אפשרות בשדה — אסור לכתוב אותו (Airtable דוחה)');
+  if (!String(unknown.fields['הערות']).includes('סוג טיפול: פיזור מועילים')) problems.push('הסוג הגולמי לא נשמר בהערות');
+  if ('בסיס מינון' in unknown.fields) problems.push('סוג בלי ברירת מחדל אמור להשאיר את "בסיס מינון" ריק');
+  if (!unknown.summary.warnings.some((w) => w.includes('סוג הטיפול'))) problems.push('לא הוחזרה אזהרה על סוג שלא תואם אפשרות');
+
+  // 5. שורה בלי סוג בכלל — לא נופלת, ובלי אף אחד משני השדות
+  const none = await build({ ...base, 'מינון': '40' }, 5);
+  if ('סוג טיפול' in none.fields) problems.push('שורה בלי סוג כתבה "סוג טיפול"');
+  if (none.fields['סוג מרסס'] !== '') problems.push('שורה בלי סוג לא ריקנה את "סוג מרסס"');
+
+  if (problems.length) throw new Error(problems.join('; '));
+  return 'סוג מרסס ריק במפורש ב-5 השורות · סוג טיפול מתמלא · בסיס: מהדוח גובר, אחרת ברירת מחדל, אחרת ריק';
+});
+
+await test('ייבוא מדוח: הבסיס שנגזר הוא בדיוק אחת מאפשרויות השדה (בלי זה Airtable דוחה את הכתיבה)', async () => {
+  const [typeOpts, basisOpts] = await Promise.all([
+    api('GET', `select-options/${enc('ריסוסים')}/${enc('סוג טיפול')}`),
+    api('GET', `select-options/${enc('ריסוסים')}/${enc('בסיס מינון')}`),
+  ]);
+  const problems = [];
+  if (typeOpts.type !== 'singleSelect') problems.push(`"סוג טיפול" הוא ${typeOpts.type} ולא singleSelect`);
+  for (const t of TREATMENT_TYPES) {
+    if (!typeOpts.choices.includes(t)) problems.push(`האפשרות "${t}" חסרה בשדה "סוג טיפול" — תמר צריכה להוסיף אותה`);
+    const wanted = BASIS_BY_TYPE[t];
+    if (!wanted) continue;
+    if (!basisOpts.choices.includes(wanted)) problems.push(`ברירת המחדל "${wanted}" (עבור ${t}) אינה אפשרות בשדה "בסיס מינון": ${basisOpts.choices.join(' / ')}`);
+    if (defaultBasisForType(t, basisOpts.choices) !== wanted) problems.push(`defaultBasisForType("${t}") לא החזיר את האפשרות החיה "${wanted}"`);
+  }
+  if (problems.length) throw new Error(problems.join('; '));
+  return `סוג טיפול: ${typeOpts.choices.join(' / ')} · בסיס מינון: ${basisOpts.choices.join(' / ')} — המיפוי תואם`;
 });
 
 // ============ 3ג. הוספת אפשרות לשדה-בחירה דרך typecast (סעיף G, 7.10.2026) ============

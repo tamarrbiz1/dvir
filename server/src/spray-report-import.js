@@ -7,6 +7,12 @@
 // מבנים, גידול/זן, חומר, מינון). השורות האלה הופכות לרשומות "ריסוסים"
 // ביומן הטיפולים:
 //
+// ⚠️ **"סוג טיפול" מול "סוג מרסס" (משימה AP, 14.10.2026)** — הסוג מהדוח
+// ("ריסוס"/"הגמעה") נכתב לשדה **"סוג טיפול"** (singleSelect). השדה
+// **"סוג מרסס"** הוא טקסט לשם המכשיר ("מרסס א") והייבוא לא כותב אליו
+// לעולם. מהסוג נגזרת גם ברירת המחדל של "בסיס מינון" — ר'
+// shared/treatment-defaults.js, המקור המשותף ללקוח ולשרת.
+//
 //   importSprayReport(reportId)  — שורה בדוח → רשומת "ריסוסים" אחת
 //   sprayReportsHistory()        — היסטוריית הדוחות + מצב הניתוח/הייבוא
 //   scheduleSprayReportImport()  — אחרי העלאה: ממתין לניתוח ומסמן "ממתין לאישור"
@@ -27,7 +33,8 @@
 // זה מה שגורם ל-UI (treatmentSource ב-TreatmentsPage.jsx) להציג "מדוח",
 // וזה גם מפתח האידמפוטנטיות — ייבוא חוזר של אותו דוח לא יוצר כפילויות.
 // ============================================================
-import { getBase, fetchRecords, createRecord, deleteRecord } from './airtable.js';
+import { getBase, fetchRecords, createRecord, deleteRecord, getMeta } from './airtable.js';
+import { treatmentTypeOption, defaultBasisForType, matchChoice } from '../../shared/treatment-defaults.js';
 
 export const REPORTS_TABLE = 'דוחות ריסוסים';
 export const TREATMENTS_TABLE = 'ריסוסים';
@@ -46,6 +53,24 @@ const DOSAGE_FIELD = 'מינון '; // שם השדה החי כולל רווח ב
 // לעולם לא מיובאות אוטומטית ולא מוצגות בהיסטוריה למשתמש אמיתי.
 const TEST_RECORD_PATTERN = /__PLANT_TEST_\d+__|\bQA-\d{10,}|\bPERF-TEST\b/;
 export const isTestRecord = (rec) => TEST_RECORD_PATTERN.test(JSON.stringify(rec));
+
+/**
+ * אפשרויות שדה בחירה מהמטא של Airtable (משימה AP). כתיבת ערך שאינו
+ * ברשימה נדחית, ולכן "סוג טיפול" ו"בסיס מינון" נכתבים רק אחרי התאמה
+ * לאפשרות קיימת. כשל בקריאת המטא לא מפיל ייבוא — מחזיר [] ואז
+ * matchChoice מחזיר את הערך הקנוני כמו שהוא.
+ */
+async function selectChoices(table, field) {
+  try {
+    const meta = await getMeta();
+    const t = meta.find((x) => x.name === table);
+    const f = t?.fields?.find((x) => x.name === field);
+    return (f?.options?.choices || []).map((c) => c.name);
+  } catch (e) {
+    console.warn(`[spray-import] לא ניתן לקרוא את אפשרויות "${field}": ${e.message}`);
+    return [];
+  }
+}
 
 export const markerOf = (number) => `[מדוח ריסוסים #${number}]`;
 const MARKER_RE = /\[מדוח ריסוסים #(\d+)\] שורה (\d+)/;
@@ -253,8 +278,12 @@ async function importedLinesOf(number) {
   return { lines, count: existing.length };
 }
 
-/** בניית שדות רשומת "ריסוסים" משורת דוח אחת (ללא כתיבה) */
-async function buildRow(row, { line, number, resolveStructure, materials, attachment, cropResolverFor }) {
+/**
+ * בניית שדות רשומת "ריסוסים" משורת דוח אחת (ללא כתיבה).
+ * מיוצא בשביל qa-check.mjs — כל התלויות מוזרקות, ולכן הבדיקה טהורה
+ * (בלי Airtable ובלי Make).
+ */
+export async function buildRow(row, { line, number, resolveStructure, materials, attachment, cropResolverFor, typeChoices = [], basisChoices = [] }) {
   const warnings = [];
   const notes = [`${markerOf(number)} שורה ${line}`];
   const type = normSpaces(row['סוג טיפול']);
@@ -288,6 +317,20 @@ async function buildRow(row, { line, number, resolveStructure, materials, attach
   if (dosage.note) notes.push(`מינון מהדוח: ${dosage.note}`);
   if (dosage.note && dosage.value == null) warnings.push('מינון לא חד-משמעי — נשמר כטקסט בהערות');
 
+  // ---------- סוג טיפול ובסיס מינון (משימה AP, 14.10.2026) ----------
+  // 1. "סוג טיפול" הוא שדה אמיתי ב"ריסוסים" (singleSelect) — הסוג מהדוח
+  //    נכתב אליו אחרי התאמה לאפשרות קיימת. לא זוהה → לא כותבים, והסוג
+  //    הגולמי נשאר בהערות ("סוג טיפול: X") כמו קודם.
+  // 2. בסיס מינון: אם **הדוח עצמו** נקב בבסיס בטקסט המינון ("1 ליטר
+  //    לדונם") — הוא גובר, הוא המידע המדויק. אחרת ברירת המחדל לפי הסוג
+  //    (AP-1: ריסוס → ל-100 ליטר, הגמעה → לדונם). אחרת ריק.
+  const treatmentType = treatmentTypeOption(type, typeChoices);
+  if (type && !treatmentType) warnings.push(`סוג הטיפול "${type}" אינו אפשרות בשדה "סוג טיפול" — נשמר בהערות בלבד`);
+  const basisFromReport = dosage.basis ? matchChoice(dosage.basis, basisChoices) : null;
+  const basisDefault = basisFromReport ? null : defaultBasisForType(type, basisChoices);
+  const basis = basisFromReport || basisDefault;
+  const basisSource = basisFromReport ? 'report' : (basisDefault ? 'default' : null);
+
   if (range && range.end !== range.start) notes.push(`תאריך סיום: ${toDMY(range.end)}`);
 
   // דוח ריסוסים מתעד ריסוס שתוכנן/בוצע בשטח, אבל במערכת הוא נוצר כהצעה
@@ -307,20 +350,30 @@ async function buildRow(row, { line, number, resolveStructure, materials, attach
   if (structureIds.length) fields['מבנה'] = structureIds;
   if (material.id) fields['חומר ריסוס'] = [material.id];
   if (dosage.value != null) fields[DOSAGE_FIELD] = dosage.value;
-  if (dosage.basis) fields['בסיס מינון'] = dosage.basis;
-  // אין שדה "סוג טיפול" ב"ריסוסים"; inferType בלקוח קורא גם את "סוג מרסס" —
-  // כך הגמעה/פיזור מועילים מהדוח מקבלים את הצבע הנכון ביומן
-  if (type && type !== 'ריסוס') fields['סוג מרסס'] = type;
+  if (basis) fields['בסיס מינון'] = basis;
+  if (treatmentType) fields['סוג טיפול'] = treatmentType;
+  // ⚠️ "סוג מרסס" — הוראת תמר (AP-3.1): **"תשאיר ריק תמיד** (שם כותבים את
+  // שם המכשיר)". עד 14.10.2026 נכתב לשם סוג הטיפול מהדוח, כי לא היה שדה
+  // "סוג טיפול" — עכשיו יש, והסוג עובר לשם.
+  //
+  // למה **כן** כותבים אליו מחרוזת ריקה, ולא פשוט מדלגים עליו: לשדה
+  // `סוג מרסס` ב-Airtable יש **ערך ברירת-מחדל "מרסס א"** (אומת בכתיבת
+  // רשומת-QA ב-14.10 — זה גם המקור ל-19 הטיפולים המיובאים שנושאים אותו
+  // היום, ולא הקוד). בלי כתיבה מפורשת, Airtable היה ממלא לכל טיפול מיובא
+  // שם-מכשיר שאף אחד לא קבע — בדיוק המידע השגוי שההוראה באה למנוע.
+  // אם תמר תעדיף להסיר את ברירת-המחדל בשדה עצמו (אין ל-PAT הרשאת
+  // סכמה), אפשר להחזיר לכאן דילוג פשוט — ההתנהגות תהיה זהה.
+  fields['סוג מרסס'] = '';
   if (matchedPlan) fields['תוכנית שתילה'] = matchedPlan.id;
   if (attachment) fields[REPORT_FILE_FIELD] = [{ url: attachment.url, filename: attachment.filename || 'דוח ריסוסים' }];
 
   return {
     line, fields, warnings,
     summary: {
-      line, type, date: range?.start || null, endDate: range && range.end !== range.start ? range.end : null,
+      line, type, treatmentType, date: range?.start || null, endDate: range && range.end !== range.start ? range.end : null,
       structures: structureIds.length, structureNames: structNames, unresolvedStructures,
       material: material.name, materialIsNew: material.isNew,
-      dosage: dosage.value, basis: dosage.basis, dosageText: dosage.note, crop, variety, sprayNo, location,
+      dosage: dosage.value, basis, basisSource, dosageText: dosage.note, crop, variety, sprayNo, location,
       cropFromPlan: matchedPlan ? matchedPlan.name : null, planNumber: matchedPlan?.number ?? null,
       warnings,
     },
@@ -368,7 +421,7 @@ export async function importSprayReport(reportId, { dryRun = false } = {}) {
   if (parsed.status === 'pending' && !attachments.length) result.status = 'no-file';
   if (parsed.status !== 'ready') return result;
 
-  const [structures, materialsList, plans, cropsList, imported] = await Promise.all([
+  const [structures, materialsList, plans, cropsList, imported, typeChoices, basisChoices] = await Promise.all([
     fetchRecords(STRUCTURES_TABLE, { fields: ['מספר מבנה'] }),
     fetchRecords(MATERIALS_TABLE, { fields: ['שם חומר'] }),
     fetchRecords(PLANS_TABLE, { fields: ['מספר תוכנית', 'מבנה', 'גידולים', 'סוג גידול',
@@ -376,6 +429,8 @@ export async function importSprayReport(reportId, { dryRun = false } = {}) {
       'תחילת שתילה מעודכנת', 'סוף שתילה מעודכן', 'תחילת קטיף מעודכנת', 'סוף קטיף מעודכן'] }),
     fetchRecords(CROPS_TABLE, { fields: ['שם גידול'] }),
     importedLinesOf(number),
+    selectChoices(TREATMENTS_TABLE, 'סוג טיפול'),
+    selectChoices(TREATMENTS_TABLE, 'בסיס מינון'),
   ]);
   const resolveStructure = structureIndex(structures);
   const materials = materialResolver(materialsList, { dryRun });
@@ -390,7 +445,7 @@ export async function importSprayReport(reportId, { dryRun = false } = {}) {
       continue;
     }
     const built = await buildRow(parsed.rows[i], {
-      line, number, resolveStructure, materials, attachment,
+      line, number, resolveStructure, materials, attachment, typeChoices, basisChoices,
       cropResolverFor: (ids) => cropResolver(plans, cropsList, ids),
     });
     for (const u of built.summary.unresolvedStructures) if (!result.unresolvedStructures.includes(u)) result.unresolvedStructures.push(u);
