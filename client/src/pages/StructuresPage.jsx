@@ -3,7 +3,8 @@ import { useLocation } from 'react-router-dom';
 import { useApp } from '../App.jsx';
 import { useAutoRefresh } from '../utils/live.js';
 import { formatNumber, formatMoney, formatDate, safeValue, kpiValueClass } from '../utils/format.js';
-import { displayName } from '../utils/resolve.js';
+import { displayName, firstId } from '../utils/resolve.js';
+import { formatDosage, formatAmount, treatmentCost, costSummary, missingText } from '../utils/sprayCost.js';
 import { sortStructures } from '../utils/structures.js';
 import RecordForm, { removeRecord } from '../components/RecordForm.jsx';
 import PageHeader from '../components/PageHeader.jsx';
@@ -238,8 +239,10 @@ function StructureDetails({ structure, api, onClose }) {
       api.get('תוכניות שתילה', '?maxRecords=500'),
       api.get('סיכום שבועי', `?maxRecords=300&raw=1&fields=${['קוד שבוע', 'JSON הכנסה לפי מבנים'].map(encodeURIComponent).join(',')}`).catch(() => []),
       api.get(DELIVERY_TABLE, '?maxRecords=1000').catch(() => []),
+      // סעיף AR: חומרי הריסוס נדרשים ליחידת המינון ולעלות בהיסטוריית הריסוסים
+      api.get('חומרי ריסוס', '?maxRecords=300').catch(() => []),
     ])
-      .then(([w, h, s, p, weeksJson, notes]) => {
+      .then(([w, h, s, p, weeksJson, notes, materials]) => {
         const byStruct = (arr, fld) => (Array.isArray(arr) ? arr : []).filter((r) => {
           const v = r[fld];
           if (Array.isArray(v)) return v.some((x) => String(x?.id ?? x) === sid);
@@ -251,6 +254,7 @@ function StructureDetails({ structure, api, onClose }) {
           sprays: byStruct(s, 'מבנה'),
           planting: byStruct(p, 'מבנה'),
           weeksJson: Array.isArray(weeksJson) ? weeksJson : [],
+          materials: Array.isArray(materials) ? materials : [],
           // תעודות משלוח: של המבנה (לטאב "מסמכים") + כל התעודות (לניווט עמוק בתוך הכרטיס)
           notes: notesOfStructure(Array.isArray(notes) ? notes : [], sid),
           allNotes: Array.isArray(notes) ? notes : [],
@@ -287,7 +291,7 @@ function StructureDetails({ structure, api, onClose }) {
           ) : tab === 'קטיפים' ? (
             <TabHarvests list={data.harvests} />
           ) : tab === 'ריסוסים' ? (
-            <TabSprays list={data.sprays} />
+            <TabSprays list={data.sprays} materials={data.materials || []} plans={data.planting} />
           ) : tab === 'תפוקה' ? (
             <TabYield harvests={data.harvests} />
           ) : tab === 'כספים' ? (
@@ -432,18 +436,85 @@ function TabHarvests({ list }) {
   );
 }
 
-function TabSprays({ list }) {
+// ============================================================
+// היסטוריית ריסוסים של מבנה — סעיף AR (14.10.2026)
+// ------------------------------------------------------------
+// נוספו יחידת מינון, כמות כוללת ועלות, וסיכום עלות לפי תוכנית שתילה.
+// הלוגיקה כולה ב-client/src/utils/sprayCost.js — אותו חישוב שבמסך
+// הטיפולים, כדי שהמספרים יהיו זהים בשני המקומות.
+// (אגב: המינון הוצג כאן תמיד "—", כי השדה החי נקרא "מינון " עם רווח
+//  בסוף והקוד קרא `r['מינון']`. formatDosage תומך בשני האיותים.)
+// ============================================================
+function TabSprays({ list, materials, plans }) {
+  const byMaterial = new Map((materials || []).map((m) => [m.id, m]));
+  const rows = (list || []).map((r) => {
+    const material = byMaterial.get(firstId(r['חומר ריסוס'])) || null;
+    return { raw: r, material, cost: treatmentCost(r, material) };
+  });
+  const totals = costSummary(rows);
+
+  // סה"כ לפי תוכנית שתילה — "תוכנית שתילה" בריסוסים הוא טקסט עם מזהה התוכנית
+  const planLabel = (id) => {
+    const p = (plans || []).find((x) => x.id === id);
+    if (!p) return id ? 'תוכנית שאינה במבנה זה' : 'בלי תוכנית שתילה';
+    const crop = displayName(p['גידולים'], '') || safeValue(p['סוג גידול'] || p['שם גידול']);
+    return `תוכנית ${p['מספר תוכנית'] ?? '—'} · ${crop}`;
+  };
+  const byPlan = new Map();
+  rows.forEach((x) => {
+    const id = typeof x.raw['תוכנית שתילה'] === 'string' ? x.raw['תוכנית שתילה'] : '';
+    if (!byPlan.has(id)) byPlan.set(id, []);
+    byPlan.get(id).push(x);
+  });
+
   return (
-    <Table
-      head={['תאריך', 'חומר', 'מבצע', 'מינון', 'סטטוס']}
-      rows={list.map((r) => [
-        formatDate(r['תאריך']),
-        linkName(r['חומר ריסוס']),
-        linkName(r['מבצע']),
-        r['מינון'] ?? '—',
-        r['בוצע'] ? 'בוצע' : 'לא בוצע',
-      ])}
-    />
+    <>
+      {rows.length > 0 && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div className="section-title">סה"כ עלות ריסוסים</div>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>
+            {totals.counted ? formatMoney(totals.total) : '—'}
+            <span className="muted" style={{ fontSize: 12, fontWeight: 400 }}>
+              {' '}({formatNumber(totals.counted, 0)} מתוך {formatNumber(rows.length, 0)} ריסוסים)
+            </span>
+          </div>
+          {totals.unknown > 0 && (
+            <div className="badge badge-warn" style={{ marginTop: 6 }} title={missingText(totals.missing)}>
+              {formatNumber(totals.unknown, 0)} ריסוסים ללא עלות — חסרים נתונים
+            </div>
+          )}
+          {byPlan.size > 0 && (
+            <div style={{ marginTop: 10, fontSize: 13 }}>
+              {[...byPlan.entries()].map(([id, group]) => {
+                const t = costSummary(group);
+                return (
+                  <div key={id || 'none'} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '4px 0', borderTop: '1px solid var(--border)' }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>{planLabel(id)}</span>
+                    <b title={t.unknown ? missingText(t.missing) : undefined}>
+                      {t.counted ? formatMoney(t.total) : '—'}
+                      {t.unknown ? <span className="muted" style={{ fontWeight: 400 }}> ({formatNumber(t.unknown, 0)} ללא עלות)</span> : null}
+                    </b>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+      <Table
+        head={['תאריך', 'חומר', 'מבצע', 'מינון', 'כמות', 'עלות', 'סטטוס']}
+        rows={rows.map(({ raw: r, material, cost }) => [
+          formatDate(r['תאריך']),
+          linkName(r['חומר ריסוס']),
+          linkName(r['מבצע']),
+          formatDosage(r['מינון '] ?? r['מינון'], r['בסיס מינון'], material) ?? '—',
+          formatAmount(cost.quantity.total, material, cost.quantity.unitKind)
+            ?? <span title={missingText(cost.quantity.missing)}>—</span>,
+          cost.value == null ? <span title={missingText(cost.missing)}>—</span> : formatMoney(cost.value),
+          r['בוצע'] ? 'בוצע' : 'לא בוצע',
+        ])}
+      />
+    </>
   );
 }
 

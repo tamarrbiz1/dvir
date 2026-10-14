@@ -240,6 +240,189 @@ await test('תאריך/שעה: בניית ISO מקומי (לא הדבקת מחר
   return `offset=${offsetMin}min, ISO=${isoStart}`;
 }, READ_WARN_MS);
 
+// ============ 0.AR. בדיקות טהורות: יחידות מינון, מחיר ליחידה ועלות ============
+// סעיף AR (14.10.2026). לא נוגעות ברשת — בודקות רק את
+// client/src/utils/sprayCost.js, שממנו ניזונות גם TreatmentsPage.jsx
+// וגם StructuresPage.jsx (אותו חישוב בשני המסכים).
+//
+// ההנחה שנמדדה מול הבסיס החי לפני הכתיבה: `מחיר` בחומרי ריסוס הוא
+// מחיר ל**אריזה**, לא ליחידת תמחור (88 חומרים תומכים בכך בלעדית,
+// 0 ב"מחיר ליחידה"), ולכן מחיר ליחידה = `מחיר` ÷ `גודל האריזה` — תמיד.
+const AR = await import('../../client/src/utils/sprayCost.js');
+// חומרי-בדיקה סינתטיים (אובייקטים בזיכרון, לא רשומות Airtable)
+const arLiter = { 'שם חומר': 'AR-ליטר', 'מחיר': 1500, 'גודל האריזה': 5, 'יחידת תמחור': 'ליטר' }; // 300 ₪/ליטר
+const arKg = { 'שם חומר': 'AR-ק"ג', 'מחיר': 550, 'גודל האריזה': 5, 'יחידת תמחור': 'ק׳ג' };      // 110 ₪/ק"ג (איות גרש)
+const arNoPkg = { 'שם חומר': 'AR-בלי אריזה', 'מחיר': 320, 'יחידת תמחור': 'ליטר' };
+const arNoPrice = { 'שם חומר': 'AR-בלי מחיר', 'גודל האריזה': 5, 'יחידת תמחור': 'ליטר' };
+const arNoUnit = { 'שם חומר': 'AR-בלי יחידה', 'מחיר': 100, 'גודל האריזה': 2 };
+
+await test('AR: נרמול `יחידת תמחור` — 4 איותים + ריק + לא מזוהה', async () => {
+  const cases = [['ליטר', 'ליטר'], ['ק׳ג', 'ק"ג'], ['ק"ג', 'ק"ג'], ['קג', 'ק"ג'], ["ק''ג", 'ק"ג'], [' ליטר ', 'ליטר']];
+  for (const [raw, want] of cases) {
+    const got = AR.pricingUnit({ 'יחידת תמחור': raw });
+    if (got !== want) throw new Error(`"${raw}" → ${got}, צפוי ${want}`);
+  }
+  if (AR.pricingUnit({ 'יחידת תמחור': '' }) !== null) throw new Error('ריק אמור להחזיר null');
+  if (AR.pricingUnit({}) !== null) throw new Error('שדה חסר אמור להחזיר null');
+  if (AR.pricingUnit({ 'יחידת תמחור': 'שקיות' }) !== null) throw new Error('איות לא מזוהה אמור להחזיר null');
+  // יחידת המינון נגזרת מיחידת התמחור: ליטר→סמ"ק, ק"ג→גרם
+  if (AR.dosageUnit(arLiter) !== 'סמ"ק') throw new Error('ליטר אמור לתת מינון בסמ"ק');
+  if (AR.dosageUnit(arKg) !== 'גרם') throw new Error('ק"ג אמור לתת מינון בגרם');
+  if (AR.dosageUnit(arNoUnit) !== '') throw new Error('בלי יחידת תמחור — בלי יחידת מינון');
+  if (!/חסרה יחידת תמחור/.test(AR.unitHint(arNoUnit) || '')) throw new Error('חסר רמז "חסרה יחידת תמחור"');
+  if (!/לא מזוהה/.test(AR.unitHint({ 'יחידת תמחור': 'שקיות' }) || '')) throw new Error('חסר רמז לאיות לא מזוהה');
+  if (AR.unitHint(arLiter) !== null) throw new Error('חומר עם יחידה תקינה לא אמור לקבל רמז');
+  return `${cases.length} איותים + ריק + לא-מזוהה`;
+}, READ_WARN_MS);
+
+await test('AR: המרה ליחידה גדולה/קטנה (2,400 סמ"ק → 2.4 ליטר)', async () => {
+  const checks = [
+    [2400, arLiter, '2.4 ליטר'],
+    [999, arLiter, '999 סמ"ק'],
+    [1000, arLiter, '1 ליטר'],
+    [80000, arKg, '80 ק"ג'],
+    [400, arKg, '400 גרם'],
+  ];
+  for (const [v, m, want] of checks) {
+    const got = AR.formatSmallAmount(v, m);
+    if (got !== want) throw new Error(`${v} → "${got}", צפוי "${want}"`);
+  }
+  if (AR.formatSmallAmount(2400, arNoUnit) !== '2,400') throw new Error('בלי יחידת תמחור — מספר בלבד, בלי יחידה');
+  if (AR.formatSmallAmount(null, arLiter) !== null) throw new Error('ריק אמור להחזיר null (→ "—" במסך)');
+  if (AR.formatSmallAmount('', arLiter) !== null) throw new Error('מחרוזת ריקה אמורה להחזיר null');
+  return `${checks.length} המרות`;
+}, READ_WARN_MS);
+
+await test('AR-1: תווית מינון — "400 גרם לליטר", "0.5%"', async () => {
+  if (AR.formatDosage(400, 'לליטר', arKg) !== '400 גרם לליטר') throw new Error(`קיבלתי "${AR.formatDosage(400, 'לליטר', arKg)}"`);
+  if (AR.formatDosage(65, 'לדונם', arLiter) !== '65 סמ"ק לדונם') throw new Error('מינון לדונם שגוי');
+  if (AR.formatDosage(0.5, 'אחוז', arLiter) !== '0.5%') throw new Error('בסיס "אחוז" אמור להיות באחוזים');
+  if (AR.formatDosage(100, 'לליטר', arNoUnit) !== '100 לליטר') throw new Error('בלי יחידת תמחור — בלי יחידה בתווית');
+  if (AR.formatDosage(null, 'לליטר', arKg) !== null) throw new Error('מינון ריק אמור להחזיר null');
+  return 'ליטר/ק"ג/אחוז/חסר';
+}, READ_WARN_MS);
+
+await test('AR-2: מחיר ליחידה = מחיר ÷ גודל האריזה, וחסר → "—"', async () => {
+  if (AR.unitPrice(arLiter).value !== 300) throw new Error(`1500/5 אמור להיות 300, קיבלתי ${AR.unitPrice(arLiter).value}`);
+  if (AR.unitPrice(arKg).value !== 110) throw new Error('550/5 אמור להיות 110');
+  if (AR.unitPriceLabel(arLiter) !== 'מחיר לליטר') throw new Error('תווית שגויה לליטר');
+  if (AR.unitPriceLabel(arKg) !== 'מחיר לק"ג') throw new Error('תווית שגויה לק"ג');
+  if (AR.unitPriceLabel(arNoUnit) !== 'מחיר ליחידה') throw new Error('בלי יחידת תמחור — "מחיר ליחידה"');
+  // חסר נתון → null (→ "—" + רמז), **לא 0 ולא ניחוש** (כלל 16 באיפיון)
+  const noPkg = AR.unitPrice(arNoPkg);
+  if (noPkg.value !== null) throw new Error('בלי גודל אריזה אמור להחזיר null');
+  if (!noPkg.missing.some((x) => x.includes('גודל האריזה'))) throw new Error('חסר רמז על גודל האריזה');
+  const noPrice = AR.unitPrice(arNoPrice);
+  if (noPrice.value !== null || !noPrice.missing.some((x) => x.includes('מחיר'))) throw new Error('בלי מחיר אמור להחזיר null + רמז');
+  if (AR.unitPrice({ 'מחיר': 100, 'גודל האריזה': 0 }).value !== null) throw new Error('גודל אריזה 0 אמור להחזיר null (לא חילוק באפס)');
+  if (AR.formatUnitPrice(arLiter) !== '₪300 לליטר') throw new Error(`פורמט שגוי: ${AR.formatUnitPrice(arLiter)}`);
+  if (AR.formatUnitPrice(arNoPkg) !== null) throw new Error('בלי אריזה — אין מה לעצב');
+  return '₪300/ליטר · ₪110/ק"ג · חסר → null';
+}, READ_WARN_MS);
+
+await test('AR-2: עלות טיפול — ליטר, ק"ג, חסר מחיר → "—"', async () => {
+  // לדונם: 5 דונם × 60 סמ"ק = 300 סמ"ק = 0.3 ליטר × 300 ₪ = 90 ₪
+  const dunam = { 'בסיס מינון': 'לדונם', 'מינון ': 60, 'חישוב שטח בדונם של כלל המבנים': 5 };
+  const c1 = AR.treatmentCost(dunam, arLiter);
+  if (Math.abs(c1.value - 90) > 1e-9) throw new Error(`לדונם: קיבלתי ${c1.value}, צפוי 90`);
+  // לליטר בק"ג: 200 ל' × 400 גרם = 80,000 גרם = 80 ק"ג × 110 ₪ = 8,800 ₪
+  const perLiter = { 'בסיס מינון': 'לליטר', 'מינון ': 400, 'גודל מרסס בליטר': '200' };
+  const c2 = AR.treatmentCost(perLiter, arKg);
+  if (Math.abs(c2.value - 8800) > 1e-9) throw new Error(`לליטר: קיבלתי ${c2.value}, צפוי 8800`);
+  // ל-100 ליטר: 200/100 × 500 סמ"ק = 1,000 סמ"ק = 1 ליטר × 300 = 300 ₪
+  const per100 = { 'בסיס מינון': 'ל-100 ליטר', 'מינון ': 500, 'גודל מרסס בליטר': '200' };
+  if (Math.abs(AR.treatmentCost(per100, arLiter).value - 300) > 1e-9) throw new Error('ל-100 ליטר שגוי');
+  // חומר בלי מחיר / בלי גודל אריזה → null + רמז (לא 0)
+  for (const m of [arNoPrice, arNoPkg, null]) {
+    const c = AR.treatmentCost(perLiter, m);
+    if (c.value !== null) throw new Error('חומר בלי מחיר/אריזה אמור להחזיר null, לא 0');
+    if (!c.missing.length) throw new Error('חסר רמז מה חסר');
+    if (!/^אין עלות: /.test(AR.missingText(c.missing))) throw new Error('missingText לא מפרט מה חסר');
+  }
+  // טיפול בלי בסיס מינון → אין כמות ולכן אין עלות (ב-Airtable זה 0!)
+  const noBasis = AR.treatmentCost({ 'מינון ': 100, 'גודל מרסס בליטר': '200' }, arLiter);
+  if (noBasis.value !== null || !noBasis.missing.some((x) => x.includes('בסיס מינון'))) throw new Error('בלי בסיס מינון — null + רמז');
+  return '90 · 8,800 · 300 ₪ + 4 מקרי חסר';
+}, READ_WARN_MS);
+
+await test('AR-3: מספר מרססים — לליטר מוכפל, לדונם לא', async () => {
+  const perLiter = (n) => ({ 'בסיס מינון': 'לליטר', 'מינון ': 400, 'גודל מרסס בליטר': '200', 'מספר המרססים': n });
+  const one = AR.treatmentQuantity(perLiter(1));
+  const two = AR.treatmentQuantity(perLiter(2));
+  if (two.total !== one.total * 2) throw new Error(`לליטר ×2 אמור להיות כפול: ${two.total} מול ${one.total}`);
+  if (two.perSprayer !== one.total) throw new Error('הכמות למרסס אחד לא אמורה להשתנות');
+  if (AR.treatmentQuantity(perLiter(undefined)).total !== one.total) throw new Error('ריק אמור להתנהג כ-1');
+  if (AR.sprayerCount({}) !== 1 || AR.sprayerCount({ 'מספר המרססים': 0 }) !== 1) throw new Error('ריק/0 אמורים להיות 1');
+  if (AR.sprayerCount({ 'מספר המרססים': 3 }) !== 3) throw new Error('3 מרססים');
+  // לדונם: הכמות כבר לכל השטח ולכן **לא** מוכפלת; במקום זה מוצגת כמות למרסס
+  const dunam = (n) => ({ 'בסיס מינון': 'לדונם', 'מינון ': 60, 'חישוב שטח בדונם של כלל המבנים': 5, 'מספר המרססים': n });
+  const d1 = AR.treatmentQuantity(dunam(1)), d3 = AR.treatmentQuantity(dunam(3));
+  if (d1.total !== 300 || d3.total !== 300) throw new Error(`לדונם אמור להישאר 300: ${d3.total}`);
+  if (d1.perSprayer !== null) throw new Error('מרסס אחד — אין מה לפצל');
+  if (Math.abs(d3.perSprayer - 100) > 1e-9) throw new Error(`כמות לכל מרסס אמורה להיות 100: ${d3.perSprayer}`);
+  if (Math.abs(AR.treatmentCost(dunam(3), arLiter).value - 90) > 1e-9) throw new Error('עלות לדונם לא אמורה להיות מוכפלת במרססים');
+  return 'לליטר ×2 כפול · לדונם לא מוכפל';
+}, READ_WARN_MS);
+
+await test('AR-3: דוגמת תמר — 400 גרם לליטר, מרסס 200, 2 מרססים → 160 ק"ג', async () => {
+  const t = { 'בסיס מינון': 'לליטר', 'מינון ': 400, 'גודל מרסס בליטר': '200', 'מספר המרססים': 2 };
+  const q = AR.treatmentQuantity(t);
+  if (q.total !== 160000) throw new Error(`כמות בגרם: ${q.total}, צפוי 160000`);
+  if (AR.formatSmallAmount(q.total, arKg) !== '160 ק"ג') throw new Error(`תצוגה: ${AR.formatSmallAmount(q.total, arKg)}`);
+  const c = AR.treatmentCost(t, arKg);
+  const X = AR.unitPrice(arKg).value; // 110 ₪ לק"ג
+  if (Math.abs(c.value - 160 * X) > 1e-9) throw new Error(`עלות: ${c.value}, צפוי ${160 * X}`);
+  if (q.sprayers * 200 !== 400) throw new Error('נפח המים שגוי — "2 מרססים × 200 ל\' = 400 ל\'"');
+  return `160 ק"ג · ₪${160 * X}`;
+}, READ_WARN_MS);
+
+await test('AR-2: סיכום תקופה = סכום השורות, ושורות ללא עלות נספרות בנפרד', async () => {
+  const rows = [
+    { raw: { 'בסיס מינון': 'לדונם', 'מינון ': 60, 'חישוב שטח בדונם של כלל המבנים': 5 }, material: arLiter },  // 90
+    { raw: { 'בסיס מינון': 'ל-100 ליטר', 'מינון ': 500, 'גודל מרסס בליטר': '200' }, material: arLiter },       // 300
+    { raw: { 'בסיס מינון': 'לליטר', 'מינון ': 400, 'גודל מרסס בליטר': '200' }, material: arNoPkg },           // ללא עלות
+    { raw: { 'מינון ': 100 }, material: arLiter },                                                             // ללא בסיס → ללא עלות
+  ];
+  const s = AR.costSummary(rows);
+  if (Math.abs(s.total - 390) > 1e-9) throw new Error(`סה"כ: ${s.total}, צפוי 390`);
+  if (s.counted !== 2 || s.unknown !== 2) throw new Error(`נספרו ${s.counted} / ללא עלות ${s.unknown}, צפוי 2/2`);
+  if (!s.missing.length) throw new Error('הסיכום אמור לאסוף את הסיבות');
+  // סיכום על אירועי-יומן שכבר מחזיקים `cost` מחושב — אותו מספר
+  const events = rows.map((r) => ({ cost: AR.treatmentCost(r.raw, r.material) }));
+  const s2 = AR.costSummary(events);
+  if (Math.abs(s2.total - s.total) > 1e-9 || s2.unknown !== s.unknown) throw new Error('סיכום על אירועים מחושבים נתן תוצאה אחרת');
+  if (AR.costSummary([]).counted !== 0 || AR.costSummary([]).total !== 0) throw new Error('רשימה ריקה');
+  return '₪390 · 2 ללא עלות';
+}, READ_WARN_MS);
+
+await test('AR-0: החישוב זהה לנוסחה `מחיר מחושב` של Airtable', async () => {
+  // הנוסחה החיה: ({כמות מחושבת} / ({גודל האריזה} * 1000)) * {מחיר}
+  const airtable = (qty, m) => (qty / (m['גודל האריזה'] * 1000)) * m['מחיר'];
+  const cases = [
+    [{ 'בסיס מינון': 'לדונם', 'מינון ': 65, 'חישוב שטח בדונם של כלל המבנים': 5.016 }, arLiter],
+    [{ 'בסיס מינון': 'לליטר', 'מינון ': 400, 'גודל מרסס בליטר': '200' }, arKg],
+    [{ 'בסיס מינון': 'ל-100 ליטר', 'מינון ': 500, 'גודל מרסס בליטר': '500' }, arLiter],
+  ];
+  for (const [t, m] of cases) {
+    const q = AR.treatmentQuantity(t);
+    const mine = AR.treatmentCost(t, m).value;
+    const theirs = airtable(q.total, m);
+    if (Math.abs(mine - theirs) > 1e-9) throw new Error(`פער מול Airtable: ${mine} מול ${theirs}`);
+  }
+  // ...וגם כשהכמות מגיעה מוכנה מ-Airtable (`כמות מחושבת`), לא מחושבת מקומית
+  const fromAt = { 'בסיס מינון': 'לדונם', 'מינון ': 65, 'כמות מחושבת': 326.04 };
+  const q2 = AR.treatmentQuantity(fromAt);
+  if (!q2.fromAirtable || q2.total !== 326.04) throw new Error('`כמות מחושבת` של Airtable אמורה לקבל קדימות');
+  if (Math.abs(AR.treatmentCost(fromAt, { 'מחיר': 1670, 'גודל האריזה': 1 }).value - 544.4868) > 1e-6) {
+    throw new Error('העלות לא תואמת את `מחיר מחושב` של הרשומה החיה (544.4868)');
+  }
+  // נוסחה שנכשלה חוזרת כ-{error:'#ERROR!'} — לא מספר, ולכן מחשבים מקומית
+  const broken = { 'בסיס מינון': 'לדונם', 'מינון ': 60, 'כמות מחושבת': { error: '#ERROR!' }, 'חישוב שטח בדונם של כלל המבנים': 5 };
+  const q3 = AR.treatmentQuantity(broken);
+  if (q3.fromAirtable || q3.total !== 300) throw new Error('#ERROR! אמור להיות מוחלף בחישוב מקומי');
+  return `${cases.length} בסיסים + רשומה חיה (₪544.4868)`;
+}, READ_WARN_MS);
+
 // ============ 1. קריאת כל הטבלאות + זמני תגובה ============
 const tables = await api('GET', 'tables');
 for (const t of tables) {
@@ -297,6 +480,37 @@ await test('טיפול/ריסוס: יצירה + בוצע + עריכה', async ()
   const rec = await create('ריסוסים', { 'תאריך': today, 'מבנה': [sId], 'חומר ריסוס': [mId], 'מינון ': 100, 'הערות': MARK });
   await patch('ריסוסים', rec.id, { 'בוצע': true });
   await patch('ריסוסים', rec.id, { 'מינון ': 150 });
+});
+
+// ---- AR-3: `מספר המרססים` נשמר, ו-AR-2: העלות מול `מחיר מחושב` החי ----
+// השדה `מספר המרססים` (number) נוצר ע"י תמר וריק בכל הרשומות; זו
+// הבדיקה הראשונה שכותבת אליו מהטופס. באותה רשומה גם מאמתים שהעלות
+// שהמסך מחשב שווה ל-`מחיר מחושב` שהנוסחה ב-Airtable מחזירה בפועל.
+await test('AR: `מספר המרססים` נשמר, והעלות שווה ל-`מחיר מחושב` החי', async () => {
+  const mats = await api('GET', `${enc('חומרי ריסוס')}?maxRecords=100&raw=1`);
+  const mat = mats.find((m) => Number(m['גודל האריזה']) > 0 && Number(m['מחיר']) > 0);
+  if (!mat) return 'דולג — אין חומר עם מחיר + גודל אריזה';
+  const rec = await create('ריסוסים', {
+    'תאריך': today, 'מבנה': [sId], 'חומר ריסוס': [mat.id],
+    'בסיס מינון': 'לדונם', 'מינון ': 60, 'מספר המרססים': 2, 'הערות': MARK,
+  });
+  const back = await api('GET', `${enc('ריסוסים')}/${rec.id}`);
+  if (Number(back['מספר המרססים']) !== 2) throw new Error(`מספר המרססים לא נשמר: ${back['מספר המרססים']}`);
+  if (AR.sprayerCount(back) !== 2) throw new Error('sprayerCount לא קרא את השדה');
+  const q = AR.treatmentQuantity(back);
+  // "לדונם" — הכמות לכל השטח ולכן **לא** מוכפלת ב-2 המרססים
+  if (!q.fromAirtable) throw new Error('`כמות מחושבת` לא חזרה מ-Airtable');
+  if (q.total !== back['כמות מחושבת']) throw new Error('הכמות הכוללת לדונם הוכפלה במספר המרססים — לא אמורה');
+  const mine = AR.treatmentCost(back, mat).value;
+  const live = back['מחיר מחושב'];
+  if (typeof live !== 'number') throw new Error(`\`מחיר מחושב\` חזר כ-${JSON.stringify(live)} ולא כמספר`);
+  if (Math.abs(mine - live) > 1e-6) throw new Error(`פער מול Airtable: שלנו ${mine}, שלהם ${live}`);
+  // ריק = 1: מחיקת הערך לא משנה את העלות בבסיס "לדונם"
+  await patch('ריסוסים', rec.id, { 'מספר המרססים': null });
+  const cleared = await api('GET', `${enc('ריסוסים')}/${rec.id}`);
+  if (AR.sprayerCount(cleared) !== 1) throw new Error('ריק אמור להיחשב כמרסס אחד');
+  if (Math.abs(AR.treatmentCost(cleared, mat).value - mine) > 1e-6) throw new Error('העלות השתנתה כשהשדה התרוקן');
+  return `₪${live.toFixed(4)} = חישוב המסך (${mat['שם חומר']})`;
 });
 
 await test('קטיף: יצירה + הופעה מיידית ברשימה', async () => {
