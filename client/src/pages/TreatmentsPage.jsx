@@ -18,7 +18,7 @@ import PageHeader from '../components/PageHeader.jsx';
 import { SprayerBlock, SprayerTag } from '../components/SprayerInfo.jsx';
 import TreatmentPhotos from '../components/TreatmentPhotos.jsx';
 import { planIdList, planChoicesFor } from '../utils/treatmentPlans.js';
-import { visibleNotes, importNoteLines, reportNumberFromNotes, composeNotes } from '../utils/treatmentNotes.js';
+import { visibleNotes, importNoteLines, reportNumberFromNotes, composeNotes, cropFromNotes } from '../utils/treatmentNotes.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { confirmDialog, toast } from '../utils/ui.js';
 import { PERIOD_PRESETS, periodRange, inPeriod, periodDisclosure } from '../utils/period.js';
@@ -259,11 +259,15 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       // פסיקים (כל הטיפולים הקיימים והייבוא מדוח), או ריק (מבנים בלבד).
       const planIds = planIdList(t['תוכנית שתילה']);
       const linkedPlans = planIds.map((id) => plans.find((p) => p.id === id)).filter(Boolean);
-      const cropNames = [...new Set(linkedPlans
+      // ⚠️ AS-7: בטיפול מיובא, שורת ההערות `גידול/זן:` **גוברת** על התוכנית
+      // — זה מה שכתוב בדוח, וזה הקובע (הוראת תמר). אין שורה כזו (טיפול
+      // ידני) → נפילה-לאחור לגזירה מהתוכנית, בדיוק כמו עד היום.
+      const fromReport = cropFromNotes(t['הערות']);
+      const cropNames = fromReport ? [fromReport.crop] : [...new Set(linkedPlans
         .map((p) => displayName(p['גידולים'], '') || displayName(p['סוג גידול'], ''))
         .filter(Boolean))];
       // "זן" אינו שדה בתוכנית השתילה (נבדק בסכימה 6.10.2026) — הוא "תיאור" ברשומת הגידול, למשל "זן 67" / "אדום"
-      const varietyNames = [...new Set(linkedPlans
+      const varietyNames = fromReport ? [fromReport.variety].filter(Boolean) : [...new Set(linkedPlans
         .map((p) => crops.find((x) => x.id === firstId(p['גידולים'])))
         .map((c) => (c ? String(c['תיאור'] || '').trim() : ''))
         .filter(Boolean))];
@@ -281,7 +285,11 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
         cropNames, varietyNames,
         crop: cropNames.join(' · ') || 'לא זמין',
         variety: varietyNames.join(' · '),
-        number: t['מספר ריסוס'],
+        // AS-6: `מספר ריסוס` (autoNumber של Airtable) **הוסר מהוויו-מודל
+        // כולו** — הוא מונה רשומות פנימי ולא מספר שמשמעותי למשתמשת, ולא
+        // נשאר לו שום צרכן אחרי שהשורה בכרטיס הוסרה.
+        // ⚠️ לא לבלבל עם השורה `מספר ריסוס: X` **בהערות**, שהייבוא כותב
+        // מעמודת הדוח של תמר — היא מוסתרת מהתצוגה ע"י AS-5 ונשארת בנתונים.
         dosage: pick(t, DOSAGE_FIELDS),
         basis: t['בסיס מינון'] || '',
         executor: displayName(t['מבצע'], ''),
@@ -881,7 +889,8 @@ function DayDrawer({ date, events, busy, error, onClose, onEdit, onToggle, onDel
                 {row('זן', ev.variety || '—')}
                 {/* AS-2: כמה תוכניות שתילה לטיפול אחד — מוצגות כולן */}
                 {row(ev.planIds.length > 1 ? `תוכניות (${formatNumber(ev.planIds.length, 0)})` : 'תוכנית שתילה', planCardLabel(ev))}
-                {row('מספר ריסוס', ev.number ?? '—')}
+                {/* AS-6: שורת "מספר ריסוס" הוסרה — `מספר ריסוס` הוא autoNumber
+                    של Airtable (מונה רשומות פנימי) ולא מספר שאומר משהו למשתמשת. */}
                 {row('מינון', <DosageText ev={ev} />)}
                 {row('מבצע', ev.executor || 'לא זמין')}
                 {/* AR-2/AR-3: כמות כוללת, נפח מים ועלות — ר' client/src/utils/sprayCost.js */}

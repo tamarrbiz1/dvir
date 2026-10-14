@@ -6013,16 +6013,20 @@ await test('AS-2: הגידול/הזן ביומן לא נשברים באף אחד
   // undefined/קריסה ושטיפול בלי תוכנית פשוט מקבל רשימה ריקה.
   const { planIdList } = await import('../../client/src/utils/treatmentPlans.js');
   const { displayName } = await import('../../client/src/utils/resolve.js');
+  const { cropFromNotes } = await import('../../client/src/utils/treatmentNotes.js');
   // **בלי** raw=1 — בדיוק כמו ב-TreatmentsPage.jsx, כדי שהשדות המקושרים
   // יגיעו עם שמות-תצוגה (attachLinkedNames) ו-displayName יעבוד כמו במסך
   const plansList = await get('תוכניות שתילה', '?maxRecords=30');
-  const derive = (value) => {
+  // AS-7: שורת `גידול/זן:` בהערות גוברת; בלעדיה — גזירה מהתוכנית.
+  const derive = (value, notes = '') => {
     const ids = planIdList(value);
+    const fromReport = cropFromNotes(notes);
     const linked = ids.map((id) => plansList.find((p) => p.id === id)).filter(Boolean);
-    const cropNames = [...new Set(linked
+    const cropNames = fromReport ? [fromReport.crop] : [...new Set(linked
       .map((p) => displayName(p['גידולים'], '') || displayName(p['סוג גידול'], ''))
       .filter(Boolean))];
-    return { ids, cropNames, display: cropNames.join(' · ') || 'לא זמין' };
+    const varietyNames = fromReport ? [fromReport.variety].filter(Boolean) : [];
+    return { ids, cropNames, varietyNames, display: cropNames.join(' · ') || 'לא זמין' };
   };
   // תוכניות עם גידול בפועל — כדי שהמצבים "בודד"/"שניים" יבדקו תצוגה אמיתית
   const withCrop = plansList.filter((p) => displayName(p['גידולים'], '') || displayName(p['סוג גידול'], ''));
@@ -6311,6 +6315,121 @@ await test('AS-5 חי: אחרי עריכה, הסמן בהערות עדיין מ�
   if (!after.includes(`${MARK} עודכן`)) throw new Error('ההערה החדשה לא נשמרה');
   if (visibleNotes(after) !== `${MARK} עודכן`) throw new Error(`בתצוגה נשארו שורות-ייבוא: ${JSON.stringify(visibleNotes(after))}`);
   return 'אחרי עריכה: הסמן נמצא בנוסחת FIND, שורת תאריך-הסיום שרדה, ובתצוגה רק ההערה החופשית';
+});
+
+// ============================================================
+// חלק AS-6 + AS-7 (14.10.2026)
+// ------------------------------------------------------------
+// AS-6: שורת "מספר ריסוס" (השדה `מספר ריסוס`, **autoNumber** של Airtable
+//   — מונה רשומות פנימי) הוסרה מכל תצוגה. ⚠️ לא לבלבל עם השורה
+//   `מספר ריסוס: X` **בהערות**, שהייבוא כותב מעמודת הדוח של תמר — היא
+//   נשארת בנתונים, ומוסתרת מהתצוגה ע"י AS-5.
+// AS-7: בטיפול מיובא הגידול והזן נלקחים משורת ההערות `גידול/זן:`, והיא
+//   **גוברת על תוכנית השתילה המשויכת**. בלעדיה — גזירה מהתוכנית, כמו היום.
+// ============================================================
+await test('AS-6: `מספר ריסוס` (autoNumber) לא מוצג באף תצוגה, והשורה בהערות לא נגועה', async () => {
+  const { visibleNotes, importNoteLines } = await import('../../client/src/utils/treatmentNotes.js');
+  const page = await readFile(new URL('../../client/src/pages/TreatmentsPage.jsx', import.meta.url), 'utf8');
+  // השדה עצמו: אין יותר שורת-כרטיס ואין אותו בוויו-מודל
+  if (/row\(\s*'מספר ריסוס'/.test(page)) throw new Error('שורת "מספר ריסוס" עדיין מוצגת בכרטיס');
+  if (/^\s*number:\s*t\['מספר ריסוס'\]/m.test(page)) throw new Error('`מספר ריסוס` עדיין בוויו-מודל (ev.number)');
+  if (/\bev\.number\b/.test(page)) throw new Error('נשאר צרכן ל-ev.number');
+  // ובשאר המסכים גם לא הוסיף אף אחד
+  for (const f of ['StructuresPage.jsx', 'DashboardPage.jsx']) {
+    const src = await readFile(new URL(`../../client/src/pages/${f}`, import.meta.url), 'utf8');
+    if (/\['מספר ריסוס'\]/.test(src)) throw new Error(`${f} מציג את ה-autoNumber`);
+  }
+  // 🔒 והשורה **בהערות** (מהדוח של תמר) נשארת בנתונים — רק מוסתרת מהתצוגה
+  const notes = '[מדוח ריסוסים #255] שורה 4\nמספר ריסוס: 12\nהערה חופשית';
+  if (!importNoteLines(notes).includes('מספר ריסוס: 12')) throw new Error('השורה בהערות אינה נשמרת להחזרה בשמירה');
+  if (visibleNotes(notes).includes('מספר ריסוס')) throw new Error('השורה בהערות מוצגת כטקסט');
+  return 'השדה autoNumber הוסר מהכרטיס ומהוויו-מודל; השורה בהערות נשמרת ומוסתרת';
+}, READ_WARN_MS);
+
+await test('AS-7 טהור: `גידול/זן:` מההערות גובר על התוכנית, ושלושת הפורמטים עובדים', async () => {
+  const { cropFromNotes } = await import('../../client/src/utils/treatmentNotes.js');
+  const { displayName } = await import('../../client/src/utils/resolve.js');
+  // שניהם
+  const both = cropFromNotes('[מדוח ריסוסים #255] שורה 4\nגידול/זן: מלפפון · היילוקס\nתאריך סיום: 23/07/2026');
+  if (both?.crop !== 'מלפפון' || both?.variety !== 'היילוקס') throw new Error(`פורמט "שניים" נכשל: ${JSON.stringify(both)}`);
+  // רק גידול — **אין מפריד**, והזן ריק (ולא כל המחרוזת כזן)
+  const cropOnly = cropFromNotes('גידול/זן: מלפפון');
+  if (cropOnly?.crop !== 'מלפפון' || cropOnly?.variety !== '') throw new Error(`פורמט "רק גידול" נכשל: ${JSON.stringify(cropOnly)}`);
+  // רווחים סביב המפריד — לא מסתמכים על רווח בודד
+  const spaced = cropFromNotes('גידול/זן:   מלפפון   ·   היילוקס  ');
+  if (spaced?.crop !== 'מלפפון' || spaced?.variety !== 'היילוקס') throw new Error(`רווחים שברו את הפירוק: ${JSON.stringify(spaced)}`);
+  // אין שורה / שורה ריקה / הערה ידנית → null, ואז נפילה-לאחור לתוכנית
+  for (const s of ['', null, undefined, 'סתם הערה של תמר', 'גידול/זן:', 'גידול/זן:    ']) {
+    if (cropFromNotes(s) !== null) throw new Error(`"${s}" אמור להחזיר null (נפילה-לאחור לתוכנית)`);
+  }
+
+  // ⚠️ המקרה המוכיח: מקושרת תוכנית של גידול **אחר** — ההערות גוברות
+  const plansList = await get('תוכניות שתילה', '?maxRecords=30');
+  const planWithCrop = plansList.find((p) => displayName(p['גידולים'], '') || displayName(p['סוג גידול'], ''));
+  const planCrop = planWithCrop ? (displayName(planWithCrop['גידולים'], '') || displayName(planWithCrop['סוג גידול'], '')) : null;
+  const { planIdList } = await import('../../client/src/utils/treatmentPlans.js');
+  const derive = (planValue, notes) => {
+    const fromReport = cropFromNotes(notes);
+    const linked = planIdList(planValue).map((id) => plansList.find((p) => p.id === id)).filter(Boolean);
+    const cropNames = fromReport ? [fromReport.crop] : [...new Set(linked
+      .map((p) => displayName(p['גידולים'], '') || displayName(p['סוג גידול'], '')).filter(Boolean))];
+    const varietyNames = fromReport ? [fromReport.variety].filter(Boolean) : [];
+    return { cropNames, varietyNames, crop: cropNames.join(' · ') || 'לא זמין', variety: varietyNames.join(' · ') };
+  };
+  const reportNotes = 'גידול/זן: מלפפון · היילוקס';
+  // (א) בלי תוכנית משויכת
+  const noPlan = derive('', reportNotes);
+  if (noPlan.crop !== 'מלפפון' || noPlan.variety !== 'היילוקס') throw new Error(`בלי תוכנית: ${JSON.stringify(noPlan)}`);
+  // (ב) **עם** תוכנית של גידול אחר — ההערות עדיין קובעות
+  if (planWithCrop) {
+    const withOther = derive(planWithCrop.id, reportNotes);
+    if (withOther.crop !== 'מלפפון') throw new Error(`תוכנית ("${planCrop}") דרסה את ההערות: ${withOther.crop}`);
+    if (withOther.variety !== 'היילוקס') throw new Error(`הזן מההערות נדרס: ${withOther.variety}`);
+    // (ג) רגרסיה: טיפול **ידני** (בלי שורת גידול/זן) נגזר מהתוכנית כמו היום
+    const manual = derive(planWithCrop.id, 'הערה ידנית בלבד');
+    if (manual.crop !== planCrop) throw new Error(`טיפול ידני לא נגזר מהתוכנית: "${manual.crop}" במקום "${planCrop}"`);
+  }
+  // רק גידול בהערות → זן ריק, והתצוגה ברשימה היא "—" (filter(Boolean).join)
+  const onlyCrop = derive('', 'גידול/זן: מלפפון');
+  if (onlyCrop.crop !== 'מלפפון' || onlyCrop.varietyNames.length !== 0) throw new Error(`"רק גידול" הניב זן: ${JSON.stringify(onlyCrop)}`);
+  if ([onlyCrop.crop === 'לא זמין' ? '' : onlyCrop.crop, onlyCrop.variety].filter(Boolean).join(' · ') !== 'מלפפון') {
+    throw new Error('תצוגת הרשימה ל"רק גידול" שבורה');
+  }
+
+  // חיפוש ופילטר: שק החיפוש כולל את e.crop, ורשימת האפשרויות נבנית מ-
+  // events.flatMap(e => e.cropNames) — כלומר גידול שמקורו **בהערות בלבד**
+  // חייב להופיע בה ולהיות בר-סינון. זה בדיוק מה שנבדק כאן.
+  const evs = [derive('', reportNotes), derive(planWithCrop?.id || '', 'הערה ידנית')];
+  const cropOptions = [...new Set(evs.flatMap((e) => e.cropNames))].sort();
+  if (!cropOptions.includes('מלפפון')) throw new Error(`"מלפפון" (מהערות בלבד) לא נכנס לרשימת אפשרויות הפילטר: ${cropOptions.join(', ')}`);
+  if (evs.filter((e) => e.cropNames.includes('מלפפון')).length !== 1) throw new Error('פילטר הגידול לא בודד את הטיפול המיובא');
+  const hay = ['חומר', 'מבנה 1', evs[0].crop, evs[0].variety, '', '', ''].join(' ').toLowerCase();
+  if (!hay.includes('מלפפון')) throw new Error('חיפוש "מלפפון" לא ימצא את הטיפול המיובא');
+  return `הערות גוברות על התוכנית${planCrop ? ` (גם מול "${planCrop}")` : ''} · 3 הפורמטים · ידני נגזר מהתוכנית · פילטר וחיפוש כוללים "מלפפון"`;
+}, READ_WARN_MS);
+
+await test('AS-7 חי: טיפול עם `גידול/זן:` בהערות ותוכנית של גידול אחר — ההערות קובעות', async () => {
+  const { cropFromNotes } = await import('../../client/src/utils/treatmentNotes.js');
+  const { displayName } = await import('../../client/src/utils/resolve.js');
+  const plansList = await get('תוכניות שתילה', '?maxRecords=30');
+  const planWithCrop = plansList.find((p) => displayName(p['גידולים'], '') || displayName(p['סוג גידול'], ''));
+  if (!planWithCrop) return 'דולג — אין בבסיס תוכנית עם גידול';
+  const planCrop = displayName(planWithCrop['גידולים'], '') || displayName(planWithCrop['סוג גידול'], '');
+  // רשומת-QA אחת, עם סמן-דוח שאינו קיים (אין יצירת דוח ואין Make)
+  const notes = ['[מדוח ריסוסים #999998] שורה 7', 'גידול/זן: מלפפון · היילוקס', 'מספר ריסוס: 12', MARK].join('\n');
+  const rec = await create('ריסוסים', {
+    'תאריך': today, 'מבנה': [sId], 'חומר ריסוס': [mId], 'מינון ': 100,
+    'תוכנית שתילה': planWithCrop.id, 'הערות': notes,
+  });
+  // נקרא בדיוק כמו המסך (בלי raw=1), כולל השדה האמיתי כפי שנשמר
+  const saved = (await get('ריסוסים', `?maxRecords=50&filterByFormula=${encodeURIComponent(`RECORD_ID()='${rec.id}'`)}`))[0]
+    || (await api('GET', `${enc('ריסוסים')}/${rec.id}`));
+  const parsed = cropFromNotes(saved['הערות']);
+  if (parsed?.crop !== 'מלפפון' || parsed?.variety !== 'היילוקס') throw new Error(`הפירוק מהרשומה החיה נכשל: ${JSON.stringify(parsed)}`);
+  if (planCrop === 'מלפפון') return `דולג חלקית — גידול התוכנית גם הוא "מלפפון"; הפירוק עבד`;
+  // התוכנית אכן מקושרת ואומרת גידול אחר — וההערות גוברות עליה
+  if (String(saved['תוכנית שתילה'] || '') !== planWithCrop.id) throw new Error('התוכנית לא נשמרה — הבדיקה לא מוכיחה כלום');
+  return `תוכנית "${planCrop}" מקושרת, והתצוגה לוקחת "מלפפון · היילוקס" מההערות`;
 });
 
 // ============ 4. ניקוי מלא ============

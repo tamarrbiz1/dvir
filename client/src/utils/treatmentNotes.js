@@ -58,6 +58,42 @@ export function importNoteLines(notes) {
   return linesOf(notes).filter((l) => isImportLine(l) && l.trim()).map((l) => l.trim());
 }
 
+// ============================================================
+// AS-7 (14.10.2026) — הגידול והזן **מהדוח**, לא מהתוכנית
+// ------------------------------------------------------------
+// תמר: בטיפול מיובא הגידול והזן הם מה שכתוב בדוח, וזה **הקובע** — גם
+// אם מקושרת תוכנית שתילה של גידול אחר. רק כשאין שורה כזו (טיפול ידני)
+// נגזרים הגידול והזן מהתוכנית, כמו עד היום.
+//
+// זה מתיישב עם הסתרת ההערות: השורה **נשארת** ב-Airtable ונקראת מכאן —
+// היא פשוט לא מוצגת כטקסט. שתי הפונקציות קוראות את ההערות הגולמיות.
+//
+// הפורמט שהייבוא כותב (buildRow ב-spray-report-import.js):
+//   notes.push(`גידול/זן: ${[crop, variety].filter(Boolean).join(' · ')}`)
+// ולכן שלושה מקרים:
+//   • שניהם     → "גידול/זן: מלפפון · היילוקס"
+//   • רק גידול  → "גידול/זן: מלפפון"  (בלי מפריד, הזן ריק)
+//   • אף אחד    → השורה **לא נכתבת** → null, ואז נפילה-לאחור לתוכנית
+// המפריד הוא '·' (middle dot); לא מסתמכים על הרווחים שסביבו.
+// ============================================================
+const CROP_LINE_RE = /^\s*גידול\/זן:\s*(.*)$/;
+
+/**
+ * הגידול והזן כפי שהם בדוח, מתוך שורת ההערות.
+ * @returns {{crop: string, variety: string}|null} null = אין שורה כזו (או שהיא ריקה)
+ */
+export function cropFromNotes(notes) {
+  for (const line of linesOf(notes)) {
+    const m = CROP_LINE_RE.exec(line);
+    if (!m) continue;
+    const parts = m[1].split('·').map((s) => s.trim()).filter(Boolean);
+    if (!parts.length) return null; // "גידול/זן:" בלי תוכן — כאילו אין שורה
+    // יותר משני חלקים (לא קורה בייבוא, אבל לא מתפוצצים): הראשון גידול, השאר זן
+    return { crop: parts[0], variety: parts.slice(1).join(' · ') };
+  }
+  return null;
+}
+
 /** מספר הדוח שממנו יובא הטיפול, מתוך הסמן. null בטיפול ידני. */
 export function reportNumberFromNotes(notes) {
   for (const line of linesOf(notes)) {
