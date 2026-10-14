@@ -32,7 +32,8 @@ import { redactSecrets as authRedact } from './cli-token.js';
 import { fixFilenameEncoding } from './filename-utils.js';
 import { weekCodeFromDate, WEEK_CODE_RE } from './weekly-sync.js';
 import { normalizeName, matchEntity, planLink, planCheckSupplier, computeSuggestions, summarizeSuggestions, AUTO_THRESHOLD } from './supplier-linking.js';
-import { parseSummary, parseDateRange, parseDosage, markerOf, isTestRecord as isSprayTestRecord } from './spray-report-import.js';
+import { parseSummary, parseDateRange, parseDosage, markerOf, isTestRecord as isSprayTestRecord,
+  isAwaitingApproval, deletedReportNote, DELETED_REPORT_NOTE_RE, sweepSprayReports } from './spray-report-import.js';
 import { cascadeDocumentDelete } from './document-cascade.js';
 import { parseInventoryLedger, resolveExpenseLinks, documentLink } from '../../client/src/utils/inventoryLedger.js';
 import { stripInventoryAiMarker, withPreservedInventoryTags, inventoryAiSummary } from '../../client/src/utils/inventoryAi.js';
@@ -2692,6 +2693,130 @@ await test('דוח ריסוסים: רשומה עם קובץ אמיתי שכבר 
   return `dry-run: status=${dry.status}, created=0 (כצפוי), ${dry.rows?.length ?? 0} שורות בניתוח, מסומנת כבדיקה`;
 });
 
+// ============ 3ב′. "ממתין לאישור" + מחיקה שלא מוחקת טיפולים (AN, 14.10.2026) ============
+// החלטת תמר: דוח שנותח **לא מיובא אוטומטית** — הוא ממתין לאישור, והייבוא
+// קורה רק בלחיצה מפורשת של המנהלת הראשית. ומחיקת דוח מוחקת רק את המסמך:
+// הטיפולים נשארים ביומן ומקבלים בהערות "הדוח המקורי נמחק (DD.MM.YYYY)".
+// שתי הבדיקות הראשונות טהורות (בלי Airtable/Make); השלישית היא הסריקה
+// המחזורית עצמה — **קריאה בלבד** מאז AN, ולכן בטוחה להרצה תמיד.
+await test('ממתין לאישור: isAwaitingApproval — ready+לא-יובא → כן; יובא במלואו/pending/ריק → לא', () => {
+  const cases = [
+    [{ summary: 'ready', rows: 3, imported: 0 }, true, 'נותח ולא יובא'],
+    [{ summary: 'ready', rows: 3, imported: 1 }, true, 'יובא חלקית — עוד ממתין'],
+    [{ summary: 'ready', rows: 3, imported: 3 }, false, 'יובא במלואו'],
+    [{ summary: 'ready', rows: 0, imported: 0 }, false, 'ready בלי שורות'],
+    [{ summary: 'pending', rows: 0, imported: 0 }, false, 'עוד בניתוח'],
+    [{ summary: 'no-file', rows: 0, imported: 0 }, false, 'ללא קובץ'],
+    [{ summary: 'invalid', rows: 2, imported: 0 }, false, 'ניתוח לא תקין'],
+  ];
+  for (const [row, expected, why] of cases) {
+    if (isAwaitingApproval(row) !== expected) throw new Error(`${why}: צפוי ${expected}, התקבל ${isAwaitingApproval(row)}`);
+  }
+  if (isAwaitingApproval(null) !== false) throw new Error('null צפוי false, לא לקרוס');
+  return `${cases.length} מצבים + null — כולם כצפוי`;
+});
+
+await test('מחיקת דוח: deletedReportNote — מוסיף "הדוח המקורי נמחק (DD.MM.YYYY)", אידמפוטנטי, שומר הערות קיימות', () => {
+  const when = new Date(2026, 9, 14); // 14.10.2026
+  const expected = '⚠ הדוח המקורי נמחק (14.10.2026)';
+  const bare = deletedReportNote('', when);
+  if (bare !== expected) throw new Error(`הערות ריקות: צפוי "${expected}", התקבל "${bare}"`);
+  const existing = '[מדוח ריסוסים #42] שורה 1\nמינון מהדוח: 40';
+  const withNote = deletedReportNote(existing, when);
+  if (!withNote.startsWith(existing)) throw new Error('ההערות הקיימות לא נשמרו — הסמן [מדוח ריסוסים #N] הוא מפתח האידמפוטנטיות של הייבוא');
+  if (!withNote.endsWith(expected)) throw new Error(`השורה החדשה לא נוספה בסוף: ${JSON.stringify(withNote)}`);
+  // קריאה שנייה (למשל ניסיון חוזר אחרי כשל רשת) לא מכפילה את השורה
+  const twice = deletedReportNote(withNote, new Date(2026, 10, 1));
+  if (twice !== withNote) throw new Error(`לא אידמפוטנטי — השורה הוכפלה: ${JSON.stringify(twice)}`);
+  return 'טקסט מדויק, נוסף בסוף, לא מוכפל';
+});
+
+await test('הסורק המחזורי לא מייבא: sweepSprayReports קורא בלבד ומחזיר { awaiting, announced }', async () => {
+  const markerFilter = enc(`FIND('[מדוח ריסוסים #', {הערות})`);
+  const countImported = async () => (await api('GET', `${enc('ריסוסים')}?raw=1&includeTest=1&filterByFormula=${markerFilter}`)).length;
+  const before = await countImported();
+  const result = await sweepSprayReports({});
+  if (result == null || typeof result.awaiting !== 'number' || typeof result.announced !== 'number') {
+    throw new Error(`הסריקה אמורה להחזיר { awaiting, announced }, התקבל: ${JSON.stringify(result)}`);
+  }
+  if ('imported' in result) throw new Error('הסריקה עדיין מדווחת "imported" — היא לא אמורה לייבא כלום (החלטת תמר 14.10)');
+  const after = await countImported();
+  if (after !== before) throw new Error(`הסריקה שינתה את מספר הטיפולים שיובאו מדוחות: ${before} → ${after} — היא חייבת להיות קריאה בלבד`);
+  return `${result.awaiting} דוחות ממתינים לאישור, ${result.announced} הוכרזו עכשיו, ${after} טיפולים-מדוח ללא שינוי`;
+}, 30000);
+
+// מעגל האישור המלא מקצה לקצה. "הניתוח" **מדומה** — 'Attachment Summary'
+// הוא multilineText (לא שדה-AI; אומת מול הסכימה החיה), ולכן הבדיקה כותבת
+// אותו בעצמה ואינה תלויה ב-Make בכלל. הרשומה עצמה כן נוצרת דרך אותו
+// /api/upload-document שהמסך משתמש בו, עם קובץ-אמת שנותח בהצלחה בעבר
+// (חוק הפרויקט לטבלאות מנוטרות) — ולכן הבדיקה מגודרת ב-RUN_UPLOAD_TESTS.
+// ה-MARK נישא גם בשם-הקובץ (סימון הדוח) וגם בשדה 'מיקום' של כל שורה
+// מדומה — שם הוא נכנס ל"הערות" של הטיפולים שייווצרו, כך שגם הם מסומנים
+// כרשומות בדיקה ולא ידלפו למסך של תמר.
+await test('דוח ריסוסים AN: ניתוח מדומה → 0 טיפולים וממתין לאישור · dryRun · ייבוא → N · ייבוא שני → 0 · מחיקה משאירה את הטיפולים', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — יוצר רשומה בטבלה מנוטרת ע"י Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
+  const structName = String(structures[0]?.['מספר מבנה'] || '').trim();
+  const matName = String(materials[0]?.['שם חומר'] || '').trim();
+  if (!structName || !matName) throw new Error('אין מבנה/חומר קיימים בבסיס — אי אפשר לבנות שורות שייפתרו');
+
+  const rec = await createWithFile('דוחות ריסוסים', 'דוח ריסוסים', {}, `${MARK}-${REAL_FIXTURE_NAME}`);
+  // שורה 1 נפתרת במלואה; שורה 2 עם מבנה שלא קיים — נוצרת, אבל התצוגה
+  // המקדימה חייבת לסמן אותה כ"מבנה לא זוהה".
+  const fakeRows = [
+    { 'סוג טיפול': 'ריסוס', 'תאריך': '03/03/2031', 'מבנה': structName, 'חומר': matName, 'מינון': '40', 'מיקום': MARK },
+    { 'סוג טיפול': 'ריסוס', 'תאריך': '05/03/2031', 'מבנה': `מבנה-לא-קיים-${MARK}`, 'חומר': matName, 'מינון': '1 ליטר לדונם', 'מיקום': MARK },
+  ];
+  await patch('דוחות ריסוסים', rec.id, { 'Attachment Summary': JSON.stringify(fakeRows) });
+
+  const problems = [];
+  const histOf = async () => (await api('GET', 'spray-reports/history?includeTest=1')).find((h) => h.id === rec.id);
+  const treatmentsOf = async (number) => api('GET', `${enc('ריסוסים')}?raw=1&includeTest=1&filterByFormula=${enc(`FIND('${markerOf(number)}', {הערות})`)}`);
+
+  // 1. אחרי "הניתוח": ממתין לאישור, ו-0 טיפולים ביומן
+  const h1 = await histOf();
+  if (!h1) throw new Error('הדוח לא מופיע בהיסטוריה');
+  const number = h1.number;
+  if (number == null) throw new Error('לדוח אין "מספור אוטומטי" — אין סמן מקור');
+  if (h1.summary !== 'ready' || h1.rows !== 2) problems.push(`אחרי הניתוח המדומה: summary=${h1.summary}, rows=${h1.rows} (צפוי ready/2)`);
+  if (h1.awaitingApproval !== true) problems.push('awaitingApproval אינו true — המסך לא יציג "ממתין לאישור"');
+  if (h1.imported !== 0) problems.push(`imported=${h1.imported} לפני אישור — צפוי 0`);
+  if ((await treatmentsOf(number)).length !== 0) problems.push('נוצרו טיפולים בלי אישור — זה בדיוק מה ש-AN סגר');
+
+  // 2. dryRun: מחזיר שורות, לא כותב כלום
+  const dry = await api('POST', `spray-reports/${rec.id}/import?dryRun=1`);
+  if (dry.rows?.length !== 2) problems.push(`dryRun החזיר ${dry.rows?.length} שורות (צפוי 2)`);
+  if (dry.created !== 0) problems.push(`dryRun דיווח created=${dry.created}`);
+  if (!dry.unresolvedStructures?.some((s) => s.includes(MARK))) problems.push('dryRun לא דיווח על המבנה שלא זוהה');
+  if ((await treatmentsOf(number)).length !== 0) problems.push('dryRun יצר טיפולים');
+
+  // 3. ייבוא אמיתי (זו הלחיצה של המנהלת הראשית)
+  const imp = await api('POST', `spray-reports/${rec.id}/import`);
+  const made = await treatmentsOf(number);
+  made.forEach((t) => cleanup.push({ table: 'ריסוסים', id: t.id }));
+  if (imp.created !== 2) problems.push(`ייבוא ראשון יצר ${imp.created} טיפולים (צפוי 2)`);
+  if (made.length !== 2) problems.push(`ביומן ${made.length} טיפולים עם הסמן (צפוי 2)`);
+
+  // 4. ייבוא שני — אידמפוטנטי
+  const again = await api('POST', `spray-reports/${rec.id}/import`);
+  if (again.created !== 0) problems.push(`ייבוא שני יצר ${again.created} טיפולים — אמור להיות אידמפוטנטי`);
+  if (again.skipped !== 2) problems.push(`ייבוא שני דילג ${again.skipped} (צפוי 2)`);
+
+  // 5. מחיקת הדוח — הטיפולים **נשארים**, עם הערה
+  const delRes = await api('DELETE', `spray-reports/${rec.id}`);
+  const ci = cleanup.findIndex((c) => c.table === 'דוחות ריסוסים' && c.id === rec.id);
+  if (ci >= 0) cleanup.splice(ci, 1); // נמחק כאן — שלא ידווח כ"לא נוקה"
+  if (delRes.keptTreatments !== 2) problems.push(`המחיקה דיווחה keptTreatments=${delRes.keptTreatments} (צפוי 2)`);
+  if ('deletedTreatments' in delRes) problems.push('המחיקה עדיין מדווחת deletedTreatments — אין יותר מחיקת טיפולים');
+  const afterDelete = await treatmentsOf(number);
+  if (afterDelete.length !== 2) problems.push(`אחרי מחיקת הדוח נשארו ${afterDelete.length} טיפולים (צפוי 2 — המחיקה לא אמורה למחוק טיפולים)`);
+  for (const t of afterDelete) {
+    if (!DELETED_REPORT_NOTE_RE.test(String(t['הערות'] || ''))) problems.push(`טיפול ${t.id.slice(-5)} בלי הערת "הדוח המקורי נמחק"`);
+  }
+
+  if (problems.length) throw new Error(problems.join('; '));
+  return `ממתין לאישור (2 שורות, 0 טיפולים) → dryRun → ייבוא 2 → ייבוא שני 0 → מחיקה: 2 טיפולים נשארו עם הערה`;
+}, 90000);
+
 await test('אבטחה: /api/spray-reports — עובד 403 בשניהם, מנהל עבודה 200 היסטוריה / 403 ייבוא', async () => {
   const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
   const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
@@ -2710,6 +2835,9 @@ await test('אבטחה: /api/spray-reports — עובד 403 בשניהם, מנה
     if (!Array.isArray(h)) problems.push('manager GET history לא החזיר מערך');
     try { await apiAs(mLogin.token, 'POST', `spray-reports/${target}/import?dryRun=1`); problems.push('manager POST import עבר'); }
     catch (e) { if (!String(e.message).startsWith('403')) problems.push(`manager POST: ${e.message}`); }
+    // AN: המחיקה היא owner-בלבד גם אחרי שהיא כבר לא מוחקת טיפולים
+    try { await apiAs(mLogin.token, 'DELETE', `spray-reports/${target}`); problems.push('manager DELETE עבר'); }
+    catch (e) { if (!String(e.message).startsWith('403')) problems.push(`manager DELETE: ${e.message}`); }
   }
   try { await apiAs(null, 'GET', 'spray-reports/history'); problems.push('בלי טוקן עבר'); }
   catch (e) { if (!String(e.message).startsWith('401')) problems.push(`בלי טוקן: ${e.message}`); }

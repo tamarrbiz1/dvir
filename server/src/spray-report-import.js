@@ -4,28 +4,30 @@
 // זרימת ההעלאה: המשתמש מעלה צילום/PDF של דוח ריסוסים → נוצרת רשומה
 // ב"דוחות ריסוסים" → אוטומציית Make מנתחת את הקובץ וכותבת לשדה
 // "Attachment Summary" מערך JSON של שורות (סוג טיפול, תאריך/טווח,
-// מבנים, גידול/זן, חומר, מינון). עד עכשיו אף אחד לא הפך את השורות
-// האלה לרשומות "ריסוסים" — ולכן דוח שהועלה מעולם לא הופיע ביומן
-// הטיפולים (תלונת הלקוחה). הקובץ הזה סוגר את הפער:
+// מבנים, גידול/זן, חומר, מינון). השורות האלה הופכות לרשומות "ריסוסים"
+// ביומן הטיפולים:
 //
 //   importSprayReport(reportId)  — שורה בדוח → רשומת "ריסוסים" אחת
 //   sprayReportsHistory()        — היסטוריית הדוחות + מצב הניתוח/הייבוא
-//   scheduleSprayReportImport()  — אחרי העלאה: מחכים ל-Make ומייבאים
-//   startSprayImportSweep()      — איסוף מחזורי לדוחות שנפלו בין הכיסאות
+//   scheduleSprayReportImport()  — אחרי העלאה: ממתין לניתוח ומסמן "ממתין לאישור"
+//   startSprayImportSweep()      — איסוף מחזורי: אותו סימון לדוחות שנפלו בין הכיסאות
+//
+// ⚠️ **אין ייבוא אוטומטי — החלטת תמר, 14.10.2026 (משימה AN).** עד 14.10
+// שתי הפונקציות האחרונות ייבאו בעצמן את כל שורות הדוח ליומן ברגע
+// שהניתוח הסתיים, ולכן הופיעו ביומן טיפולים שהלקוחה לא אישרה. מעתה הן
+// **רק** ממתינות לניתוח ומסמנות את הדוח "ממתין לאישור" (ר'
+// isAwaitingApproval). השמות נשארו — הם מוזכרים בהערות ובמשימות לרוחב
+// הקוד — אבל אף אחת מהן לא יוצרת יותר שום רשומת "ריסוסים". היצירה
+// קורית **רק** ב-importSprayReport, כלומר רק מלחיצה מפורשת של המנהלת
+// הראשית על "ייבא לטיפולים" (POST /api/spray-reports/:id/import,
+// requireOwner).
 //
 // סמן המקור: כל טיפול מיובא מתחיל ב"הערות" בשורה
 //   [מדוח ריסוסים #<מספור אוטומטי>] שורה <n>
 // זה מה שגורם ל-UI (treatmentSource ב-TreatmentsPage.jsx) להציג "מדוח",
 // וזה גם מפתח האידמפוטנטיות — ייבוא חוזר של אותו דוח לא יוצר כפילויות.
 // ============================================================
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { getBase, fetchRecords, createRecord, deleteRecord } from './airtable.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const STATE_PATH = path.join(DATA_DIR, 'spray-import-state.json');
 
 export const REPORTS_TABLE = 'דוחות ריסוסים';
 export const TREATMENTS_TABLE = 'ריסוסים';
@@ -409,6 +411,9 @@ export async function importSprayReport(reportId, { dryRun = false } = {}) {
     return result;
   }
   const { created, attachmentDropped } = await createInBatches(toCreate.map((b) => b.fields));
+  // הדוח יצא ממצב "ממתין לאישור" (או ש"ממתין" שלו השתנה) — שהסריקה
+  // המחזורית תכריז עליו שוב רק אם באמת נשארו שורות לא-מיובאות.
+  announcedAwaiting.delete(reportId);
   result.created = created;
   result.attachmentDropped = attachmentDropped;
   result.status = 'imported';
@@ -419,17 +424,37 @@ export async function importSprayReport(reportId, { dryRun = false } = {}) {
 // ============================================================
 // היסטוריית הדוחות — לטאב "דוחות" במסך הטיפולים
 // ============================================================
+export const DELETED_REPORT_NOTE_RE = /^⚠ הדוח המקורי נמחק \(/m;
+
 /**
- * מחיקת דוח ריסוסים — כולל הטיפולים שיובאו ממנו ליומן (הוראת תמר
- * 7.10.2026: "אפשרות מחיקה שלא קיימת שם כרגע"). בלי זה, מחיקת הדוח
- * הייתה משאירה טיפולים יתומים ביומן בלי שום הפניה למקור.
+ * ההערה שנוספת לטיפול שהדוח שממנו הוא נוצר נמחק. פונקציה טהורה —
+ * אידמפוטנטית: אם השורה כבר קיימת בהערות, מוחזר הטקסט ללא שינוי.
+ * @param {string} notes הערות הטיפול כמו שהן ב-Airtable
+ * @param {Date} when מועד המחיקה
+ */
+export function deletedReportNote(notes, when = new Date()) {
+  const current = String(notes ?? '').trim();
+  if (DELETED_REPORT_NOTE_RE.test(current)) return current;
+  const stamp = `${pad2(when.getDate())}.${pad2(when.getMonth() + 1)}.${when.getFullYear()}`;
+  const line = `⚠ הדוח המקורי נמחק (${stamp})`;
+  return current ? `${current}\n${line}` : line;
+}
+
+/**
+ * מחיקת דוח ריסוסים — **רשומת הדוח בלבד**.
  *
- * מה נמחק: רשומת הדוח, וכל רשומת "ריסוסים" שההערות שלה נושאות את
- * הסמן [מדוח ריסוסים #N] של אותו דוח. טיפול שסומן ידנית "בוצע" על-ידי
- * תמר לא נמחק אוטומטית — הוא נשאר ביומן עם הערה שהדוח נמחק (כדי לא
- * לאבד תיעוד של עבודה אמיתית בשטח).
+ * ⚠️ **שינוי התנהגות, 14.10.2026 (משימה AN) — החלטת תמר:** "בהערה
+ * כשמוחקים את הדוח ברשימה יכתב: המחיקה לא תגרום למחיקת טיפולים
+ * שנוצרו". ההוראה מ-7.10.2026 (מחיקת הדוח מוחקת גם את הטיפולים שיובאו
+ * ממנו, חוץ מאלה שסומנו "בוצע") **הוחלפה** — מחיקת דוח היא מעתה
+ * מחיקה של המסמך, לא ביטול של עבודה שכבר נרשמה ביומן.
  *
- * מחזיר { ok, deleted, keptMarkedDone, orphanedAttachments } לפידבק ב-UI.
+ * מה קורה: רשומת הדוח נמחקת; כל רשומת "ריסוסים" שההערות שלה נושאות
+ * את הסמן [מדוח ריסוסים #N] **נשארת ביומן כמו שהיא**, ומקבלת בהערות
+ * את השורה "⚠ הדוח המקורי נמחק (DD.MM.YYYY)" — אותו מנגנון שהיה קיים
+ * לטיפולים שסומנו "בוצע" — כדי שלא יאבד המקור.
+ *
+ * מחזיר { ok, number, keptTreatments, noted, errors } לפידבק ב-UI.
  */
 export async function deleteSprayReport(reportId) {
   const base = getBase();
@@ -437,7 +462,7 @@ export async function deleteSprayReport(reportId) {
   const number = rec.fields[REPORT_NUMBER_FIELD];
   const marker = number != null ? markerOf(number) : null;
 
-  // 1. איסוף הטיפולים שיובאו מהדוח הזה
+  // 1. איסוף הטיפולים שיובאו מהדוח הזה (לא כדי למחוק — כדי לסמן)
   let treatments = [];
   if (marker) {
     treatments = await fetchRecords(TREATMENTS_TABLE, {
@@ -445,47 +470,46 @@ export async function deleteSprayReport(reportId) {
       fields: ['הערות', 'בוצע', 'תאריך'],
     });
   }
-  const toDelete = treatments.filter((t) => !t['בוצע']).map((t) => t.id);
-  const keptMarkedDone = treatments.length - toDelete.length;
 
-  // 2. השהיה: מנקים את הדוח קודם כדי שתגובת ההצלחה לא תלויה בניקוי
+  // 2. מנקים את הדוח קודם, כדי שתגובת ההצלחה למשתמשת לא תהיה תלויה
+  //    בסימון ההערות (שהוא תיעוד, לא הפעולה שהיא ביקשה).
   await deleteRecord(REPORTS_TABLE, reportId);
+  announcedAwaiting.delete(reportId);
 
-  // 3. הטיפולים — מחיקה במנות (Airtable: 10 לבקשה)
-  let deleted = 0;
+  // 3. ההערה "הדוח המקורי נמחק" לכל טיפול שיובא ממנו — במנות של 10
+  //    (Airtable: 10 רשומות לבקשה).
+  const when = new Date();
   const errors = [];
-  for (let i = 0; i < toDelete.length; i += 10) {
-    const chunk = toDelete.slice(i, i + 10);
+  let noted = 0;
+  for (let i = 0; i < treatments.length; i += 10) {
+    const chunk = treatments.slice(i, i + 10);
+    const updates = chunk.map((t) => ({ id: t.id, fields: { 'הערות': deletedReportNote(t['הערות'], when) } }));
     try {
-      await base(TREATMENTS_TABLE).destroy(chunk);
-      deleted += chunk.length;
+      await base(TREATMENTS_TABLE).update(updates);
+      noted += chunk.length;
     } catch (e) {
       errors.push(e.message);
-      console.error(`[spray-delete] מחיקת טיפולים מדוח #${number} נכשלה בחלק מהמנות: ${e.message}`);
+      console.error(`[spray-delete] סימון "הדוח המקורי נמחק" לטיפולים מדוח #${number} נכשל בחלק מהמנות: ${e.message}`);
     }
-    if (i + 10 < toDelete.length) await sleep(250);
+    if (i + 10 < treatments.length) await sleep(250);
   }
 
-  // 4. הטיפולים שנשארו (סומנו בוצע ידנית) — מוסיפים הערה שהדוח נמחק,
-  //    כדי שלא יישארו עם הפניה למסמך שכבר אינו קיים.
-  if (keptMarkedDone) {
-    const kept = treatments.filter((t) => t['בוצע']).map((t) => t.id);
-    for (let i = 0; i < kept.length; i += 10) {
-      const chunk = kept.slice(i, i + 10);
-      const updates = chunk.map((id) => {
-        const src = treatments.find((t) => t.id === id);
-        const note = `${String(src?.['הערות'] || '').trim()}
-⚠ הדוח #${number} נמחק — הטיפול סומן ידנית "בוצע" ולכן נשאר ביומן`;
-        return { id, fields: { 'הערות': note } };
-      });
-      try { await base(TREATMENTS_TABLE).update(updates); }
-      catch (e) { console.error(`[spray-delete] סימון טיפולים שנשארו נכשל: ${e.message}`); }
-      if (i + 10 < kept.length) await sleep(250);
-    }
-  }
+  console.log(`[spray-delete] דוח #${number ?? reportId} נמחק: ${treatments.length} טיפולים נשארו ביומן, ${noted} סומנו${errors.length ? `, ${errors.length} שגיאות סימון` : ''}`);
+  return { ok: true, number, keptTreatments: treatments.length, noted, errors };
+}
 
-  console.log(`[spray-delete] דוח #${number ?? reportId} נמחק: ${deleted} טיפולים נמחקו, ${keptMarkedDone} נשארו (סומנו בוצע)${errors.length ? `, ${errors.length} שגיאות` : ''}`);
-  return { ok: true, number, deletedTreatments: deleted, keptMarkedDone, errors };
+/**
+ * "ממתין לאישור" (משימה AN, 14.10.2026) — פונקציה טהורה על שורת
+ * היסטוריה. דוח ממתין לאישור כשהניתוח הסתיים בהצלחה (`ready`), יש בו
+ * שורות, ולא כולן יובאו ליומן. זה **המצב הנגזר** ולא שדה ב-Airtable:
+ * אין הרשאת סכמה ליצור שדה, והמידע קיים ממילא (הסמן בהערות של
+ * הטיפולים הוא מקור-האמת ל"מה כבר יובא").
+ * @param {{summary?: string, rows?: number, imported?: number}} report
+ */
+export function isAwaitingApproval(report) {
+  if (!report || report.summary !== 'ready') return false;
+  const rows = Number(report.rows) || 0;
+  return rows > 0 && (Number(report.imported) || 0) < rows;
 }
 
 export async function sprayReportsHistory() {
@@ -514,7 +538,7 @@ export async function sprayReportsHistory() {
       if (!from || range.start < from) from = range.start;
       if (!to || range.end > to) to = range.end;
     }
-    return {
+    const row = {
       id: r.id,
       number,
       uploadedAt: r[REPORT_UPLOADED_FIELD] || null,
@@ -525,34 +549,55 @@ export async function sprayReportsHistory() {
       range: from ? { from, to } : null,
       isTest: isTestRecord(r),
     };
+    // משימה AN: המסך מציג "ממתין לאישור — N שורות" ולא מייבא לבד
+    return { ...row, awaitingApproval: isAwaitingApproval(row) };
   }).sort((a, b) => (b.number || 0) - (a.number || 0));
 }
 
 // ============================================================
-// ייבוא אוטומטי
+// המתנה לניתוח וסימון "ממתין לאישור" (משימה AN, 14.10.2026)
 // ------------------------------------------------------------
+// ⚠️ **שתי הפונקציות כאן לא מייבאות כלום.** עד 14.10 הן קראו ל-
+// importSprayReport בעצמן, וכך נוצרו ביומן טיפולים שהלקוחה לא אישרה.
+// מה שנשאר מהן:
 // 1) אחרי העלאה: Make מנתח ברקע (שניות עד דקות) — בודקים כל 15 שניות
-//    עד 10 דקות, ומייבאים ברגע שהסיכום מתמלא.
-// 2) איסוף מחזורי (כל 10 דקות + ~60 שניות אחרי עליית השרת): דוח עם
-//    סיכום מוכן ו-0 טיפולים מיובאים → מיובא. רק דוחות שהועלו אחרי
-//    תאריך-הסף (cutoff) — נשמר ב-server/data/spray-import-state.json,
-//    ברירת מחדל: זמן ההרצה הראשונה. דוחות ישנים (לפני הפיצ'ר) לא
-//    מיובאים בשקט — הלקוחה מחליטה עליהם מהכפתור במסך.
-// רשומות בדיקה (QA-...) לעולם לא מיובאות אוטומטית.
+//    עד 10 דקות, וברגע שהסיכום מתמלא מסמנים את הדוח "ממתין לאישור"
+//    ומנקים את מטמון-הקריאה (onChange), כדי שהתג יופיע במסך מיד.
+// 2) איסוף מחזורי (כל 10 דקות + ~60 שניות אחרי עליית השרת): דוח שהניתוח
+//    שלו מוכן ולא כל שורותיו יובאו — מסומן "ממתין לאישור". זו רשת
+//    ביטחון למקרה שהפולינג של ההעלאה נקטע (restart/deploy מוחק אותו —
+//    הוא חי בזיכרון התהליך).
+//
+// תאריך-הסף (cutoff) שהיה שמור ב-server/data/spray-import-state.json
+// **אינו בשימוש יותר**: הוא נועד למנוע ייבוא-בשקט של דוחות ישנים, ואין
+// יותר שום ייבוא בשקט. (הקובץ נשאר על הדיסק ומתעלמים ממנו.)
+//
+// רשומות בדיקה (QA-...) מדולגות לגמרי, כמו קודם.
 // ============================================================
-function loadState() {
-  if (existsSync(STATE_PATH)) {
-    try { const s = JSON.parse(readFileSync(STATE_PATH, 'utf8')); if (s?.cutoff) return s; } catch { /* נבנה מחדש למטה */ }
-  }
-  const state = { cutoff: new Date().toISOString(), createdAt: new Date().toISOString() };
-  try { mkdirSync(DATA_DIR, { recursive: true }); writeFileSync(STATE_PATH, JSON.stringify(state, null, 2), 'utf8'); }
-  catch (e) { console.warn(`[spray-import] לא ניתן לשמור את קובץ המצב: ${e.message}`); }
-  return state;
+
+// דוחות שכבר הוכרזו "ממתין לאישור" → מספר השורות שבגינן הוכרזו.
+// in-memory בלבד (אין הרשאת סכמה ליצור שדה, והמצב נגזר ממילא ב-
+// sprayReportsHistory). התפקיד היחיד: שהאיסוף המחזורי לא יכתוב את אותה
+// שורת-לוג ולא ינקה את המטמון כל 10 דקות לנצח. מספר השורות הוא חלק
+// מהמפתח כדי שניתוח שהתעדכן (Make כתב מחדש) יוכרז שוב.
+const announcedAwaiting = new Map(); // reportId -> rows
+
+/** מכריז "ממתין לאישור" פעם אחת לכל (דוח, מספר-שורות). מחזיר אם הוכרז עכשיו */
+function announceAwaitingApproval({ id, number, rows }, onChange) {
+  if (announcedAwaiting.get(id) === rows) return false;
+  announcedAwaiting.set(id, rows);
+  console.log(`[spray-approval] דוח #${number ?? id}: הניתוח הסתיים — ${rows} שורות **ממתינות לאישור**. אין ייבוא אוטומטי; הלקוחה מייבאת ממסך הטיפולים ← דוחות.`);
+  if (onChange) onChange({ reportId: id, number, rows });
+  return true;
 }
 
 const activePolls = new Set();
 
-export function scheduleSprayReportImport(reportId, { afterImport, intervalMs = 15000, maxMs = 10 * 60 * 1000 } = {}) {
+/**
+ * אחרי העלאת דוח: ממתין שהניתוח של Make יסתיים, ואז מסמן "ממתין
+ * לאישור". **לא מייבא.** (השם נשאר כמו שהיה — ר' כותרת הקובץ.)
+ */
+export function scheduleSprayReportImport(reportId, { onChange, intervalMs = 15000, maxMs = 10 * 60 * 1000 } = {}) {
   if (activePolls.has(reportId)) return;
   activePolls.add(reportId);
   const startedAt = Date.now();
@@ -568,9 +613,9 @@ export function scheduleSprayReportImport(reportId, { afterImport, intervalMs = 
         return;
       }
       activePolls.delete(reportId);
-      if (parsed.status !== 'ready') { console.log(`[spray-import] דוח #${rec.fields[REPORT_NUMBER_FIELD]}: סיכום ${parsed.status} — אין מה לייבא`); return; }
-      const result = await importSprayReport(reportId);
-      if (result.created && afterImport) afterImport(result);
+      const number = rec.fields[REPORT_NUMBER_FIELD];
+      if (parsed.status !== 'ready') { console.log(`[spray-import] דוח #${number}: סיכום ${parsed.status} — אין שורות לאישור`); return; }
+      announceAwaitingApproval({ id: reportId, number, rows: parsed.rows.length }, onChange);
     } catch (e) {
       activePolls.delete(reportId);
       // הרשומה נמחקה בינתיים (למשל ניקוי בדיקות) — עוצרים בשקט
@@ -580,25 +625,25 @@ export function scheduleSprayReportImport(reportId, { afterImport, intervalMs = 
   setTimeout(tick, intervalMs);
 }
 
-export async function sweepSprayReports({ afterImport } = {}) {
-  const state = loadState();
+/**
+ * סריקה מחזורית. **לא מייבאת כלום** — רק מסמנת דוחות שממתינים לאישור.
+ * מחזירה { awaiting, announced }: כמה ממתינים בסך הכל, וכמה מהם הוכרזו
+ * עכשיו (ראשונה אחרי עליית השרת תכריז את כולם).
+ */
+export async function sweepSprayReports({ onChange } = {}) {
   const history = await sprayReportsHistory();
-  let imported = 0;
+  let awaiting = 0;
+  let announced = 0;
   for (const r of history) {
-    if (r.isTest || r.summary !== 'ready' || r.imported > 0) continue;
-    if (!r.uploadedAt || r.uploadedAt < state.cutoff) continue;
-    try {
-      const result = await importSprayReport(r.id);
-      if (result.created) { imported++; if (afterImport) afterImport(result); }
-    } catch (e) {
-      console.error(`[spray-import] איסוף — דוח #${r.number}: ${e.message}`);
-    }
+    if (r.isTest || !isAwaitingApproval(r)) continue;
+    awaiting++;
+    if (announceAwaitingApproval({ id: r.id, number: r.number, rows: r.rows }, onChange)) announced++;
   }
-  return imported;
+  return { awaiting, announced };
 }
 
-export function startSprayImportSweep({ afterImport, firstDelayMs = 60 * 1000, intervalMs = 10 * 60 * 1000 } = {}) {
-  const run = () => sweepSprayReports({ afterImport }).catch((e) => console.error(`[spray-import] איסוף נכשל: ${e.message}`));
+export function startSprayImportSweep({ onChange, firstDelayMs = 60 * 1000, intervalMs = 10 * 60 * 1000 } = {}) {
+  const run = () => sweepSprayReports({ onChange }).catch((e) => console.error(`[spray-approval] סריקה נכשלה: ${e.message}`));
   setTimeout(run, firstDelayMs);
   const timer = setInterval(run, intervalMs);
   if (typeof timer.unref === 'function') timer.unref();

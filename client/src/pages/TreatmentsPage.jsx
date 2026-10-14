@@ -959,6 +959,10 @@ function MaterialsTab({ materials, search, setSearch, canEdit, api, onChanged, o
 // מה יובא לטיפולים — לאורך שנים, עם בורר תקופה כמו בלוח הבקרה.
 // הסינון לפי התקופה שהדוח מכסה (תאריכי הריסוסים שבו); דוח שעוד לא
 // נותח מסונן לפי מועד ההעלאה.
+//
+// משימה AN (14.10.2026) — **אין ייבוא אוטומטי**: דוח שנותח מקבל את התג
+// "ממתין לאישור — N שורות" (ולא "נותח"), והטיפולים נוצרים רק בלחיצה
+// מפורשת של המנהלת הראשית על "✓ ייבא לטיפולים" + אישור.
 // ============================================================
 const SUMMARY_BADGE = {
   pending: { label: 'ממתין לניתוח', cls: 'badge-warn' },
@@ -972,9 +976,25 @@ function reportStatus(r) {
   if (r.summary === 'ready') {
     if (r.imported >= r.rows) return { label: `יובא — ${formatNumber(r.imported, 0)} טיפולים`, cls: 'badge-ok', imported: true };
     if (r.imported > 0) return { label: `יובא חלקית — ${formatNumber(r.imported, 0)} מתוך ${formatNumber(r.rows, 0)}`, cls: 'badge-warn', imported: false };
-    return { label: `נותח — ${formatNumber(r.rows, 0)} שורות`, cls: 'badge-ok', imported: false };
+    return { label: `ממתין לאישור — ${formatNumber(r.rows, 0)} שורות`, cls: 'badge-warn', imported: false };
   }
   return { ...(SUMMARY_BADGE[r.summary] || SUMMARY_BADGE.pending), imported: false };
+}
+
+/**
+ * שורת תצוגה-מקדימה שלא זוהתה במלואה: הסיבות שימנעו/יפגעו ביצירה.
+ * `blocking` — השורה לא תיווצר בכלל (אין תאריך); אחרת היא תיווצר חלקית
+ * (מבנה/חומר שלא זוהו) ולכן מסומנת באדום עם הסיבה.
+ */
+function previewProblems(r) {
+  const reasons = [];
+  // שורה שכבר קיימת ביומן מוחזרת כ-{line, status:'exists'} בלבד — אין בה
+  // שדות ניתוח, ולכן אין מה לסמן בה.
+  if (r.status === 'exists') return { reasons, blocking: false };
+  if (r.status === 'no-date') reasons.push('תאריך לא זוהה — השורה לא תיובא');
+  if (r.unresolvedStructures?.length) reasons.push(`מבנה לא נמצא: ${r.unresolvedStructures.join(', ')}`);
+  if (!r.material) reasons.push('חומר חסר בשורה');
+  return { reasons, blocking: r.status === 'no-date' };
 }
 
 function ReportsTab({ canEdit, onImported, onOpenInCalendar }) {
@@ -1023,8 +1043,20 @@ function ReportsTab({ canEdit, onImported, onOpenInCalendar }) {
     ? [from ? `מ-${formatDate(from)}` : '', to ? `עד ${formatDate(to)}` : ''].filter(Boolean).join(' ')
     : periodDisclosure(preset);
 
+  // משימה AN: ייבוא אמיתי הוא **החלטה** של המנהלת הראשית ולא תוצר-צד של
+  // העלאה, ולכן הוא עובר דרך אישור מפורש — משני המקומות שמייבאים (הכפתור
+  // בכרטיס והכפתור בתוך התצוגה המקדימה).
   const runImport = async (r, dryRun) => {
     if (busyId) return;
+    if (!dryRun) {
+      const pending = Math.max(0, (r.rows || 0) - (r.imported || 0));
+      const yes = await confirmDialog({
+        title: `ייבוא דוח ריסוסים #${r.number ?? '—'}`,
+        message: `לייבא ${formatNumber(pending, 0)} טיפולים ליומן?`,
+        confirmLabel: 'ייבא לטיפולים',
+      });
+      if (!yes) return;
+    }
     setBusyId(r.id);
     try {
       const res = await authFetch(`/api/spray-reports/${r.id}/import${dryRun ? '?dryRun=1' : ''}`, { method: 'POST' });
@@ -1047,14 +1079,19 @@ function ReportsTab({ canEdit, onImported, onOpenInCalendar }) {
 
   const rangeText = (r) => (r.range ? (r.range.from === r.range.to ? formatDate(r.range.from) : `${formatDate(r.range.from)} – ${formatDate(r.range.to)}`) : '—');
 
-  // מחיקת דוח ריסוסים (הוראת תמר 7.10): דורשת אישור מפורש, כי היא עלולה
-  // למחוק גם טיפולים שיובאו מהדוח. טיפולים שסומנו ידנית "בוצע" נשארים.
+  // מחיקת דוח ריסוסים. **משימה AN (14.10, החלטת תמר):** המחיקה מוחקת רק
+  // את המסמך — הטיפולים שנוצרו ממנו נשארים ביומן — וההודעה אומרת את זה
+  // **בכל מקרה**, גם כשלא יובא כלום. (ההוראה מ-7.10, שבה המחיקה מחקה גם
+  // את הטיפולים, הוחלפה.)
   const removeReport = async (r) => {
     const yes = await confirmDialog({
       title: `מחיקת דוח ריסוסים #${r.number ?? '—'}`,
-      message: (r.imported
-        ? `הדוח יימחק, ואיתו ${formatNumber(r.imported, 0)} הטיפולים שנוצרו ממנו ביומן.\nטיפולים שסומנו ידנית "בוצע" יישארו.\nלא ניתן לשחזור — להמשיך?`
-        : 'הדוח יימחק ולא יינתן לשחזור.\nלהמשיך?'),
+      message: [
+        ...(r.imported ? [`מהדוח נוצרו ${formatNumber(r.imported, 0)} טיפולים ביומן.`] : []),
+        'הדוח יימחק ולא יינתן לשחזור.',
+        'המחיקה לא תגרום למחיקת טיפולים שנוצרו.',
+        'להמשיך?',
+      ].join('\n'),
       confirmLabel: 'מחק דוח', danger: true,
     });
     if (!yes) return;
@@ -1063,8 +1100,8 @@ function ReportsTab({ canEdit, onImported, onOpenInCalendar }) {
       const res = await authFetch(`/api/spray-reports/${r.id}`, { method: 'DELETE' });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.error || `שגיאת שרת (${res.status})`);
-      const kept = data?.keptMarkedDone || 0;
-      toast(`הדוח נמחק${data?.deletedTreatments ? ` · ${formatNumber(data.deletedTreatments, 0)} טיפולים הוסרו מהיומן` : ''}${kept ? ` · ${formatNumber(kept, 0)} טיפולים שנסמנו "בוצע" נשארו` : ''}`);
+      const kept = data?.keptTreatments || 0;
+      toast(`הדוח נמחק${kept ? ` · ${formatNumber(kept, 0)} טיפולים נשארו ביומן עם הערה שהדוח המקורי נמחק` : ''}`);
       await loadHistory();
       onImported?.();
     } catch (e) {
@@ -1096,7 +1133,7 @@ function ReportsTab({ canEdit, onImported, onOpenInCalendar }) {
         <div className="empty-state">
           <div className="icon">📄</div>
           <div>{reports.length ? 'אין דוחות ריסוסים בתקופה שנבחרה' : 'עדיין לא הועלו דוחות ריסוסים'}</div>
-          <div style={{ fontSize: 13, marginTop: 6 }}>לחצו "⬆️ העלאת דוח" למעלה — אחרי הניתוח הטיפולים ייובאו ליומן אוטומטית</div>
+          <div style={{ fontSize: 13, marginTop: 6 }}>לחצו "⬆️ העלאת דוח" למעלה — אחרי הניתוח הדוח ימתין כאן לאישור, והטיפולים ייובאו ליומן רק בלחיצה על "ייבא לטיפולים"</div>
         </div>
       ) : (
         <div className="grid">
@@ -1128,7 +1165,7 @@ function ReportsTab({ canEdit, onImported, onOpenInCalendar }) {
                   {canEdit && r.summary === 'ready' && (
                     <>
                       <button className="btn btn-sm btn-ghost" disabled={!!busyId} onClick={() => runImport(r, true)}>{busy ? '...' : '👁 תצוגה מקדימה'}</button>
-                      <button className="btn btn-sm btn-primary" disabled={!!busyId || st.imported} title={st.imported ? 'כל השורות כבר יובאו' : 'יצירת טיפולים ביומן מכל שורה בדוח'} onClick={() => runImport(r, false)}>{busy ? 'מייבא...' : '⬇️ ייבא לטיפולים'}</button>
+                      <button className="btn btn-sm btn-primary" disabled={!!busyId || st.imported} title={st.imported ? 'כל השורות כבר יובאו' : 'יצירת טיפולים ביומן מכל שורה בדוח — אחרי אישור'} onClick={() => runImport(r, false)}>{busy ? 'מייבא...' : '✓ ייבא לטיפולים'}</button>
                     </>
                   )}
                 </div>
@@ -1159,6 +1196,7 @@ function ImportPreview({ report, result, canEdit, busy, onClose, onImport }) {
           {formatNumber(toCreate, 0)} טיפולים ייווצרו · {formatNumber(result?.skipped || 0, 0)} ידולגו
           {result?.createdMaterials?.length ? ` · חומרים חדשים שייווצרו: ${result.createdMaterials.join(', ')}` : ''}
           {result?.unresolvedStructures?.length ? ` · מבנים שלא זוהו: ${result.unresolvedStructures.join(', ')}` : ''}
+          <div style={{ marginTop: 4 }}>זו תצוגה בלבד — עד לחיצה על "ייבא" לא נוצר שום טיפול ביומן.</div>
         </div>
         {rows.length === 0 ? <div className="empty-state">אין שורות בדוח</div> : (
           <div className="table-wrap" style={{ maxHeight: '55vh', overflow: 'auto' }}>
@@ -1167,8 +1205,11 @@ function ImportPreview({ report, result, canEdit, busy, onClose, onImport }) {
               <tbody>
                 {rows.map((r) => {
                   const [label, cls] = STATUS[r.status] || [r.status, ''];
+                  // משימה AN: שורה שלא זוהתה במלואה מסומנת באדום **עם הסיבה**,
+                  // כדי שההחלטה אם לייבא תתקבל מתוך ידיעה מה ייווצר חסר.
+                  const { reasons } = previewProblems(r);
                   return (
-                    <tr key={r.line}>
+                    <tr key={r.line} style={reasons.length ? { background: '#FEF2F2' } : undefined}>
                       <td>{r.line}</td>
                       <td style={{ whiteSpace: 'nowrap' }}>{r.date ? formatDate(r.date) : '—'}{r.endDate ? ` – ${formatDate(r.endDate)}` : ''}</td>
                       <td>{r.type || '—'}</td>
@@ -1180,7 +1221,11 @@ function ImportPreview({ report, result, canEdit, busy, onClose, onImport }) {
                         {r.cropFromPlan && <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>לפי תוכנית {r.planNumber ?? '—'}: {r.cropFromPlan}</div>}
                         {!r.cropFromPlan && r.date && <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>לא נמצאה תוכנית מתאימה לתאריך</div>}
                       </td>
-                      <td><span className={`badge ${cls}`}>{label}</span>{r.warnings?.length ? <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{r.warnings.join(' · ')}</div> : null}</td>
+                      <td>
+                        <span className={`badge ${cls}`}>{label}</span>
+                        {reasons.length ? <div style={{ fontSize: 11, color: '#991B1B', fontWeight: 600 }}>{reasons.join(' · ')}</div> : null}
+                        {r.warnings?.length ? <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{r.warnings.join(' · ')}</div> : null}
+                      </td>
                     </tr>
                   );
                 })}
