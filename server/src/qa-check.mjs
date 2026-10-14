@@ -5901,6 +5901,537 @@ await test('AM-4: הרשומות הריקות בתפוקה רבעונית מזו
   return `${empties.length} מתוך ${quarterly.length} ריקות: ${empties.map(label).join(', ') || 'אין'} (לא נמחקו — הנחיית תמר)`;
 }, READ_WARN_MS);
 
+// ============================================================
+// חלק AS (14.10.2026) — כרטיס הטיפול: מרסס, תוכניות שתילה, תמונות
+// ------------------------------------------------------------
+// AS-1 מרסס: אין טבלת מרססים/כלים ב-Airtable — הנתונים הם 3 שדות על
+//   רשומת הטיפול, וסה"כ ליטר המים הוא חישוב (client/src/utils/sprayer.js).
+// AS-2 תוכניות: `תוכנית שתילה` ב-`ריסוסים` הוא singleLineText שמחזיק
+//   מעכשיו 0/1/N מזהים מופרדים בפסיק. שלושת המצבים נבדקים — כולל
+//   "מבנים בלבד" (שדה ריק), שהוא תרחיש מוצר ולא מקרה-קצה.
+// AS-3 תמונות: העלאה/מחיקה דרך /api/treatments/:id/photos.
+//
+// ⚠️ הטבלה היחידה שנוגעים בה כאן היא `ריסוסים`, שאין לה אוטומציית ניתוח
+// מסמכים ב-Make. **לא נוצרות כאן הוצאות/חשבוניות/תעודות/צ'קים/דוחות
+// ריסוסים** (ר' CLAUDE.md, תקריות 2-3.9). שדה `דוח ריסוסים` לא נגוע.
+// הקובץ שמועלה בבדיקת התמונות הוא תמונה **אמיתית** מהמאגר ("לדוגמא.jpg"),
+// לא PNG סינתטי.
+// ============================================================
+await test('AS-1: חישוב נתוני המרסס (סה"כ ליטר = גודל × מספר, וחסר → לא צוין)', async () => {
+  const { sprayerInfo } = await import('../../client/src/utils/sprayer.js');
+  const full = sprayerInfo({ 'סוג מרסס': ' מרסס גב ', 'גודל מרסס בליטר': '500', 'מספר המרססים': 3 });
+  if (full.name !== 'מרסס גב') throw new Error(`שם המכשיר לא נוקה מרווחים: ${JSON.stringify(full.name)}`);
+  if (full.size !== 500 || full.count !== 3) throw new Error(`גודל/מספר לא נקראו: ${full.size}/${full.count}`);
+  if (full.water !== 1500) throw new Error(`סה"כ ליטר שגוי: ${full.water} (צפוי 1500)`);
+  // `מספר המרססים` ריק בכל הרשומות בפועל — חייב להיות "אין סה"כ", לא 0 ולא NaN
+  const noCount = sprayerInfo({ 'סוג מרסס': 'מרסס', 'גודל מרסס בליטר': '200', 'מספר המרססים': null });
+  if (noCount.water !== null) throw new Error(`בלי מספר מרססים הומצא סה"כ: ${noCount.water}`);
+  if (!noCount.any) throw new Error('רשומה עם שם וגודל סומנה כריקה');
+  const empty = sprayerInfo({});
+  if (empty.any || empty.water !== null || empty.name !== '') throw new Error(`רשומה ריקה לא זוהתה: ${JSON.stringify(empty)}`);
+  if (sprayerInfo(null).any) throw new Error('null הפיל/סומן כמלא');
+  return 'מלא → 1500 ליטר; חסר → null; ריק → "לא צוין"';
+}, READ_WARN_MS);
+
+await test('AS-2: קריאת `תוכנית שתילה` סובלת ריק / מזהה בודד / מופרד בפסיקים', async () => {
+  const { planIdList, planActiveOn, planChoicesFor } = await import('../../client/src/utils/treatmentPlans.js');
+  // שלושת המצבים שכל קורא חייב לסבול
+  if (planIdList('recA').join('|') !== 'recA') throw new Error('מזהה בודד (טיפול ישן) לא נקרא');
+  if (planIdList('recA,recB').join('|') !== 'recA|recB') throw new Error('רשימה מופרדת בפסיקים לא נקראה');
+  if (planIdList(' recA , recB ').join('|') !== 'recA|recB') throw new Error('רווחים סביב הפסיק לא נוקו');
+  for (const emptyish of ['', '   ', ',', ',,', null, undefined]) {
+    if (planIdList(emptyish).length !== 0) throw new Error(`ערך ריק (${JSON.stringify(emptyish)}) לא החזיר רשימה ריקה`);
+  }
+  // גם מערך-קישור (אם השדה יומר אי-פעם) לא מפיל
+  if (planIdList([{ id: 'recA' }, 'recB']).join('|') !== 'recA|recB') throw new Error('מערך לא נקרא');
+
+  // טווח פעיל: המעודכן גובר, ונפילה-לאחור למקוריים
+  const active = { id: 'recP1', 'מבנה': [{ id: 'recS1' }], 'תחילת שתילה מעודכנת': '2026-01-01', 'סוף קטיף מעודכן': '2026-06-30' };
+  const original = { id: 'recP2', 'מבנה': [{ id: 'recS1' }], 'תחילת שתילה מקורית': '2026-08-01', 'סוף קטיף מקורי': '2026-09-30' };
+  const noDates = { id: 'recP3', 'מבנה': [{ id: 'recS1' }] };
+  const other = { id: 'recP4', 'מבנה': [{ id: 'recS9' }], 'תחילת שתילה מעודכנת': '2026-01-01', 'סוף קטיף מעודכן': '2026-06-30' };
+  if (!planActiveOn(active, '2026-03-05', '2026-03-05')) throw new Error('תאריך בתוך הטווח לא זוהה כפעיל');
+  if (planActiveOn(active, '2026-07-05', '2026-07-05')) throw new Error('תאריך מחוץ לטווח זוהה כפעיל');
+  if (!planActiveOn(active, '2026-06-25', '2026-07-10')) throw new Error('חפיפה חלקית של טווח הטיפול לא זוהתה');
+  if (!planActiveOn(original, '2026-08-15', '2026-08-15')) throw new Error('נפילה-לאחור לתאריכים המקוריים לא עבדה');
+  if (planActiveOn(noDates, '2026-03-05', '2026-03-05')) throw new Error('תוכנית בלי תאריכים זוהתה כפעילה');
+
+  const plans = [original, noDates, active, other];
+  // ⚠️ הסינון לפי מבנה נשאר כמו שהיה: תוכנית של מבנה אחר לא נכנסת בכלל
+  const choices = planChoicesFor(plans, { structures: ['recS1'], from: '2026-03-05', to: '2026-03-05' });
+  if (choices.some((c) => c.id === 'recP4')) throw new Error('תוכנית של מבנה אחר נכנסה לרשימה');
+  if (choices.length !== 3) throw new Error(`צפויות 3 תוכניות במבנה, בפועל ${choices.length}`);
+  // הפעילה מוצגת ראשונה, והשאר **לא מוסתרות** — הן פשוט אחריה
+  if (choices[0].id !== 'recP1' || !choices[0].active) throw new Error('התוכנית הפעילה לא הוקדמה לראש הרשימה');
+  if (choices.filter((c) => c.active).length !== 1) throw new Error('יותר מתוכנית אחת סומנה כפעילה');
+  // בלי מבנה נבחר — כל התוכניות, בדיוק כמו ההתנהגות הקיימת
+  if (planChoicesFor(plans, { from: '2026-03-05' }).length !== 4) throw new Error('בלי מבנה נבחר לא הוצגו כל התוכניות');
+  // מזהה שמור שאינו ברשימה (מבנה שהוחלף / תוכנית שנמחקה) לא נעלם בשקט
+  const withSaved = planChoicesFor(plans, { structures: ['recS1'], from: '2026-03-05', selected: ['recGONE'] });
+  const ghost = withSaved.find((c) => c.id === 'recGONE');
+  if (!ghost || ghost.plan !== null) throw new Error('מזהה שמור שאינו ברשימה נעלם');
+  // ⚠️ הכי חשוב: הפונקציה מחזירה אפשרויות בלבד — אין בה שום בחירה
+  if (withSaved.some((c) => c.selected || c.checked)) throw new Error('הרשימה כוללת בחירה אוטומטית');
+  return '0/1/N + ריק נקראים; פעילות מוקדמות; שום בחירה אוטומטית';
+}, READ_WARN_MS);
+
+await test('AS-2: טיפול בלי תוכנית / מזהה בודד / שני מזהים — נשמר ונקרא נכון', async () => {
+  const { planIdList } = await import('../../client/src/utils/treatmentPlans.js');
+  const plansList = await get('תוכניות שתילה', '?maxRecords=3&raw=1');
+  const base = { 'תאריך': today, 'מבנה': [sId], 'חומר ריסוס': [mId], 'מינון ': 100, 'הערות': MARK };
+  const readBack = async (id) => (await api('GET', `${enc('ריסוסים')}/${id}?raw=1`))['תוכנית שתילה'];
+
+  // 1. "מבנים בלבד" — הכרעת תמר: תרחיש תקף, חייב להישמר
+  const bare = await create('ריסוסים', { ...base, 'תוכנית שתילה': '' });
+  if (planIdList(await readBack(bare.id)).length !== 0) throw new Error('טיפול בלי תוכנית לא נקרא כרשימה ריקה');
+
+  // 2. מזהה בודד — הפורמט של כל הטיפולים הקיימים ושל הייבוא מדוח
+  if (!plansList[0]) return 'אין תוכניות בבסיס — נבדק רק המצב הריק';
+  const single = await create('ריסוסים', { ...base, 'תוכנית שתילה': plansList[0].id });
+  const singleVal = await readBack(single.id);
+  if (singleVal !== plansList[0].id) throw new Error(`מזהה בודד שונה בשמירה: ${singleVal}`);
+  if (planIdList(singleVal).join('|') !== plansList[0].id) throw new Error('מזהה בודד לא נקרא לרשימה באורך 1');
+
+  // 3. שתי תוכניות — recA,recB באותו שדה טקסט, בלי שינוי סכימה
+  if (!plansList[1]) return 'תוכנית אחת בלבד בבסיס — ריק + בודד נבדקו';
+  const pairValue = `${plansList[0].id},${plansList[1].id}`;
+  const pair = await create('ריסוסים', { ...base, 'תוכנית שתילה': pairValue });
+  const pairVal = await readBack(pair.id);
+  if (pairVal !== pairValue) throw new Error(`שתי תוכניות לא נשמרו כ-recA,recB: ${pairVal}`);
+  const ids = planIdList(pairVal);
+  if (ids.length !== 2 || ids[0] !== plansList[0].id || ids[1] !== plansList[1].id) throw new Error(`שתי תוכניות לא נקראו נכון: ${ids.join('|')}`);
+
+  // 4. ניקוי השיוך בעריכה (מ-2 תוכניות ל"מבנים בלבד") — חייב לעבוד בפועל
+  await patch('ריסוסים', pair.id, { 'תוכנית שתילה': '' });
+  if (planIdList(await readBack(pair.id)).length !== 0) throw new Error('ניקוי השיוך בעריכה לא נשמר');
+  return 'ריק / בודד / recA,recB — שלושתם נשמרו ונקראו; וניקוי בעריכה עובד';
+});
+
+await test('AS-2: הגידול/הזן ביומן לא נשברים באף אחד משלושת המצבים', async () => {
+  // אותה גזירה בדיוק כמו ב-events ב-TreatmentsPage.jsx: מזהים → תוכניות
+  // → שמות גידול/זן. הבדיקה מריצה אותה על שלושת המצבים ומוודאת שאין
+  // undefined/קריסה ושטיפול בלי תוכנית פשוט מקבל רשימה ריקה.
+  const { planIdList } = await import('../../client/src/utils/treatmentPlans.js');
+  const { displayName } = await import('../../client/src/utils/resolve.js');
+  const { cropFromNotes } = await import('../../client/src/utils/treatmentNotes.js');
+  // **בלי** raw=1 — בדיוק כמו ב-TreatmentsPage.jsx, כדי שהשדות המקושרים
+  // יגיעו עם שמות-תצוגה (attachLinkedNames) ו-displayName יעבוד כמו במסך
+  const plansList = await get('תוכניות שתילה', '?maxRecords=30');
+  // AS-7: שורת `גידול/זן:` בהערות גוברת; בלעדיה — גזירה מהתוכנית.
+  const derive = (value, notes = '') => {
+    const ids = planIdList(value);
+    const fromReport = cropFromNotes(notes);
+    const linked = ids.map((id) => plansList.find((p) => p.id === id)).filter(Boolean);
+    const cropNames = fromReport ? [fromReport.crop] : [...new Set(linked
+      .map((p) => displayName(p['גידולים'], '') || displayName(p['סוג גידול'], ''))
+      .filter(Boolean))];
+    const varietyNames = fromReport ? [fromReport.variety].filter(Boolean) : [];
+    return { ids, cropNames, varietyNames, display: cropNames.join(' · ') || 'לא זמין' };
+  };
+  // תוכניות עם גידול בפועל — כדי שהמצבים "בודד"/"שניים" יבדקו תצוגה אמיתית
+  const withCrop = plansList.filter((p) => displayName(p['גידולים'], '') || displayName(p['סוג גידול'], ''));
+  if (withCrop.length < 2) return `דולג חלקית — רק ${withCrop.length} תוכניות עם גידול בבסיס`;
+  const cases = [['ריק', ''], ['בודד', withCrop[0].id], ['שניים', `${withCrop[0].id},${withCrop[1].id}`]];
+  const out = [];
+  for (const [label, value] of cases) {
+    const d = derive(value);
+    if (d.display.includes('undefined') || d.display === '') throw new Error(`מצב "${label}" הניב תצוגה שבורה: ${JSON.stringify(d.display)}`);
+    if (!Array.isArray(d.cropNames)) throw new Error(`מצב "${label}" לא החזיר רשימת גידולים`);
+    out.push(`${label}: ${d.display}`);
+  }
+  if (derive('').display !== 'לא זמין') throw new Error('טיפול בלי תוכנית לא קיבל "לא זמין"');
+  // מזהה שלא קיים — לא קורס, פשוט לא נמצא
+  if (derive('recDOESNOTEXIST').cropNames.length !== 0) throw new Error('מזהה שלא קיים הניב גידול');
+  // שתי תוכניות עם אותו גידול לא מכפילות את השם בתצוגה
+  const dup = derive(`${withCrop[0].id},${withCrop[0].id}`);
+  if (dup.cropNames.length !== 1) throw new Error(`אותו גידול הופיע ${dup.cropNames.length} פעמים`);
+  return out.join(' | ');
+}, READ_WARN_MS);
+
+await test('AS-3: העלאת תמונה לטיפול QA → מופיעה ב-`תמונות`, ואז נמחקת', async () => {
+  const buf = await readFile(new URL('../../לדוגמא.jpg', import.meta.url)); // תמונה אמיתית מהמאגר, לא תוכן סינתטי
+  const rec = await create('ריסוסים', { 'תאריך': today, 'מבנה': [sId], 'חומר ריסוס': [mId], 'מינון ': 100, 'הערות': MARK });
+  const fd = new FormData();
+  fd.append('file', new Blob([buf], { type: 'image/jpeg' }), `${MARK}-treatment.jpg`);
+  const up = await api('POST', `treatments/${rec.id}/photos`, fd, true);
+  if (!up?.photos?.length) throw new Error('ההעלאה לא החזירה תמונות');
+  const attId = up.photos[up.photos.length - 1].id;
+  // ה-URL נקרא מהרשומה בכל קריאה (קישורי Airtable פגים אחרי ~2 שעות)
+  const after = await api('GET', `treatments/${rec.id}/photos`);
+  if (after.photos.length !== 1) throw new Error(`צפויה תמונה אחת, בפועל ${after.photos.length}`);
+  if (!after.photos[0].url) throw new Error('התמונה חזרה בלי URL');
+  // והשדה עצמו ב-Airtable (ולא רק נקודת-הקצה) — וגם שלא נגענו בדוח
+  const raw = await api('GET', `${enc('ריסוסים')}/${rec.id}?raw=1`);
+  if (!Array.isArray(raw['תמונות']) || raw['תמונות'].length !== 1) throw new Error('השדה `תמונות` לא עודכן ברשומה');
+  if (raw['דוח ריסוסים'] != null && (!Array.isArray(raw['דוח ריסוסים']) || raw['דוח ריסוסים'].length)) {
+    throw new Error('שדה `דוח ריסוסים` נגוע — אסור!');
+  }
+  const delRes = await api('DELETE', `treatments/${rec.id}/photos/${attId}`);
+  if (delRes.photos.length !== 0) throw new Error('המחיקה לא ניקתה את הגלריה');
+  const raw2 = await api('GET', `${enc('ריסוסים')}/${rec.id}?raw=1`);
+  if (Array.isArray(raw2['תמונות']) && raw2['תמונות'].length) throw new Error('התמונה נשארה ברשומה אחרי מחיקה');
+  // מחיקה של מזהה-צרופה שאינו קיים → 404 מפורש
+  try { await api('DELETE', `treatments/${rec.id}/photos/${attId}`); throw new Error('מחיקה כפולה הצליחה'); }
+  catch (e) { if (!String(e.message).startsWith('404')) throw e; }
+  return 'הועלתה (1) → נקראה עם URL → נמחקה (0) → מחיקה כפולה 404';
+}, 30000);
+
+await test('AS-3: קובץ גדול מ-5MB ו-PDF נדחים ב-400 לפני שנוגעים ב-Airtable', async () => {
+  const rec = await create('ריסוסים', { 'תאריך': today, 'מבנה': [sId], 'חומר ריסוס': [mId], 'מינון ': 100, 'הערות': MARK });
+  // 5MB+ — נבדק לפני בדיקת חתימת-הבתים, ולכן אין צורך בקובץ אמיתי כאן
+  const big = new FormData();
+  big.append('file', new Blob([new Uint8Array(5 * 1024 * 1024 + 1024)], { type: 'image/jpeg' }), `${MARK}-big.jpg`);
+  try { await api('POST', `treatments/${rec.id}/photos`, big, true); throw new Error('קובץ 5MB+ עבר'); }
+  catch (e) {
+    if (!String(e.message).startsWith('400')) throw e;
+    if (!String(e.message).includes('5MB')) throw new Error(`ההודעה לא מזכירה 5MB: ${e.message}`);
+  }
+  // PDF — תקין לחלוטין כמסמך, אבל לא תמונה. ההודעה אומרת מה זוהה (AM-3).
+  const pdf = new FormData();
+  pdf.append('file', new Blob([Buffer.from('%PDF-1.4\n% not a photo\n')], { type: 'application/pdf' }), `${MARK}-doc.pdf`);
+  try { await api('POST', `treatments/${rec.id}/photos`, pdf, true); throw new Error('PDF עבר לגלריית התמונות'); }
+  catch (e) {
+    if (!String(e.message).startsWith('400')) throw e;
+    if (!String(e.message).includes('PDF')) throw new Error(`ההודעה לא אומרת מה זוהה: ${e.message}`);
+  }
+  // טקסט בסיומת .jpg — חתימת-בתים, לא סיומת
+  const fake = new FormData();
+  fake.append('file', new Blob([Buffer.from('זה בכלל לא תמונה')], { type: 'image/jpeg' }), `${MARK}-fake.jpg`);
+  try { await api('POST', `treatments/${rec.id}/photos`, fake, true); throw new Error('טקסט בסיומת jpg עבר'); }
+  catch (e) { if (!String(e.message).startsWith('400')) throw e; }
+  const raw = await api('GET', `${enc('ריסוסים')}/${rec.id}?raw=1`);
+  if (Array.isArray(raw['תמונות']) && raw['תמונות'].length) throw new Error('קובץ שנדחה בכל זאת הגיע ל-Airtable');
+  return '5MB+ → 400 ("5MB"); PDF → 400 ("PDF"); טקסט-מחופש → 400; השדה נשאר ריק';
+});
+
+await test('AS-3: תמונות הטיפול — worker/manager נחסמים (403), בלי טוקן (401)', async () => {
+  // ⚠️ **בלי שום שינוי בהרשאות העובד** — ההרשאה נגזרת מ-
+  // canWriteTable(role,'ריסוסים') הקיים (owner בלבד), ו-auth.js לא נגוע.
+  // הבדיקה אינה יוצרת רשומה: ה-403 נופל לפני שה-handler נוגע ב-Airtable.
+  const fakeId = 'recQAnotreal000000';
+  const manager = allAdmins.find((a) => a['מייל'] && a['קוד אישי'] && String(a['סוג'] || '').includes('עבודה'));
+  const w = workers.find((x) => x['מייל'] && x['מספר דרכון']);
+  const problems = [];
+  for (const [label, loginPath, body] of [
+    ['manager', 'admin-login', manager && { email: manager['מייל'], code: manager['קוד אישי'] }],
+    ['worker', 'worker-login', w && { email: w['מייל'], passport: w['מספר דרכון'] }],
+  ]) {
+    if (!body) continue;
+    const login = await apiAs(null, 'POST', loginPath, body);
+    for (const [method, path] of [['GET', `treatments/${fakeId}/photos`], ['DELETE', `treatments/${fakeId}/photos/attX`]]) {
+      try { await apiAs(login.token, method, path); problems.push(`${label} ${method} עבר - לא תקין!`); }
+      catch (e) { if (!String(e.message).startsWith('403')) problems.push(`${label} ${method} שגיאה לא-צפויה: ${e.message}`); }
+    }
+  }
+  try { await apiAs(null, 'GET', `treatments/${fakeId}/photos`); problems.push('בלי טוקן עבר - לא תקין!'); }
+  catch (e) { if (!String(e.message).startsWith('401')) problems.push(`בלי טוקן שגיאה לא-צפויה: ${e.message}`); }
+  // owner על מזהה שלא קיים → 404 (ולא 403/500) — מוכיח שההרשאה היא זו שחוסמת
+  try { await api('GET', `treatments/${fakeId}/photos`); problems.push('owner קיבל 200 על טיפול שלא קיים'); }
+  catch (e) { if (!String(e.message).startsWith('404')) problems.push(`owner על מזהה שגוי: ${e.message}`); }
+  if (problems.length) throw new Error(problems.join('; '));
+  return `manager: ${manager ? '403' : 'דולג'}; worker: ${w ? '403' : 'דולג'}; בלי טוקן: 401; owner על מזהה שגוי: 404`;
+}, READ_WARN_MS);
+
+// ============================================================
+// חלק AS-4 (14.10.2026) — הגמעה אינה עובדת עם מרסס
+// ------------------------------------------------------------
+// תמר: "טיפול מסוג הגמעה לא אמור לקבל נתוני מרסס." **בטופס הידני בלבד**:
+// בהגמעה אין ברירת מחדל 200 לגודל מרסס, אין מילוי אוטומטי של מספר
+// מרססים, וגודל המרסס אינו חובה. בריסוס — בדיוק כמו היום.
+// ⚠️ **הייבוא מדוח לא שונה** (הוראת תמר) — הוא ממשיך לקבל 200 בשורות
+// הגמעה מברירת-המחדל של השדה, ואין כאן בדיקה שמצפה לאחרת.
+// ============================================================
+await test('AS-4 טהור: בהגמעה אין מרסס — חובה/ברירות-מחדל, ובלי לאבד ערך שמור', async () => {
+  const { usesSprayer, sprayerSizeRequired, sprayerFieldsOnTypeChange, NEW_TREATMENT_SPRAYER_SIZE, NEW_TREATMENT_SPRAYER_COUNT } =
+    await import('../../shared/treatment-defaults.js');
+  // סוג ריק/לא-מוכר מתנהג כמו ריסוס — ההתנהגות הקיימת לא משתנית
+  for (const t of ['ריסוס', '', null, 'משהו אחר']) {
+    if (!usesSprayer(t) || !sprayerSizeRequired(t)) throw new Error(`"${t}" אמור להתנהג כמו ריסוס (מרסס + חובה)`);
+  }
+  for (const t of ['הגמעה', 'הגמעות', 'טפטוף']) {
+    if (usesSprayer(t) || sprayerSizeRequired(t)) throw new Error(`"${t}" זוהה כטיפול עם מרסס`);
+  }
+  // טיפול חדש: ברירות המחדל שהטופס מילא לבד מתנקות במעבר להגמעה
+  const auto = sprayerFieldsOnTypeChange({ nextType: 'הגמעה', sprayerSize: NEW_TREATMENT_SPRAYER_SIZE, sprayers: NEW_TREATMENT_SPRAYER_COUNT, isNew: true });
+  if (auto.sprayerSize !== '' || auto.sprayers !== '') throw new Error(`ברירות המחדל לא נוקו: ${JSON.stringify(auto)}`);
+  // בחירה ידנית לא נדרסת
+  const manual = sprayerFieldsOnTypeChange({ nextType: 'הגמעה', sprayerSize: '1000', sprayers: '4', isNew: true });
+  if (manual.sprayerSize !== '1000' || manual.sprayers !== '4') throw new Error(`בחירה ידנית נדרסה: ${JSON.stringify(manual)}`);
+  // ⚠️ עריכת רשומה קיימת — **לעולם** לא מאפסים, גם בהגמעה (אובדן נתון)
+  const saved = sprayerFieldsOnTypeChange({ nextType: 'הגמעה', sprayerSize: NEW_TREATMENT_SPRAYER_SIZE, sprayers: NEW_TREATMENT_SPRAYER_COUNT, isNew: false });
+  if (saved.sprayerSize !== NEW_TREATMENT_SPRAYER_SIZE || saved.sprayers !== NEW_TREATMENT_SPRAYER_COUNT) {
+    throw new Error(`ערך שמור אופס בעריכה: ${JSON.stringify(saved)}`);
+  }
+  // מעבר חזרה לריסוס אינו ממלא כלום מחדש
+  const back = sprayerFieldsOnTypeChange({ nextType: 'ריסוס', sprayerSize: '', sprayers: '', isNew: true });
+  if (back.sprayerSize !== '' || back.sprayers !== '') throw new Error(`מעבר לריסוס מילא ערכים מעצמו: ${JSON.stringify(back)}`);
+  return 'הגמעה/טפטוף → בלי מרסס ולא חובה; ריק/ריסוס → כמו היום; ידני ושמור לא נדרסים';
+}, READ_WARN_MS);
+
+await test('AS-4 טהור: החישוב "לדונם" לא נפגע מגודל מרסס ריק, ובבסיסים אחרים "—" עם הסבר', async () => {
+  const { treatmentQuantity, treatmentCost, missingText } = await import('../../client/src/utils/sprayCost.js');
+  const mat = { 'מחיר': 100, 'גודל האריזה': 1, 'יחידת תמחור': 'ליטר' };
+  // הגמעה: הבסיס "לדונם" (ברירת המחדל של AP), והחישוב נגזר מהשטח — גודל
+  // המרסס ומספר המרססים **אינם** נכנסים אליו בכלל. זה מה שתמר ביקשה לוודא.
+  const drip = { 'בסיס מינון': 'לדונם', 'מינון ': 2, 'חישוב שטח בדונם של כלל המבנים': 3 };
+  const q = treatmentQuantity(drip);
+  if (q.total !== 6) throw new Error(`חישוב לדונם נפגע: total=${q.total} (צפוי 6)`);
+  if (q.missing.length) throw new Error(`לדונם דיווח חוסר למרות שלא צריך מרסס: ${q.missing.join(', ')}`);
+  if (q.sprayers !== 1) throw new Error(`מספר מרססים ריק לא נחשב 1: ${q.sprayers}`);
+  const cost = treatmentCost(drip, mat);
+  if (!Number.isFinite(cost.value) || cost.value <= 0) throw new Error(`עלות לדונם לא חושבה: ${cost.value}`);
+  // ואותו דבר כשהשדות קיימים אך null במפורש (כפי שנשמר בהגמעה)
+  const dripNull = { ...drip, 'גודל מרסס בליטר': null, 'מספר המרססים': null };
+  if (treatmentQuantity(dripNull).total !== 6) throw new Error('null מפורש שינה את החישוב לדונם');
+  // שאר הבסיסים אכן תלויים בגודל המרסס → "—" עם הסבר, ולא NaN/0
+  for (const basis of ['לליטר', 'ל-100 ליטר', 'אחוז']) {
+    const t = { 'בסיס מינון': basis, 'מינון ': 50, 'גודל מרסס בליטר': null };
+    const r = treatmentQuantity(t);
+    if (r.total !== null) throw new Error(`${basis} בלי גודל מרסס החזיר ${r.total} במקום null`);
+    if (!r.missing.includes('חסר גודל מרסס')) throw new Error(`${basis} לא דיווח "חסר גודל מרסס": ${r.missing.join(', ')}`);
+    const c = treatmentCost(t, mat);
+    if (c.value !== null) throw new Error(`${basis} בלי גודל מרסס החזיר עלות ${c.value}`);
+    if (!missingText(c.missing).includes('חסר גודל מרסס')) throw new Error(`ההסבר ל-${basis} לא אומר מה חסר: ${missingText(c.missing)}`);
+  }
+  return 'לדונם: 6 ועלות חושבה בלי מרסס בכלל; לליטר/ל-100 ליטר/אחוז: null + "חסר גודל מרסס"';
+}, READ_WARN_MS);
+
+await test('AS-4 חי: הגמעה נשמרת בלי גודל מרסס ובלי מספר מרססים; ריסוס מקבל 200 כמו היום', async () => {
+  const base = { 'תאריך': today, 'מבנה': [sId], 'חומר ריסוס': [mId], 'מינון ': 100, 'הערות': MARK };
+  const read = async (id) => api('GET', `${enc('ריסוסים')}/${id}?raw=1`);
+
+  // ⚠️ זה הלב: לשדה `גודל מרסס בליטר` יש ברירת-מחדל "200" ב-Airtable
+  // עצמו, ולכן **דילוג על הכתיבה לא מספיק** — הטופס כותב null במפורש.
+  const drip = await create('ריסוסים', { ...base, 'סוג טיפול': 'הגמעה', 'בסיס מינון': 'לדונם', 'גודל מרסס בליטר': null });
+  const d = await read(drip.id);
+  if (d['גודל מרסס בליטר']) throw new Error(`הגמעה נשמרה עם גודל מרסס "${d['גודל מרסס בליטר']}" — null לא ניצח את ברירת המחדל`);
+  if (d['מספר המרססים'] != null) throw new Error(`הגמעה נשמרה עם מספר מרססים ${d['מספר המרססים']}`);
+  if (d['סוג טיפול'] !== 'הגמעה') throw new Error(`סוג הטיפול לא נשמר: ${d['סוג טיפול']}`);
+
+  // ומחרוזת ריקה אכן **נדחית** בשדה בחירה — מתועד כאן כדי שלא ינסו שוב
+  let emptyStringRejected = false;
+  try { await patch('ריסוסים', drip.id, { 'גודל מרסס בליטר': '' }); }
+  catch { emptyStringRejected = true; }
+  const after = await read(drip.id);
+  if (after['גודל מרסס בליטר']) throw new Error('הניסיון במחרוזת ריקה מילא את השדה בכל זאת');
+
+  // ריסוס — ההתנהגות הקיימת: בלי כתיבה, Airtable ממלא 200
+  const spray = await create('ריסוסים', { ...base, 'סוג טיפול': 'ריסוס' });
+  const s = await read(spray.id);
+  if (String(s['גודל מרסס בליטר'] || '') !== '200') {
+    throw new Error(`ריסוס לא קיבל 200 כברירת מחדל (${s['גודל מרסס בליטר']}) — ההתנהגות הקיימת השתנתה`);
+  }
+  return `הגמעה: גודל מרסס ריק + מספר מרססים ריק · ריסוס: 200 כמו היום · מחרוזת ריקה ${emptyStringRejected ? 'נדחתה כצפוי' : 'לא נדחתה (אך לא מילאה)'}`;
+});
+
+// ============================================================
+// חלק AS-5 (14.10.2026) — בלוק הערות-הייבוא מוסתר **בתצוגה בלבד**
+// ------------------------------------------------------------
+// תמר: הבלוק "[מדוח ריסוסים #255] שורה 4 / סוג טיפול: ... / מיקום: ..."
+// חוזר על מה שהכרטיס מציג ממילא. 🔒 **אסור לשנות את מה שנכתב להערות
+// ב-Airtable** — שלוש מערכות תלויות בשורות האלה בנתונים:
+// אידמפוטנטיות הייבוא (`importedLinesOf`), ספירת "יובאו" ומחיקת דוח
+// (`FIND('[מדוח ריסוסים #N]', {הערות})`), וטווח התאריכים של הטיפול
+// (`treatmentRange` קורא את שורת `תאריך סיום:`). הבדיקות כאן מכסות את
+// שלושתן אחרי round-trip של עריכה.
+// ⚠️ לא נוצר כאן שום דוח ריסוסים ולא מופעל Make — הסמן נכתב לרשומת-QA
+// בטבלת `ריסוסים` בלבד, שאין לה אוטומציית ניתוח.
+// ============================================================
+await test('AS-5 טהור: הסתרת שורות-הייבוא בתצוגה, והחזרתן בשמירה', async () => {
+  const { visibleNotes, importNoteLines, reportNumberFromNotes, composeNotes } =
+    await import('../../client/src/utils/treatmentNotes.js');
+  const importBlock = [
+    '[מדוח ריסוסים #255] שורה 4', 'סוג טיפול: ריסוס', 'מיקום: חממה 3',
+    'גידול/זן: עגבנייה · 67', 'מספר ריסוס: 12', 'מינון מהדוח: 40', 'תאריך סיום: 23/07/2026',
+  ].join('\n');
+
+  // 1. טיפול מיובא בלי הערה חופשית → אין **כלום** להציג (לא בלוק ריק)
+  if (visibleNotes(importBlock) !== '') throw new Error(`הבלוק לא הוסתר: ${JSON.stringify(visibleNotes(importBlock))}`);
+  if (reportNumberFromNotes(importBlock) !== '255') throw new Error('מספר הדוח לא חולץ לתג');
+  if (importNoteLines(importBlock).length !== 7) throw new Error(`לא כל שורות-הייבוא נשמרו: ${importNoteLines(importBlock).length}`);
+
+  // 2. הערה חופשית אמיתית **כן** מוצגת, בלי שורות-הייבוא סביבה
+  const free = 'לבדוק את הטפטפות בשורה 2';
+  const withFree = `${importBlock}\n${free}`;
+  if (visibleNotes(withFree) !== free) throw new Error(`ההערה החופשית לא הוצגה נכון: ${JSON.stringify(visibleNotes(withFree))}`);
+
+  // 3. טיפול ידני — לא נוגעים בו, ואין לו תג-דוח
+  if (visibleNotes('סתם הערה של תמר') !== 'סתם הערה של תמר') throw new Error('הערה ידנית סוננה');
+  if (reportNumberFromNotes('סתם הערה של תמר') !== null) throw new Error('הערה ידנית קיבלה מספר דוח');
+  for (const empty of ['', null, undefined]) {
+    if (visibleNotes(empty) !== '') throw new Error(`ערך ריק (${JSON.stringify(empty)}) לא החזיר ''`);
+    if (reportNumberFromNotes(empty) !== null) throw new Error('ערך ריק קיבל מספר דוח');
+  }
+
+  // 4. **ה-round-trip המסוכן**: טופס טוען מסונן → המשתמשת עורכת → שומר
+  const edited = composeNotes({
+    hiddenLines: importNoteLines(withFree),
+    freeText: 'הערה חדשה שתמר הקלידה',
+    endDateLine: 'תאריך סיום: 23/07/2026',
+  });
+  const marker = /\[מדוח ריסוסים #(\d+)\] שורה (\d+)/.exec(edited); // זהה ל-MARKER_RE בשרת
+  if (!marker || marker[1] !== '255' || marker[2] !== '4') throw new Error(`הסמן לא שרד את העריכה: ${JSON.stringify(edited)}`);
+  const endLine = /תאריך סיום:\s*(\d{1,2}\/\d{1,2}\/\d{4})/.exec(edited); // זהה ל-treatmentRange בלקוח
+  if (!endLine || endLine[1] !== '23/07/2026') throw new Error('שורת תאריך-הסיום לא שרדה — טווח הטיפול היה נשבר');
+  if (!edited.includes('הערה חדשה שתמר הקלידה')) throw new Error('ההערה החדשה לא נשמרה');
+  if (!edited.includes('מיקום: חממה 3')) throw new Error('שורות-הייבוא האחרות לא הוחזרו');
+  if (edited.split('\n').filter((l) => l.startsWith('תאריך סיום:')).length !== 1) throw new Error('שורת תאריך-סיום הוכפלה');
+  // ושינוי טווח בטופס אכן מחליף את שורת הסיום ולא מוסיף שנייה
+  const moved = composeNotes({ hiddenLines: importNoteLines(withFree), freeText: free, endDateLine: 'תאריך סיום: 30/07/2026' });
+  if (!moved.includes('תאריך סיום: 30/07/2026') || moved.includes('23/07/2026')) throw new Error('שינוי הטווח לא עדכן את שורת הסיום');
+  return 'בלוק מוסתר · הערה חופשית מוצגת · תג #255 · round-trip שומר סמן + תאריך-סיום';
+}, READ_WARN_MS);
+
+await test('AS-5 חי: אחרי עריכה, הסמן בהערות עדיין מאתר את הטיפול (ייבוא חוזר ומחיקת דוח)', async () => {
+  const { visibleNotes, importNoteLines, composeNotes } = await import('../../client/src/utils/treatmentNotes.js');
+  // מספר דוח שאינו קיים — הבדיקה בודקת את **מפתח האיתור**, לא דוח אמיתי,
+  // ולכן אין כאן שום יצירה בטבלת "דוחות ריסוסים" ואין Make.
+  const fakeReport = '999999';
+  const marker = `[מדוח ריסוסים #${fakeReport}]`;
+  const original = [`${marker} שורה 4`, 'סוג טיפול: ריסוס', 'מיקום: חממה 3', 'תאריך סיום: 23/07/2026', MARK].join('\n');
+  const rec = await create('ריסוסים', { 'תאריך': today, 'מבנה': [sId], 'חומר ריסוס': [mId], 'מינון ': 100, 'הערות': original });
+
+  // כך בדיוק מאתרים את הטיפולים של דוח — importedLinesOf, sprayReportsHistory
+  // ו-deleteSprayReport, כולם בנוסחה הזו בצד Airtable.
+  const findByMarker = async () => (await directFetchRecords('ריסוסים', {
+    filterByFormula: `FIND('${marker}', {הערות})`, fields: ['הערות'],
+  })).filter((r) => String(r['הערות'] || '').includes(MARK));
+  if ((await findByMarker()).length !== 1) throw new Error('הסמן לא נמצא אפילו לפני העריכה');
+
+  // round-trip של הטופס: טוען מסונן, המשתמשת מחליפה את ההערה החופשית, שומר
+  const loaded = await api('GET', `${enc('ריסוסים')}/${rec.id}?raw=1`);
+  const hidden = importNoteLines(loaded['הערות']);
+  if (visibleNotes(loaded['הערות']) !== MARK) throw new Error(`הטופס לא טען את ההערה החופשית: ${JSON.stringify(visibleNotes(loaded['הערות']))}`);
+  const saved = composeNotes({ hiddenLines: hidden, freeText: `${MARK} עודכן`, endDateLine: 'תאריך סיום: 23/07/2026' });
+  await patch('ריסוסים', rec.id, { 'הערות': saved });
+
+  // אחרי השמירה: הסמן עדיין מאתר (ייבוא חוזר יזהה "כבר קיים", ומחיקת דוח
+  // תמשיך למצוא את הטיפול), ושורת תאריך-הסיום עדיין שם (טווח הטיפול)
+  const found = await findByMarker();
+  if (found.length !== 1) throw new Error('הסמן נעלם אחרי עריכת ההערות — האידמפוטנטיות ומחיקת-הדוח היו נשברות!');
+  const after = String(found[0]['הערות'] || '');
+  if (!/\[מדוח ריסוסים #999999\] שורה 4/.test(after)) throw new Error(`שורת הסמן אינה שלמה: ${after}`);
+  if (!/תאריך סיום:\s*23\/07\/2026/.test(after)) throw new Error('שורת תאריך-הסיום נמחקה — הטווח היה מתכווץ ליום אחד');
+  if (!after.includes(`${MARK} עודכן`)) throw new Error('ההערה החדשה לא נשמרה');
+  if (visibleNotes(after) !== `${MARK} עודכן`) throw new Error(`בתצוגה נשארו שורות-ייבוא: ${JSON.stringify(visibleNotes(after))}`);
+  return 'אחרי עריכה: הסמן נמצא בנוסחת FIND, שורת תאריך-הסיום שרדה, ובתצוגה רק ההערה החופשית';
+});
+
+// ============================================================
+// חלק AS-6 + AS-7 (14.10.2026)
+// ------------------------------------------------------------
+// AS-6: שורת "מספר ריסוס" (השדה `מספר ריסוס`, **autoNumber** של Airtable
+//   — מונה רשומות פנימי) הוסרה מכל תצוגה. ⚠️ לא לבלבל עם השורה
+//   `מספר ריסוס: X` **בהערות**, שהייבוא כותב מעמודת הדוח של תמר — היא
+//   נשארת בנתונים, ומוסתרת מהתצוגה ע"י AS-5.
+// AS-7: בטיפול מיובא הגידול והזן נלקחים משורת ההערות `גידול/זן:`, והיא
+//   **גוברת על תוכנית השתילה המשויכת**. בלעדיה — גזירה מהתוכנית, כמו היום.
+// ============================================================
+await test('AS-6: `מספר ריסוס` (autoNumber) לא מוצג באף תצוגה, והשורה בהערות לא נגועה', async () => {
+  const { visibleNotes, importNoteLines } = await import('../../client/src/utils/treatmentNotes.js');
+  const page = await readFile(new URL('../../client/src/pages/TreatmentsPage.jsx', import.meta.url), 'utf8');
+  // השדה עצמו: אין יותר שורת-כרטיס ואין אותו בוויו-מודל
+  if (/row\(\s*'מספר ריסוס'/.test(page)) throw new Error('שורת "מספר ריסוס" עדיין מוצגת בכרטיס');
+  if (/^\s*number:\s*t\['מספר ריסוס'\]/m.test(page)) throw new Error('`מספר ריסוס` עדיין בוויו-מודל (ev.number)');
+  if (/\bev\.number\b/.test(page)) throw new Error('נשאר צרכן ל-ev.number');
+  // ובשאר המסכים גם לא הוסיף אף אחד
+  for (const f of ['StructuresPage.jsx', 'DashboardPage.jsx']) {
+    const src = await readFile(new URL(`../../client/src/pages/${f}`, import.meta.url), 'utf8');
+    if (/\['מספר ריסוס'\]/.test(src)) throw new Error(`${f} מציג את ה-autoNumber`);
+  }
+  // 🔒 והשורה **בהערות** (מהדוח של תמר) נשארת בנתונים — רק מוסתרת מהתצוגה
+  const notes = '[מדוח ריסוסים #255] שורה 4\nמספר ריסוס: 12\nהערה חופשית';
+  if (!importNoteLines(notes).includes('מספר ריסוס: 12')) throw new Error('השורה בהערות אינה נשמרת להחזרה בשמירה');
+  if (visibleNotes(notes).includes('מספר ריסוס')) throw new Error('השורה בהערות מוצגת כטקסט');
+  return 'השדה autoNumber הוסר מהכרטיס ומהוויו-מודל; השורה בהערות נשמרת ומוסתרת';
+}, READ_WARN_MS);
+
+await test('AS-7 טהור: `גידול/זן:` מההערות גובר על התוכנית, ושלושת הפורמטים עובדים', async () => {
+  const { cropFromNotes } = await import('../../client/src/utils/treatmentNotes.js');
+  const { displayName } = await import('../../client/src/utils/resolve.js');
+  // שניהם
+  const both = cropFromNotes('[מדוח ריסוסים #255] שורה 4\nגידול/זן: מלפפון · היילוקס\nתאריך סיום: 23/07/2026');
+  if (both?.crop !== 'מלפפון' || both?.variety !== 'היילוקס') throw new Error(`פורמט "שניים" נכשל: ${JSON.stringify(both)}`);
+  // רק גידול — **אין מפריד**, והזן ריק (ולא כל המחרוזת כזן)
+  const cropOnly = cropFromNotes('גידול/זן: מלפפון');
+  if (cropOnly?.crop !== 'מלפפון' || cropOnly?.variety !== '') throw new Error(`פורמט "רק גידול" נכשל: ${JSON.stringify(cropOnly)}`);
+  // רווחים סביב המפריד — לא מסתמכים על רווח בודד
+  const spaced = cropFromNotes('גידול/זן:   מלפפון   ·   היילוקס  ');
+  if (spaced?.crop !== 'מלפפון' || spaced?.variety !== 'היילוקס') throw new Error(`רווחים שברו את הפירוק: ${JSON.stringify(spaced)}`);
+  // אין שורה / שורה ריקה / הערה ידנית → null, ואז נפילה-לאחור לתוכנית
+  for (const s of ['', null, undefined, 'סתם הערה של תמר', 'גידול/זן:', 'גידול/זן:    ']) {
+    if (cropFromNotes(s) !== null) throw new Error(`"${s}" אמור להחזיר null (נפילה-לאחור לתוכנית)`);
+  }
+
+  // ⚠️ המקרה המוכיח: מקושרת תוכנית של גידול **אחר** — ההערות גוברות
+  const plansList = await get('תוכניות שתילה', '?maxRecords=30');
+  const planWithCrop = plansList.find((p) => displayName(p['גידולים'], '') || displayName(p['סוג גידול'], ''));
+  const planCrop = planWithCrop ? (displayName(planWithCrop['גידולים'], '') || displayName(planWithCrop['סוג גידול'], '')) : null;
+  const { planIdList } = await import('../../client/src/utils/treatmentPlans.js');
+  const derive = (planValue, notes) => {
+    const fromReport = cropFromNotes(notes);
+    const linked = planIdList(planValue).map((id) => plansList.find((p) => p.id === id)).filter(Boolean);
+    const cropNames = fromReport ? [fromReport.crop] : [...new Set(linked
+      .map((p) => displayName(p['גידולים'], '') || displayName(p['סוג גידול'], '')).filter(Boolean))];
+    const varietyNames = fromReport ? [fromReport.variety].filter(Boolean) : [];
+    return { cropNames, varietyNames, crop: cropNames.join(' · ') || 'לא זמין', variety: varietyNames.join(' · ') };
+  };
+  const reportNotes = 'גידול/זן: מלפפון · היילוקס';
+  // (א) בלי תוכנית משויכת
+  const noPlan = derive('', reportNotes);
+  if (noPlan.crop !== 'מלפפון' || noPlan.variety !== 'היילוקס') throw new Error(`בלי תוכנית: ${JSON.stringify(noPlan)}`);
+  // (ב) **עם** תוכנית של גידול אחר — ההערות עדיין קובעות
+  if (planWithCrop) {
+    const withOther = derive(planWithCrop.id, reportNotes);
+    if (withOther.crop !== 'מלפפון') throw new Error(`תוכנית ("${planCrop}") דרסה את ההערות: ${withOther.crop}`);
+    if (withOther.variety !== 'היילוקס') throw new Error(`הזן מההערות נדרס: ${withOther.variety}`);
+    // (ג) רגרסיה: טיפול **ידני** (בלי שורת גידול/זן) נגזר מהתוכנית כמו היום
+    const manual = derive(planWithCrop.id, 'הערה ידנית בלבד');
+    if (manual.crop !== planCrop) throw new Error(`טיפול ידני לא נגזר מהתוכנית: "${manual.crop}" במקום "${planCrop}"`);
+  }
+  // רק גידול בהערות → זן ריק, והתצוגה ברשימה היא "—" (filter(Boolean).join)
+  const onlyCrop = derive('', 'גידול/זן: מלפפון');
+  if (onlyCrop.crop !== 'מלפפון' || onlyCrop.varietyNames.length !== 0) throw new Error(`"רק גידול" הניב זן: ${JSON.stringify(onlyCrop)}`);
+  if ([onlyCrop.crop === 'לא זמין' ? '' : onlyCrop.crop, onlyCrop.variety].filter(Boolean).join(' · ') !== 'מלפפון') {
+    throw new Error('תצוגת הרשימה ל"רק גידול" שבורה');
+  }
+
+  // חיפוש ופילטר: שק החיפוש כולל את e.crop, ורשימת האפשרויות נבנית מ-
+  // events.flatMap(e => e.cropNames) — כלומר גידול שמקורו **בהערות בלבד**
+  // חייב להופיע בה ולהיות בר-סינון. זה בדיוק מה שנבדק כאן.
+  const evs = [derive('', reportNotes), derive(planWithCrop?.id || '', 'הערה ידנית')];
+  const cropOptions = [...new Set(evs.flatMap((e) => e.cropNames))].sort();
+  if (!cropOptions.includes('מלפפון')) throw new Error(`"מלפפון" (מהערות בלבד) לא נכנס לרשימת אפשרויות הפילטר: ${cropOptions.join(', ')}`);
+  if (evs.filter((e) => e.cropNames.includes('מלפפון')).length !== 1) throw new Error('פילטר הגידול לא בודד את הטיפול המיובא');
+  const hay = ['חומר', 'מבנה 1', evs[0].crop, evs[0].variety, '', '', ''].join(' ').toLowerCase();
+  if (!hay.includes('מלפפון')) throw new Error('חיפוש "מלפפון" לא ימצא את הטיפול המיובא');
+  return `הערות גוברות על התוכנית${planCrop ? ` (גם מול "${planCrop}")` : ''} · 3 הפורמטים · ידני נגזר מהתוכנית · פילטר וחיפוש כוללים "מלפפון"`;
+}, READ_WARN_MS);
+
+await test('AS-7 חי: טיפול עם `גידול/זן:` בהערות ותוכנית של גידול אחר — ההערות קובעות', async () => {
+  const { cropFromNotes } = await import('../../client/src/utils/treatmentNotes.js');
+  const { displayName } = await import('../../client/src/utils/resolve.js');
+  const plansList = await get('תוכניות שתילה', '?maxRecords=30');
+  const planWithCrop = plansList.find((p) => displayName(p['גידולים'], '') || displayName(p['סוג גידול'], ''));
+  if (!planWithCrop) return 'דולג — אין בבסיס תוכנית עם גידול';
+  const planCrop = displayName(planWithCrop['גידולים'], '') || displayName(planWithCrop['סוג גידול'], '');
+  // רשומת-QA אחת, עם סמן-דוח שאינו קיים (אין יצירת דוח ואין Make)
+  const notes = ['[מדוח ריסוסים #999998] שורה 7', 'גידול/זן: מלפפון · היילוקס', 'מספר ריסוס: 12', MARK].join('\n');
+  const rec = await create('ריסוסים', {
+    'תאריך': today, 'מבנה': [sId], 'חומר ריסוס': [mId], 'מינון ': 100,
+    'תוכנית שתילה': planWithCrop.id, 'הערות': notes,
+  });
+  // נקרא בדיוק כמו המסך (בלי raw=1), כולל השדה האמיתי כפי שנשמר
+  const saved = (await get('ריסוסים', `?maxRecords=50&filterByFormula=${encodeURIComponent(`RECORD_ID()='${rec.id}'`)}`))[0]
+    || (await api('GET', `${enc('ריסוסים')}/${rec.id}`));
+  const parsed = cropFromNotes(saved['הערות']);
+  if (parsed?.crop !== 'מלפפון' || parsed?.variety !== 'היילוקס') throw new Error(`הפירוק מהרשומה החיה נכשל: ${JSON.stringify(parsed)}`);
+  if (planCrop === 'מלפפון') return `דולג חלקית — גידול התוכנית גם הוא "מלפפון"; הפירוק עבד`;
+  // התוכנית אכן מקושרת ואומרת גידול אחר — וההערות גוברות עליה
+  if (String(saved['תוכנית שתילה'] || '') !== planWithCrop.id) throw new Error('התוכנית לא נשמרה — הבדיקה לא מוכיחה כלום');
+  return `תוכנית "${planCrop}" מקושרת, והתצוגה לוקחת "מלפפון · היילוקס" מההערות`;
+});
+
 // ============ 4. ניקוי מלא ============
 // תקרית 2026-09-03 (לילה): רשומת בדיקה בטבלה מנוטרת ע"י Make (חשבונית)
 // שרדה את הניקוי בריצה קודמת ונשארה בטבלה החיה עד שאותרה ידנית למחרת —

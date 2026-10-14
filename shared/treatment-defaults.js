@@ -49,6 +49,66 @@ export const BASIS_BY_TYPE = {
   'הגמעה': 'לדונם',
 };
 
+// ============================================================
+// AS-4 (14.10.2026) — הגמעה אינה עובדת עם מרסס
+// ------------------------------------------------------------
+// תמר: "טיפול מסוג הגמעה לא אמור לקבל נתוני מרסס." הגמעה היא טפטוף —
+// אין בה מיכל ואין מרססים. לכן בהגמעה: אין ברירת מחדל לגודל מרסס, אין
+// מילוי אוטומטי של מספר מרססים, וגודל המרסס **אינו חובה**. השדות
+// **נשארים גלויים** וניתן למלא אותם ידנית (וזה נשמר).
+//
+// ⚠️ **ברירת המחדל "200" חיה ב-Airtable, לא בקוד שלנו.**
+// `גודל מרסס בליטר` הוא singleSelect עם default="200" **בשדה עצמו**
+// (אומת בייצור 14.10 ברשומת-QA מינימלית: רשומה שנוצרה עם 3 שדות חזרה
+// עם "200"). בדיוק אותה מלכודת שפגשה AP ב-`סוג מרסס` ("מרסס א").
+// לכן **דילוג על הכתיבה אינו משאיר את השדה ריק** — כדי שהגמעה תישמר
+// בלי גודל מרסס חייבים לכתוב `null` **במפורש** (ר' saveForm ב-
+// TreatmentsPage.jsx). ומה שעבד ל-AP בשדה הטקסט (מחרוזת ריקה) **נשבר
+// כאן**: `''` לשדה בחירה נדחה ב-"Insufficient permissions to create new
+// select option". `null` נמדד ועובד.
+//
+// 🚫 **הייבוא מדוח אינו מושפע מכאן** — הוראת תמר: הייבוא נשאר בדיוק כמו
+// היום, כולל 200 בשורות הגמעה (מברירת המחדל של השדה). `usesSprayer`
+// נקראת **רק** מהטופס הידני; `spray-report-import.js` לא נגוע.
+// ============================================================
+
+/** ברירות המחדל שהטופס ממלא לבד בטיפול **חדש** (ולא בעריכת קיים) */
+export const NEW_TREATMENT_SPRAYER_SIZE = '200';
+export const NEW_TREATMENT_SPRAYER_COUNT = '1';
+
+/**
+ * האם סוג הטיפול הזה עובד עם מרסס בכלל. סוג ריק/לא-מוכר נחשב "כן" —
+ * כדי שההתנהגות הקיימת (ברירת מחדל 200 + חובה) לא תשתנה בשום מצב חוץ
+ * מהגמעה מוצהרת.
+ */
+export function usesSprayer(type) {
+  return canonicalTreatmentType(type) !== 'הגמעה';
+}
+
+/** האם גודל המרסס הוא שדה חובה בטופס עבור הסוג הזה */
+export function sprayerSizeRequired(type) {
+  return usesSprayer(type);
+}
+
+/**
+ * AS-4 — מה לעשות בשדות המרסס כשהמשתמשת משנה "סוג טיפול" בטופס.
+ * פונקציה טהורה, כדי שהכלל יהיה בדיק (qa-check).
+ *
+ * הכלל: במעבר לסוג שאין בו מרסס (הגמעה) מנקים **רק** ערכים שהטופס מילא
+ * בעצמו — ברירות המחדל של טיפול חדש. ערך שהמשתמשת בחרה/הקלידה, וכל ערך
+ * בעריכת רשומה **קיימת** (`isNew: false`), לא נוגעים בו לעולם: זה היה
+ * מאבד נתון אמיתי. מעבר לריסוס אינו ממלא כלום מחדש.
+ * @returns {{ sprayerSize: string, sprayers: string }}
+ */
+export function sprayerFieldsOnTypeChange({ nextType, sprayerSize, sprayers, isNew }) {
+  const keep = { sprayerSize: sprayerSize ?? '', sprayers: sprayers ?? '' };
+  if (usesSprayer(nextType) || !isNew) return keep;
+  return {
+    sprayerSize: String(keep.sprayerSize) === NEW_TREATMENT_SPRAYER_SIZE ? '' : keep.sprayerSize,
+    sprayers: String(keep.sprayers) === NEW_TREATMENT_SPRAYER_COUNT ? '' : keep.sprayers,
+  };
+}
+
 /**
  * הערך **המדויק** מתוך רשימת האפשרויות של שדה בחירה, שמתאים ל-wanted.
  * כתיבת ערך שאינו ברשימה נדחית ע"י Airtable, ולכן כל ערך שנכתב לשדה
@@ -98,4 +158,8 @@ export function basisOnTypeChange({ prevType, nextType, currentBasis, basisChoic
   return defaultBasisForType(nextType, basisChoices) || '';
 }
 
-export default { TREATMENT_TYPES, BASIS_BY_TYPE, canonicalTreatmentType, matchChoice, treatmentTypeOption, defaultBasisForType, basisOnTypeChange };
+export default {
+  TREATMENT_TYPES, BASIS_BY_TYPE, canonicalTreatmentType, matchChoice, treatmentTypeOption,
+  defaultBasisForType, basisOnTypeChange,
+  NEW_TREATMENT_SPRAYER_SIZE, NEW_TREATMENT_SPRAYER_COUNT, usesSprayer, sprayerSizeRequired, sprayerFieldsOnTypeChange,
+};

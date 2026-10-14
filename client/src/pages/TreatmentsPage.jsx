@@ -15,13 +15,21 @@ import {
 } from '../utils/sprayCost.js';
 import { displayName, firstId } from '../utils/resolve.js';
 import PageHeader from '../components/PageHeader.jsx';
+import { SprayerBlock, SprayerTag } from '../components/SprayerInfo.jsx';
+import TreatmentPhotos from '../components/TreatmentPhotos.jsx';
+import { planIdList, planChoicesFor } from '../utils/treatmentPlans.js';
+import { visibleNotes, importNoteLines, reportNumberFromNotes, composeNotes, cropFromNotes } from '../utils/treatmentNotes.js';
 import { useEscapeClose } from '../utils/navigation.jsx';
 import { confirmDialog, toast } from '../utils/ui.js';
 import { PERIOD_PRESETS, periodRange, inPeriod, periodDisclosure } from '../utils/period.js';
 // מקור אמת אחד לסוג הטיפול ולברירת המחדל של בסיס המינון — אותו קובץ
 // שהשרת מייבא בייבוא מדוח (משימה AP), כדי שהטופס הידני והייבוא לא
 // יחשבו דברים שונים על אותו סוג.
-import { canonicalTreatmentType, basisOnTypeChange } from '../../../shared/treatment-defaults.js';
+import {
+  canonicalTreatmentType, basisOnTypeChange,
+  usesSprayer, sprayerSizeRequired, sprayerFieldsOnTypeChange,
+  NEW_TREATMENT_SPRAYER_SIZE, NEW_TREATMENT_SPRAYER_COUNT,
+} from '../../../shared/treatment-defaults.js';
 
 // ============================================================
 // תכנון טיפולים — סעיפים 22 ו-25 באיפיון
@@ -122,7 +130,10 @@ const SOURCE_BADGE = {
 };
 function SourceBadge({ ev, small }) {
   const s = SOURCE_BADGE[ev.source] || SOURCE_BADGE.manual;
-  return <span className="badge" title={s.title} style={{ background: s.bg, color: s.color, fontSize: small ? 10 : 11, padding: small ? '1px 6px' : undefined }}>{s.label}</span>;
+  // AS-5: בלוק הערות-הייבוא הוסתר מהכרטיס, ולכן **מספר הדוח** עובר לתג —
+  // זה המידע היחיד מהבלוק שלא מופיע בשום שורה אחרת בכרטיס.
+  const label = ev.source === 'report' && ev.reportNumber ? `${s.label} #${ev.reportNumber}` : s.label;
+  return <span className="badge" title={s.title} style={{ background: s.bg, color: s.color, fontSize: small ? 10 : 11, padding: small ? '1px 6px' : undefined }}>{label}</span>;
 }
 
 /** תג "היום / מתחיל היום / יום אחרון" (סעיף 22 — Highlight) */
@@ -244,12 +255,22 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       const structs = Array.isArray(t['מבנה']) ? t['מבנה'] : (t['מבנה'] ? [t['מבנה']] : []);
       const structNames = structs.map((x) => (x && typeof x === 'object' ? x.name : String(x))).filter(Boolean);
       const structIds = structs.map((x) => (x && typeof x === 'object' ? x.id : String(x)));
-      const planId = firstId(t['תוכנית שתילה']);
-      const plan = plans.find((p) => p.id === planId);
-      const crop = plan ? (displayName(plan['גידולים'], '') || displayName(plan['סוג גידול'], '')) : '';
+      // AS-2: שלושת המצבים — כמה תוכניות (מופרדות בפסיק), אחת בודדת בלי
+      // פסיקים (כל הטיפולים הקיימים והייבוא מדוח), או ריק (מבנים בלבד).
+      const planIds = planIdList(t['תוכנית שתילה']);
+      const linkedPlans = planIds.map((id) => plans.find((p) => p.id === id)).filter(Boolean);
+      // ⚠️ AS-7: בטיפול מיובא, שורת ההערות `גידול/זן:` **גוברת** על התוכנית
+      // — זה מה שכתוב בדוח, וזה הקובע (הוראת תמר). אין שורה כזו (טיפול
+      // ידני) → נפילה-לאחור לגזירה מהתוכנית, בדיוק כמו עד היום.
+      const fromReport = cropFromNotes(t['הערות']);
+      const cropNames = fromReport ? [fromReport.crop] : [...new Set(linkedPlans
+        .map((p) => displayName(p['גידולים'], '') || displayName(p['סוג גידול'], ''))
+        .filter(Boolean))];
       // "זן" אינו שדה בתוכנית השתילה (נבדק בסכימה 6.10.2026) — הוא "תיאור" ברשומת הגידול, למשל "זן 67" / "אדום"
-      const cropRec = plan ? crops.find((x) => x.id === firstId(plan['גידולים'])) : null;
-      const variety = cropRec ? String(cropRec['תיאור'] || '').trim() : '';
+      const varietyNames = fromReport ? [fromReport.variety].filter(Boolean) : [...new Set(linkedPlans
+        .map((p) => crops.find((x) => x.id === firstId(p['גידולים'])))
+        .map((c) => (c ? String(c['תיאור'] || '').trim() : ''))
+        .filter(Boolean))];
       // סעיף AR: רשומת החומר נדרשת ליחידת המינון, למחיר ליחידה ולעלות
       const materialRec = materials.find((m) => m.id === firstId(t['חומר ריסוס'])) || null;
       return {
@@ -260,27 +281,39 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
         source: treatmentSource(t),
         material: displayName(t['חומר ריסוס'], 'לא זמין'),
         structNames, structIds,
-        crop: crop || 'לא זמין',
-        variety: variety || '',
-        number: t['מספר ריסוס'],
+        planIds, plans: linkedPlans,
+        cropNames, varietyNames,
+        crop: cropNames.join(' · ') || 'לא זמין',
+        variety: varietyNames.join(' · '),
+        // AS-6: `מספר ריסוס` (autoNumber של Airtable) **הוסר מהוויו-מודל
+        // כולו** — הוא מונה רשומות פנימי ולא מספר שמשמעותי למשתמשת, ולא
+        // נשאר לו שום צרכן אחרי שהשורה בכרטיס הוסרה.
+        // ⚠️ לא לבלבל עם השורה `מספר ריסוס: X` **בהערות**, שהייבוא כותב
+        // מעמודת הדוח של תמר — היא מוסתרת מהתצוגה ע"י AS-5 ונשארת בנתונים.
         dosage: pick(t, DOSAGE_FIELDS),
         basis: t['בסיס מינון'] || '',
         executor: displayName(t['מבצע'], ''),
         status: t['סטטוס'] || '',
         done: !!t['בוצע'],
+        // AS-5: `notes` נשארות **גולמיות** — הן שק החיפוש של הרשימה (חיפוש
+        // "מדוח ריסוסים #255" חייב להמשיך לעבוד). לתצוגה יש notesVisible.
         notes: t['הערות'] || '',
+        notesVisible: visibleNotes(t['הערות']),
+        reportNumber: reportNumberFromNotes(t['הערות']),
         days: Math.round((range.end - range.start) / 86400000) + 1,
       };
     }).filter(Boolean);
   }, [treatments, plans, crops, materials]);
 
-  const cropOptions = useMemo(() => [...new Set(events.map((e) => e.crop).filter((c) => c && c !== 'לא זמין'))].sort(), [events]);
-  const varietyOptions = useMemo(() => [...new Set(events.map((e) => e.variety).filter(Boolean))].sort(), [events]);
+  // AS-2: טיפול יכול להחזיק כמה תוכניות, ולכן גם כמה גידולים/זנים —
+  // האפשרויות והסינון עובדים על הרשימה ולא על המחרוזת המאוחדת לתצוגה.
+  const cropOptions = useMemo(() => [...new Set(events.flatMap((e) => e.cropNames))].sort(), [events]);
+  const varietyOptions = useMemo(() => [...new Set(events.flatMap((e) => e.varietyNames))].sort(), [events]);
 
   const filtered = useMemo(() => events.filter((e) => {
     if (fStructure && !e.structIds.includes(fStructure)) return false;
-    if (fCrop && e.crop !== fCrop) return false;
-    if (fVariety && e.variety !== fVariety) return false;
+    if (fCrop && !e.cropNames.includes(fCrop)) return false;
+    if (fVariety && !e.varietyNames.includes(fVariety)) return false;
     if (fSource && e.source !== fSource) return false;
     if (fType && e.type !== fType) return false;
     return true;
@@ -289,7 +322,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
   const onDate = useCallback((d) => filtered.filter((e) => e.start <= d && e.end >= d), [filtered]);
 
   const sourceCounts = useMemo(() => {
-    const base = events.filter((e) => (!fStructure || e.structIds.includes(fStructure)) && (!fCrop || e.crop === fCrop) && (!fVariety || e.variety === fVariety) && (!fType || e.type === fType));
+    const base = events.filter((e) => (!fStructure || e.structIds.includes(fStructure)) && (!fCrop || e.cropNames.includes(fCrop)) && (!fVariety || e.varietyNames.includes(fVariety)) && (!fType || e.type === fType));
     return { all: base.length, manual: base.filter((e) => e.source === 'manual').length, report: base.filter((e) => e.source === 'report').length };
   }, [events, fStructure, fCrop, fVariety, fType]);
 
@@ -333,20 +366,28 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       to: ev ? toISO(ev.end) : toISO(startOfToday()),
       structures: ev ? ev.structIds : [],
       material: r ? firstId(r['חומר ריסוס']) || '' : '',
-      plan: typeof r?.['תוכנית שתילה'] === 'string' ? r['תוכנית שתילה'] : '',
+      // AS-2: מערך מזהים. מזהה בודד ברשומה קיימת → מערך באורך 1.
+      plan: planIdList(r?.['תוכנית שתילה']),
       sprayer: r?.['סוג מרסס'] || '',
-      // ברירת מחדל לטיפול חדש: 200 ליטר (הגודל הנפוץ בפועל) — בעריכת טיפול קיים מוצג הערך השמור בפועל
-      sprayerSize: ev ? (r?.['גודל מרסס בליטר'] || '') : '200',
+      // ברירת מחדל לטיפול חדש: 200 ליטר (הגודל הנפוץ בפועל) — בעריכת טיפול קיים מוצג הערך השמור בפועל.
+      // AS-4: בבחירת "הגמעה" בטופס ברירת המחדל הזו מתנקה (ר' changeTreatmentType),
+      // אבל ערך **שמור** של רשומה קיימת לא נוגעים בו גם אם היא הגמעה.
+      sprayerSize: ev ? (r?.['גודל מרסס בליטר'] || '') : NEW_TREATMENT_SPRAYER_SIZE,
       // AP-2.3: בפתיחה מציגים את הערכים השמורים כמו שהם — **בלי** להחיל
       // ברירת מחדל על הבסיס. רק שינוי של "סוג טיפול" בטופס מפעיל אותה.
       treatmentType: r?.['סוג טיפול'] || '',
       basis: r?.['בסיס מינון'] || '',
       // סעיף AR-3: ברירת מחדל 1 בטיפול חדש; בטיפול קיים מוצג הערך השמור
       // (ריק נשאר ריק — ובחישוב נחשב 1, ולא נכתב ל-Airtable מיוזמתנו)
-      sprayers: r ? (r['מספר המרססים'] ?? '') : '1',
+      sprayers: r ? (r['מספר המרססים'] ?? '') : NEW_TREATMENT_SPRAYER_COUNT,
       dosage: r ? (pick(r, DOSAGE_FIELDS) ?? '') : '',
       status: r?.['סטטוס'] || '',
-      notes: String(r?.['הערות'] || '').replace(/\n?תאריך סיום:.*$/m, '').trim(),
+      // AS-5: בטופס מוצגות ההערות **החופשיות** בלבד; שורות-הייבוא (הסמן,
+      // "סוג טיפול:", "תאריך סיום:" ...) נשמרות בצד ומוחזרות בשמירה, כדי
+      // שעריכת הערה לא תמחק את מפתח האידמפוטנטיות של הייבוא ואת טווח
+      // התאריכים. ר' utils/treatmentNotes.js.
+      notes: visibleNotes(r?.['הערות']),
+      hiddenNotes: importNoteLines(r?.['הערות']),
       done: !!r?.['בוצע'],
     });
   };
@@ -356,20 +397,33 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
     if (!f.from) { setActionError('חסר שדה חובה: מתאריך'); return; }
     if (!f.structures.length) { setActionError('חסר שדה חובה: מבנה'); return; }
     if (!f.material) { setActionError('חסר שדה חובה: חומר ריסוס'); return; }
-    if (!f.plan) { setActionError('חסר שדה חובה: תוכנית שתילה (גידול / זן)'); return; }
-    if (!f.sprayerSize) { setActionError('חסר שדה חובה: גודל מרסס'); return; }
+    // AS-2 (הכרעת תמר, 14.10): `תוכנית שתילה` **אינו חובה** — "אפשרות גם
+    // לשייך מבנים בלבד". לכן אין כאן ולידציה. אפס/אחת/כמה — הכל תקף.
+    // AS-4: בהגמעה אין מרסס — גודל מרסס אינו חובה. בריסוס (וכל סוג אחר,
+    // כולל "ללא") הוא נשאר חובה בדיוק כמו היום.
+    if (sprayerSizeRequired(f.treatmentType) && !f.sprayerSize) { setActionError('חסר שדה חובה: גודל מרסס'); return; }
     if (!f.basis) { setActionError('חסר שדה חובה: בסיס מינון'); return; }
     if (f.dosage === '' || f.dosage == null || Number.isNaN(Number(f.dosage)) || Number(f.dosage) <= 0) { setActionError('חסר שדה חובה: מינון (מספר גדול מאפס)'); return; }
     if (f.sprayers !== '' && f.sprayers != null && (Number.isNaN(Number(f.sprayers)) || Number(f.sprayers) < 1)) { setActionError('מספר מרססים חייב להיות מספר שלם מ-1 ומעלה'); return; }
     // השדה "תאריך" ב-Airtable הוא תאריך בודד — טווח נשמר כתאריך התחלה + שורת סיום בהערות
     const fmt = (iso) => { const [y, m, d] = iso.split('-'); return `${d}/${m}/${y}`; };
-    let notesValue = String(f.notes || '').replace(/\n?תאריך סיום:.*$/m, '').trim();
-    if (f.to && f.to !== f.from) notesValue = `${notesValue}${notesValue ? '\n' : ''}תאריך סיום: ${fmt(f.to)}`;
+    // AS-5: שורות-הייבוא שהוסתרו מהטופס **חוזרות** לכאן — אחרת עריכת הערה
+    // הייתה מוחקת את הסמן [מדוח ריסוסים #N] (ושוברת את האידמפוטנטיות של
+    // הייבוא ואת מחיקת-הדוח) ואת שורת תאריך-הסיום.
+    const notesValue = composeNotes({
+      hiddenLines: f.hiddenNotes || [],
+      freeText: f.notes,
+      endDateLine: f.to && f.to !== f.from ? `תאריך סיום: ${fmt(f.to)}` : '',
+    });
     const fields = {
       'תאריך': f.from,
       'מבנה': f.structures,
       'חומר ריסוס': [f.material],
-      'תוכנית שתילה': f.plan || null,
+      // AS-2: מזהים מופרדים בפסיק באותו שדה טקסט. תוכנית אחת → בלי פסיק
+      // בכלל, כלומר בדיוק אותו ערך שנשמר עד היום. אפס תוכניות → מחרוזת
+      // ריקה, ו**לא** null: null נמחק מה-fields למטה (זו הדרך של המסך
+      // "לא לכתוב שדה"), וזה היה משאיר שיוך ישן על רשומה שנערכה.
+      'תוכנית שתילה': f.plan.join(','),
       'סוג מרסס': f.sprayer || null, // שם המכשיר, טקסט חופשי — לא סוג הטיפול
       'גודל מרסס בליטר': f.sprayerSize || null,
       'סוג טיפול': f.treatmentType || null,
@@ -381,6 +435,13 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
       'בוצע': !!f.done,
     };
     Object.keys(fields).forEach((k) => { if (fields[k] === null) delete fields[k]; });
+    // ⚠️ AS-4: ל`גודל מרסס בליטר` יש ברירת-מחדל "200" **ב-Airtable עצמו**
+    // (singleSelect עם default; אומת בייצור 14.10). לכן "לא לכתוב" אינו
+    // משאיר אותו ריק — Airtable ימלא 200. כשהשדה ריק בטופס (הגמעה, או
+    // ניקוי בעריכה) כותבים `null` **במפורש**, אחרי לולאת הניקוי שלמעלה.
+    // מחרוזת ריקה **אינה** עובדת כאן (שדה בחירה: "Insufficient permissions
+    // to create new select option"), ולכן דווקא null.
+    if (!f.sprayerSize) fields['גודל מרסס בליטר'] = null;
     const ok = await runAction(async () => {
       if (f.id) await app.api.update('ריסוסים', f.id, fields);
       else await app.api.create('ריסוסים', fields);
@@ -552,6 +613,7 @@ export default function TreatmentsPage({ initialTab = 'calendar' }) {
           date={dayDrawer.date} events={events.filter((e) => dayDrawer.ids.includes(e.id))} busy={busy} error={actionError}
           onClose={() => setDayDrawer(null)}
           onEdit={canEdit ? openForm : null} onToggle={canEdit ? toggleDone : null} onDelete={canEdit ? removeTreatment : null}
+          canManagePhotos={canEdit} onPhotosChanged={load}
         />
       )}
 
@@ -623,7 +685,11 @@ function EventChip({ ev, day, compact, onClick }) {
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{ev.done ? '✓ ' : ''}{ev.material}</span>
         {ev.source === 'report' && <span title="מניתוח דוח" style={{ fontSize: 10 }}>📄</span>}
       </div>
-      {!compact && <div style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ev.structNames.join(', ') || 'לא זמין'}</div>}
+      {/* AS-1: תג המרסס — רואים אותו בלוח בלי לפתוח את הכרטיס */}
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+        {!compact && <span style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{ev.structNames.join(', ') || 'לא זמין'}</span>}
+        <SprayerTag raw={ev.raw} small={compact} />
+      </div>
       {badge && <span className="badge" style={{ background: TODAY_BORDER, color: '#fff', fontSize: 10, padding: '1px 7px', marginTop: 2 }}>{badge}</span>}
     </div>
   );
@@ -773,8 +839,23 @@ function TreatmentAmounts({ ev, row }) {
   );
 }
 
+/**
+ * AS-2: התוכניות המשויכות, בפורמט שתמר ביקשה —
+ * "33 (עגבנייה, מבנה 4) · 35 (...)", ובלי תוכניות "מבנים בלבד".
+ * מזהה שנשמר אך לא נמצא בטבלה אינו נעלם בשקט.
+ */
+function planCardLabel(ev) {
+  if (!ev.planIds.length) return 'מבנים בלבד — ללא תוכנית';
+  return ev.planIds.map((id) => {
+    const p = ev.plans.find((x) => x.id === id);
+    if (!p) return 'תוכנית שלא נמצאה';
+    const detail = [displayName(p['גידולים'], '') || displayName(p['סוג גידול'], ''), displayName(p['מבנה'], '')].filter(Boolean).join(', ');
+    return `${p['מספר תוכנית'] ?? '—'}${detail ? ` (${detail})` : ''}`;
+  }).join(' · ');
+}
+
 // ---------- כרטיס טיפול ----------
-function DayDrawer({ date, events, busy, error, onClose, onEdit, onToggle, onDelete }) {
+function DayDrawer({ date, events, busy, error, onClose, onEdit, onToggle, onDelete, canManagePhotos, onPhotosChanged }) {
   useEscapeClose(onClose, !busy); // סגירה במקש Escape
   return (
     <div className="drawer-overlay" onClick={onClose}>
@@ -806,12 +887,23 @@ function DayDrawer({ date, events, busy, error, onClose, onEdit, onToggle, onDel
                 {row('מבנה', <Chips names={ev.structNames} />)}
                 {row('גידול', ev.crop)}
                 {row('זן', ev.variety || '—')}
-                {row('מספר ריסוס', ev.number ?? '—')}
+                {/* AS-2: כמה תוכניות שתילה לטיפול אחד — מוצגות כולן */}
+                {row(ev.planIds.length > 1 ? `תוכניות (${formatNumber(ev.planIds.length, 0)})` : 'תוכנית שתילה', planCardLabel(ev))}
+                {/* AS-6: שורת "מספר ריסוס" הוסרה — `מספר ריסוס` הוא autoNumber
+                    של Airtable (מונה רשומות פנימי) ולא מספר שאומר משהו למשתמשת. */}
                 {row('מינון', <DosageText ev={ev} />)}
                 {row('מבצע', ev.executor || 'לא זמין')}
                 {/* AR-2/AR-3: כמות כוללת, נפח מים ועלות — ר' client/src/utils/sprayCost.js */}
                 <TreatmentAmounts ev={ev} row={row} />
-                {ev.notes && <div style={{ fontSize: 13, marginTop: 8 }}>{ev.notes}</div>}
+                {/* AS-1: בלוק המרסס. `מספר מרססים` ונפח המים מוצגים כבר ע"י
+                    TreatmentAmounts של AR (עם לוגיקת ה"לדונם" שלו) — ולכן
+                    מושמטים כאן, כדי שלא תהיה שורה כפולה ולא שני חישובים. */}
+                <SprayerBlock raw={ev.raw} row={row} omit={['count', 'water']} />
+                {/* AS-3: גלריית התמונות של הטיפול (שדה `תמונות`) */}
+                <TreatmentPhotos treatmentId={ev.id} raw={ev.raw} canManage={!!canManagePhotos} onChanged={onPhotosChanged} />
+                {/* AS-5: שורות-הייבוא מוסתרות (הן חוזרות על הכרטיס) — ר'
+                    utils/treatmentNotes.js. אין טקסט חופשי → אין בלוק בכלל. */}
+                {ev.notesVisible && <div style={{ fontSize: 13, marginTop: 8, whiteSpace: 'pre-line' }}>{ev.notesVisible}</div>}
               </div>
             );
           })}
@@ -824,6 +916,7 @@ function DayDrawer({ date, events, busy, error, onClose, onEdit, onToggle, onDel
 // ---------- טופס יצירה / עריכה ----------
 function TreatmentForm({ form, setForm, busy, error, structures, materials, workers, plans, options, onCancel, onSave }) {
   useEscapeClose(onCancel, !busy); // סגירה במקש Escape
+  const [showOtherPlans, setShowOtherPlans] = useState(false); // AS-2
   const set = (k, v) => setForm({ ...form, [k]: v });
   const toggleStruct = (id) => set('structures', form.structures.includes(id) ? form.structures.filter((x) => x !== id) : [...form.structures, id]);
   const mat = materials.find((m) => m.id === form.material);
@@ -835,19 +928,39 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
   const waterText = sprayerN >= 1 && Number.isFinite(sprayerSizeN) && sprayerSizeN > 0 && form.basis !== 'לדונם'
     ? `${formatNumber(sprayerN, 0)} ${sprayerN === 1 ? 'מרסס' : 'מרססים'} × ${formatNumber(sprayerSizeN)} ל' = ${formatNumber(sprayerN * sprayerSizeN)} ליטר מים`
     : '';
-  const relevantPlans = plans.filter((p) => !form.structures.length || form.structures.includes(firstId(p['מבנה'])));
+  // ⚠️ AS-2: הסינון לפי מבנה נשאר **בדיוק** כמו שהיה (עבר ל-planChoicesFor
+  // ב-utils/treatmentPlans.js, אותו תנאי מילה-במילה) — זו התוספת שלא מחליפה
+  // כלום. סינון-הזמן אינו מסתיר תוכניות: הוא מסמן "פעילה בתאריך הטיפול"
+  // ומקדים אותן ברשימה, כך ששום תוכנית של המבנה לא נחסמת.
   const planLabel = (p) => `תוכנית ${p['מספר תוכנית'] ?? ''} · ${displayName(p['מבנה'], '')} · ${displayName(p['גידולים'], '') || displayName(p['סוג גידול'], '')}`;
   const withCurrent = (list, current) => (current && !list.includes(current) ? [current, ...list] : list);
+  // AS-2: בחירת תוכנית **אינה** משנה את המבנים שנבחרו — היא רק מסמנת.
+  const togglePlan = (id) => set('plan', form.plan.includes(id) ? form.plan.filter((x) => x !== id) : [...form.plan, id]);
+  const planChoices = useMemo(
+    () => planChoicesFor(plans, { structures: form.structures, from: form.from, to: form.to, selected: form.plan }),
+    [plans, form.structures, form.from, form.to, form.plan],
+  );
+  const activeCount = planChoices.filter((c) => c.active).length;
+  // ברירת המחדל: התוכניות הפעילות בתאריך הטיפול. השאר מאחורי קישור —
+  // **לא חוסם**: תוכנית שמורה מוצגת תמיד, וכשאין אף פעילה מוצג הכל.
+  const showAllPlans = showOtherPlans || activeCount === 0;
+  const visiblePlans = showAllPlans ? planChoices : planChoices.filter((c) => c.active || form.plan.includes(c.id));
+  const hiddenPlans = planChoices.length - visiblePlans.length;
 
   // AP-2.2: בחירת "סוג טיפול" ממלאת את "בסיס מינון" לפי ברירת המחדל
   // (ריסוס → ל-100 ליטר, הגמעה → לדונם; ר' shared/treatment-defaults.js),
   // **אלא אם** המשתמשת בחרה בסיס בעצמה — אז לא דורסים. "בחרה בעצמה" =
   // הבסיס הנוכחי אינו ריק ואינו ברירת המחדל של הסוג שהיה קודם.
+  // AS-4: ובמעבר ל"הגמעה" — שדות המרסס שהטופס מילא לבד מתנקים (הגמעה
+  // היא טפטוף, אין בה מרסס). ערך שנבחר ידנית, וכל ערך בעריכת רשומה
+  // קיימת, לא נוגעים בו. ר' shared/treatment-defaults.js.
   const changeTreatmentType = (value) => setForm({
     ...form,
     treatmentType: value,
     basis: basisOnTypeChange({ prevType: form.treatmentType, nextType: value, currentBasis: form.basis, basisChoices: options.basis }),
+    ...sprayerFieldsOnTypeChange({ nextType: value, sprayerSize: form.sprayerSize, sprayers: form.sprayers, isNew: !form.id }),
   });
+  const needsSprayer = usesSprayer(form.treatmentType);
 
   return (
     <div className="modal-overlay" onClick={() => !busy && onCancel()}>
@@ -891,11 +1004,35 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
             </select>
           </div>
 
-          <div className="form-group"><label>תוכנית שתילה (גידול / זן) <span className="required" /></label>
-            <select className="select" style={{ width: '100%' }} required value={form.plan} onChange={(e) => set('plan', e.target.value)}>
-              <option value="">בחר תוכנית...</option>
-              {relevantPlans.map((p) => <option key={p.id} value={p.id}>{planLabel(p)}</option>)}
-            </select>
+          {/* AS-2: בחירה מרובה, **אופציונלית לגמרי** (אפס/אחת/כמה), ובלי
+              שום בחירה אוטומטית. "מבנים בלבד" הוא מצב תקף ושמיר. */}
+          <div className="form-group"><label>תוכניות שתילה (גידול / זן) — אופציונלי</label>
+            <div style={{ border: '1px solid var(--border)', borderRadius: 8, maxHeight: 180, overflowY: 'auto', padding: 6, background: '#fff' }}>
+              {visiblePlans.length === 0 && (
+                <div className="muted" style={{ fontSize: 12, padding: 4 }}>
+                  {form.structures.length ? 'אין תוכניות שתילה למבנים שנבחרו.' : 'יש לבחור מבנה כדי לראות את תוכניות השתילה שלו.'}
+                </div>
+              )}
+              {visiblePlans.map((c) => (
+                <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '4px 2px', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={form.plan.includes(c.id)} onChange={() => togglePlan(c.id)} />
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {c.plan ? planLabel(c.plan) : `תוכנית שמורה (${c.id})`}
+                  </span>
+                  {c.active && <span className="badge" style={{ background: '#E5F7EE', color: '#047857', fontSize: 10, whiteSpace: 'nowrap' }}>פעילה בתאריך הטיפול</span>}
+                </label>
+              ))}
+            </div>
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              {activeCount === 0 && planChoices.length > 0 && 'אין תוכנית שפעילה במבנים האלה בתאריך הטיפול — מוצגות כל התוכניות שלהם. '}
+              {activeCount > 0 && `${formatNumber(activeCount, 0)} תוכניות פעילות בתאריך הטיפול. `}
+              אפשר להשאיר ריק ולשייך מבנים בלבד — אין בחירה אוטומטית.
+            </div>
+            {!showAllPlans && hiddenPlans > 0 && (
+              <button type="button" className="btn btn-sm btn-ghost" style={{ marginTop: 4 }} onClick={() => setShowOtherPlans(true)}>
+                הצג גם תוכניות אחרות במבנים האלה ({formatNumber(hiddenPlans, 0)})
+              </button>
+            )}
           </div>
 
           <div className="grid-2" style={{ gap: 12 }}>
@@ -906,11 +1043,15 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
               </select></div>
             <div className="form-group"><label>סוג מרסס</label>
               <input className="input" style={{ width: '100%' }} placeholder="שם המכשיר" value={form.sprayer} onChange={(e) => set('sprayer', e.target.value)} /></div>
-            <div className="form-group"><label>גודל מרסס (ליטר) <span className="required" /></label>
-              <select className="select" style={{ width: '100%' }} required value={form.sprayerSize} onChange={(e) => set('sprayerSize', e.target.value)}>
-                <option value="">בחר גודל...</option>
+            {/* AS-4: בהגמעה אין מרסס — לא חובה, בלי ברירת מחדל, ועדיין גלוי וניתן למלא */}
+            <div className="form-group"><label>גודל מרסס (ליטר) {needsSprayer ? <span className="required" /> : null}</label>
+              <select className="select" style={{ width: '100%' }} required={needsSprayer} value={form.sprayerSize} onChange={(e) => set('sprayerSize', e.target.value)}>
+                <option value="">{needsSprayer ? 'בחר גודל...' : 'ללא'}</option>
                 {withCurrent(options.sizes || [], String(form.sprayerSize || '')).filter(Boolean).map((s) => <option key={s} value={s}>{s}</option>)}
-              </select></div>
+              </select>
+              {!needsSprayer && (
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>בהגמעה אין מרסס — לא חובה</div>
+              )}</div>
             <div className="form-group"><label>סוג טיפול</label>
               <select className="select" style={{ width: '100%' }} value={form.treatmentType} onChange={(e) => changeTreatmentType(e.target.value)}>
                 <option value="">ללא</option>
@@ -926,7 +1067,8 @@ function TreatmentForm({ form, setForm, busy, error, structures, materials, work
               <input className="input" type="number" step="1" min="1" style={{ width: '100%' }} value={form.sprayers}
                 onChange={(e) => set('sprayers', e.target.value)} />
               <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>
-                {waterText || 'כמה מיכלים מולאו בטיפול הזה (ריק = 1)'}
+                {/* AS-4: בהגמעה לא ממלאים כלום אוטומטית, והשדה נשאר אופציונלי */}
+                {waterText || (needsSprayer ? 'כמה מיכלים מולאו בטיפול הזה (ריק = 1)' : 'בהגמעה אין מרססים — אפשר להשאיר ריק')}
               </div></div>
             <div className="form-group"><label>מינון <span className="required" />{dosageUnit(mat) ? <span style={{ color: 'var(--text-secondary)', fontWeight: 400 }}> ({dosageUnit(mat)})</span> : null}</label>
               <input className="input" type="number" step="any" min="0.0001" required style={{ width: '100%' }} value={form.dosage} onChange={(e) => set('dosage', e.target.value)} />
@@ -992,7 +1134,12 @@ function ListTab({ rows, search, setSearch, canEdit, busy, limit, onMore, onOpen
                     <td style={{ whiteSpace: 'nowrap' }}>{rangeLabel(e)}</td>
                     <td><span className="badge" style={{ background: c.bg, border: `1px solid ${c.border}` }}>{c.label}</span></td>
                     <td>{e.structNames.length ? e.structNames.map((n, i) => <span key={i} className="obj-chip static">🏗️ {n}</span>) : 'לא זמין'}</td>
-                    <td style={{ fontWeight: 600 }}>{e.material}</td>
+                    {/* AS-1: תג המרסס ליד שם החומר, גם ברשימה */}
+                    <td style={{ fontWeight: 600 }}>
+                      <span style={{ display: 'inline-flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>
+                        {e.material}<SprayerTag raw={e.raw} small />
+                      </span>
+                    </td>
                     <td>{[e.crop === 'לא זמין' ? '' : e.crop, e.variety].filter(Boolean).join(' · ') || '—'}</td>
                     <td><DosageText ev={e} /></td>
                     <td style={{ whiteSpace: 'nowrap' }}>{formatAmount(e.cost.quantity.total, e.materialRec, e.cost.quantity.unitKind) || <span title={missingText(e.cost.quantity.missing)}>—</span>}</td>
