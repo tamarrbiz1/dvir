@@ -80,6 +80,20 @@ export function waitingText(state) {
   return when ? `${base} (~${when})` : base;
 }
 
+// ============================================================
+// משימה AO (14.10.2026) — באיזה מודל המסמך נותח
+// ------------------------------------------------------------
+// כשהמכסה של המודל הראשי (Fable) נגמרת, הניתוח עובר אוטומטית לגיבוי
+// (Opus) — ר' server/src/model-cooldown.js. תמר ביקשה לראות במה נותח,
+// כי איכות החילוץ שונה בין המודלים.
+// ============================================================
+export function modelLabel(state) {
+  const model = state?.model;
+  if (!model) return null;
+  const short = String(model).replace(/^claude-/, '');
+  return state.modelFallback ? `נותח ב-${short} (גיבוי)` : `נותח ב-${short}`;
+}
+
 /** תיאור קצר למצב (לתג קומפקטי בטבלה) */
 export function inventoryAiSummary(state) {
   if (!state) return null;

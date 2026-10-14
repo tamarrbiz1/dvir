@@ -20,6 +20,7 @@ import { readFile } from 'node:fs/promises';
 import { fetchRecords as directFetchRecords } from './airtable.js';
 import { LOGIN_CODES_TABLE, canReadTable, canWriteTable } from './auth.js';
 import { analyzeExpenseDocument } from './document-analysis.js';
+import { parseQuotaResetAt, blockModel, isModelBlocked, clearModelBlock, modelsToTry, resetCooldownCache } from './model-cooldown.js';
 import { matchLinesToInventory, categoryOfDescription, normalize } from './inventory-matching.js';
 import {
   readState, deductFromInventoryItem, validateManualExpenseInput, ValidationError,
@@ -50,7 +51,8 @@ import { sweepOnce, lastFailure } from './forecast-watcher.js';
 import { findOverlaps, mergedSpan, pickSurvivor, validatePhaseChange, validatePhaseChanges, endOfWorkPeriod, PHASES } from './plan-periods.js';
 import { pickProvider, classifyAnalysisFailure } from './document-analysis.js';
 import { nextRetryAt, retryDecision, resumeCandidateReason, sweepStalledAnalyses, BACKOFF_MINUTES } from './analysis-retry.js';
-import { writeFile as writeFileAsync, chmod as chmodAsync, mkdtemp as mkdtempAsync } from 'node:fs/promises';
+import { writeFile as writeFileAsync, chmod as chmodAsync, mkdtemp as mkdtempAsync, rm as rmAsync } from 'node:fs/promises';
+import { existsSync as existsSyncNode } from 'node:fs';
 import nodePath from 'node:path';
 
 const BASE = process.env.QA_BASE || 'http://127.0.0.1:4000/api';
@@ -3176,6 +3178,297 @@ await test('V: מודל שמחזיר JSON עטוף ב-```json → נפרסר ב�
   return 'גדר markdown נסבלת';
 });
 
+// ============ AO (14.10.2026) — Fable → Opus כשנגמרת המכסה, וחזרה ============
+// תמר: "לפאבל נגמרו הקרדיטים. אם נגמר — עובר אוטומטית לאופוס, וכשפאבל
+// מתאפס — חוזר לפאבל." הבדיקות כאן רצות על **CLI מדומה** (אותה תבנית
+// של בדיקות V) ולכן אינן צורכות מכסה אמיתית ואינן תלויות במצב החשבון.
+// קובץ-המצב מופנה ל-/var/tmp כדי שלא ייגע ב-server/data של הייצור.
+
+/**
+ * CLI מדומה שמגיב **לפי `--model`**, ורושם כל מודל שנקרא לקובץ-לוג —
+ * כך אפשר לבדוק לא רק את התוצאה אלא גם ש-Fable **לא נקרא בכלל**
+ * כשהוא חסום (זו כל הנקודה: לא לבזבז עליו ניסיון).
+ * @param {Record<string, {payload: string, exit?: number}>} byModel
+ */
+async function fakeCliPerModel(byModel) {
+  const dir = await mkdtempAsync(nodePath.join('/var/tmp', 'qa-aocli-'));
+  const file = nodePath.join(dir, 'claude');
+  const log = nodePath.join(dir, 'called.log');
+  const branches = Object.entries(byModel).map(([model, { payload, exit = 0 }], i) => `
+  ${model})
+    cat <<'AO_EOF_${i}'
+${payload}
+AO_EOF_${i}
+    exit ${exit} ;;`).join('');
+  await writeFileAsync(file, `#!/bin/sh
+model=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--model" ]; then model="$2"; fi
+  shift
+done
+echo "$model" >> '${log}'
+case "$model" in${branches}
+  *)
+    echo '{"type":"result","subtype":"success","is_error":true,"result":"unexpected model"}'
+    exit 1 ;;
+esac
+`);
+  await chmodAsync(file, 0o755);
+  return { file, log, called: async () => (await readFile(log, 'utf8').catch(() => '')).split('\n').filter(Boolean) };
+}
+
+const okEnvelope = (lines = []) => JSON.stringify({
+  type: 'result', subtype: 'success', is_error: false, permission_denials: [],
+  result: JSON.stringify({ supplier: 'ספק בדיקה', date: '2026-10-14', total: 100, lines }),
+});
+// המעטפת האמיתית שנמדדה בייצור ב-14.10.2026 כשהמכסה של Fable נגמרה
+const fableQuotaEnvelope = JSON.stringify({
+  type: 'result', subtype: 'success', is_error: true, api_error_status: 429,
+  api_error: 'model_requires_usage_credits',
+  result: "You've reached your Fable limit. Switch to another model to continue.",
+  terminal_reason: 'api_error',
+});
+
+const AO_COOLDOWN_PATH = nodePath.join('/var/tmp', `qa-ao-cooldown-${Date.now()}.json`);
+/** מריץ fn עם CLI מדומה + קובץ-מצב נקי, ומחזיר את המצב שנכתב */
+async function withAoEnv(cliFile, fn) {
+  const savedPath = process.env.MODEL_COOLDOWN_PATH;
+  process.env.MODEL_COOLDOWN_PATH = AO_COOLDOWN_PATH;
+  resetCooldownCache();
+  try { return await withFakeCli(cliFile, fn); } finally {
+    if (savedPath === undefined) delete process.env.MODEL_COOLDOWN_PATH; else process.env.MODEL_COOLDOWN_PATH = savedPath;
+    resetCooldownCache();
+  }
+}
+const aoCleanState = async () => { await rmAsync(AO_COOLDOWN_PATH, { force: true }); resetCooldownCache(); };
+const aoReadState = async () => JSON.parse(await readFile(AO_COOLDOWN_PATH, 'utf8'));
+
+await test('AO טהור: חילוץ זמן האיפוס מהודעת השגיאה — epoch / "in N minutes" / "resets at 11pm" / אין', () => {
+  const now = Date.UTC(2026, 9, 14, 8, 0, 0);
+  const minutes = (at) => Math.round((at - now) / 60000);
+  const epoch = parseQuotaResetAt(`Claude AI usage limit reached|${Math.floor((now + 3600_000) / 1000)}`, now);
+  if (minutes(epoch) !== 60) throw new Error(`epoch אחרי "|" לא חולץ נכון: ${minutes(epoch)} דקות`);
+  const rel = parseQuotaResetAt('Please try again in 25 minutes', now);
+  if (minutes(rel) !== 25) throw new Error(`"in 25 minutes" לא חולץ: ${minutes(rel)}`);
+  const relHours = parseQuotaResetAt('resets in 2 hours', now);
+  if (minutes(relHours) !== 120) throw new Error(`"in 2 hours" לא חולץ: ${minutes(relHours)}`);
+  // 08:00 UTC = 11:00 בישראל; "resets at 11pm" = 23:00 בישראל = עוד 12 שעות
+  const abs = parseQuotaResetAt('Your limit resets at 11pm', now);
+  if (minutes(abs) !== 720) throw new Error(`"resets at 11pm" (שעון ישראל) לא חולץ נכון: ${minutes(abs)} דקות`);
+  // ⚠️ זו ההודעה האמיתית שהחשבון הזה מחזיר — ובה אין זמן, ולכן
+  // ברירת-המחדל (30 דקות) היא המסלול הרגיל ולא מקרה-קצה.
+  if (parseQuotaResetAt("You've reached your Fable limit. Switch to another model to continue.", now) !== null) {
+    throw new Error('הודעת-Fable האמיתית לא אמורה להחזיר זמן איפוס');
+  }
+  if (parseQuotaResetAt('reached|1000000000', now) !== null) throw new Error('זמן שעבר אמור להיות null');
+  const capped = parseQuotaResetAt('reached|9999999999', now);
+  if (Math.round((capped - now) / 3_600_000) !== 12) throw new Error(`זמן רחוק לא נחתך לתקרה: ${(capped - now) / 3_600_000} שעות`);
+  return 'epoch/דקות/שעות/שעה-מוחלטת חולצו · הודעת-Fable האמיתית → null · עבר → null · רחוק → נחתך ל-12 שעות';
+});
+
+await test('AO טהור: חסימה — נכתבת לקובץ, שורדת "restart", מדלגת על המודל, ונמחקת כשפג זמנה', async () => {
+  const savedPath = process.env.MODEL_COOLDOWN_PATH;
+  process.env.MODEL_COOLDOWN_PATH = AO_COOLDOWN_PATH;
+  try {
+    await aoCleanState();
+    const now = Date.now();
+    const models = ['claude-fable-5-1', 'claude-opus-5-5'];
+    if (modelsToTry(models, now).length !== 2) throw new Error('בלי חסימה — שני המודלים אמורים להיות בתור');
+    const until = blockModel('claude-fable-5-1', { reason: "You've reached your Fable limit.", now });
+    if (Math.round((until - now) / 60000) !== 30) throw new Error(`ברירת המחדל אמורה להיות 30 דקות, התקבל ${(until - now) / 60000}`);
+    // "restart": המטמון נשכח והמצב נקרא מהקובץ
+    resetCooldownCache();
+    if (!isModelBlocked('claude-fable-5-1', now)) throw new Error('החסימה לא שרדה טעינה מחדש מהקובץ');
+    const order = modelsToTry(models, now);
+    if (order.length !== 1 || order[0] !== 'claude-opus-5-5') throw new Error(`התור בזמן חסימה שגוי: ${JSON.stringify(order)}`);
+    // אחרי שהזמן עבר — Fable חוזר לתור (ראשון)
+    const later = until + 1000;
+    if (isModelBlocked('claude-fable-5-1', later)) throw new Error('החסימה לא פגה בזמן');
+    if (modelsToTry(models, later)[0] !== 'claude-fable-5-1') throw new Error('אחרי שהחסימה פגה, Fable אמור לחזור להיות ראשון');
+    if (!clearModelBlock('claude-fable-5-1')) throw new Error('clearModelBlock אמור לדווח שהייתה חסימה');
+    if (clearModelBlock('claude-fable-5-1')) throw new Error('clearModelBlock שני אמור להחזיר false (כדי שלא יירשם "חזר" פעמיים)');
+    const state = await aoReadState();
+    if (Object.keys(state.models).length !== 0) throw new Error(`הקובץ לא נוקה: ${JSON.stringify(state)}`);
+    return 'נכתב לקובץ · שרד restart · דילג על Fable · פג בזמן · נמחק פעם אחת';
+  } finally {
+    if (savedPath === undefined) delete process.env.MODEL_COOLDOWN_PATH; else process.env.MODEL_COOLDOWN_PATH = savedPath;
+    resetCooldownCache();
+  }
+});
+
+await test('AO: Fable מצליח → נותח ב-Fable, בלי שום חסימה', async () => {
+  await aoCleanState();
+  const cli = await fakeCliPerModel({ 'claude-fable-5-1': { payload: okEnvelope([{ description: 'גליל ניילון', quantity: 2, confidence: 0.9 }]) } });
+  const r = await withAoEnv(cli.file, () => analyzeExpenseDocument(Buffer.from('x'), 'application/pdf', []));
+  if (r.model !== 'claude-fable-5-1') throw new Error(`המודל שדווח שגוי: ${r.model}`);
+  if (r.modelFallback !== false) throw new Error('modelFallback אמור להיות false');
+  if (r.lines.length !== 1) throw new Error('התוצאה לא נורמלה');
+  const called = await cli.called();
+  if (called.length !== 1 || called[0] !== 'claude-fable-5-1') throw new Error(`נקראו מודלים לא צפויים: ${JSON.stringify(called)}`);
+  if (existsSyncNode(AO_COOLDOWN_PATH)) {
+    const state = await aoReadState();
+    if (Object.keys(state.models).length) throw new Error(`נוצרה חסימה בלי סיבה: ${JSON.stringify(state)}`);
+  }
+  return 'Fable נקרא פעם אחת, model=fable, אין חסימה';
+});
+
+await test('AO: Fable במכסה → **אותו מסמך** נותח ב-Opus, נכתבת חסימה, והניתוח הבא לא נוגע ב-Fable', async () => {
+  await aoCleanState();
+  const cli = await fakeCliPerModel({
+    'claude-fable-5-1': { payload: fableQuotaEnvelope, exit: 1 },
+    'claude-opus-5-5': { payload: okEnvelope([{ description: 'קרטון', quantity: 5, confidence: 0.9 }]) },
+  });
+  const savedPath = process.env.MODEL_COOLDOWN_PATH;
+  process.env.MODEL_COOLDOWN_PATH = AO_COOLDOWN_PATH;
+  resetCooldownCache();
+  try {
+    const first = await withFakeCli(cli.file, () => analyzeExpenseDocument(Buffer.from('x'), 'application/pdf', []));
+    if (first.model !== 'claude-opus-5-5') throw new Error(`המסמך אמור להיות מנותח ב-Opus, התקבל ${first.model}`);
+    if (first.modelFallback !== true) throw new Error('modelFallback אמור להיות true (זה הגיבוי)');
+    if (first.lines.length !== 1) throw new Error('הגיבוי לא החזיר תוצאה מנורמלת');
+    const afterFirst = await cli.called();
+    if (afterFirst.join(',') !== 'claude-fable-5-1,claude-opus-5-5') throw new Error(`סדר הקריאות שגוי: ${JSON.stringify(afterFirst)}`);
+
+    const state = await aoReadState();
+    const entry = state.models['claude-fable-5-1'];
+    if (!entry || !(entry.blockedUntil > Date.now())) throw new Error(`לא נכתבה חסימה ל-Fable: ${JSON.stringify(state)}`);
+
+    // הניתוח **הבא**: הולך ישר ל-Opus. Fable לא נקרא יותר בכלל.
+    const second = await withFakeCli(cli.file, () => analyzeExpenseDocument(Buffer.from('y'), 'application/pdf', []));
+    if (second.model !== 'claude-opus-5-5') throw new Error(`הניתוח השני אמור ללכת ל-Opus, התקבל ${second.model}`);
+    const afterSecond = await cli.called();
+    if (afterSecond.filter((m) => m === 'claude-fable-5-1').length !== 1) {
+      throw new Error(`Fable נקרא שוב למרות שהוא חסום — זה בדיוק מה שהחסימה אמורה למנוע: ${JSON.stringify(afterSecond)}`);
+    }
+    return `Fable→Opus על אותו מסמך · חסימה עד ${new Date(entry.blockedUntil).toISOString().slice(11, 16)} · הניתוח הבא דילג על Fable`;
+  } finally {
+    if (savedPath === undefined) delete process.env.MODEL_COOLDOWN_PATH; else process.env.MODEL_COOLDOWN_PATH = savedPath;
+    resetCooldownCache();
+  }
+});
+
+await test('AO: כשה-CLI כן נוקב בזמן איפוס — החסימה נקבעת לפיו ולא ל-30 דקות', async () => {
+  await aoCleanState();
+  const resetAt = Date.now() + 90 * 60_000; // עוד שעה וחצי
+  const cli = await fakeCliPerModel({
+    'claude-fable-5-1': {
+      payload: JSON.stringify({
+        type: 'result', subtype: 'success', is_error: true, api_error_status: 429,
+        result: `Claude AI usage limit reached|${Math.floor(resetAt / 1000)}`,
+      }),
+      exit: 1,
+    },
+    'claude-opus-5-5': { payload: okEnvelope([]) },
+  });
+  const savedPath = process.env.MODEL_COOLDOWN_PATH;
+  process.env.MODEL_COOLDOWN_PATH = AO_COOLDOWN_PATH;
+  resetCooldownCache();
+  try {
+    const r = await withFakeCli(cli.file, () => analyzeExpenseDocument(Buffer.from('x'), 'application/pdf', []));
+    if (r.model !== 'claude-opus-5-5') throw new Error(`צפוי מעבר ל-Opus, התקבל ${r.model}`);
+    const entry = (await aoReadState()).models['claude-fable-5-1'];
+    const minutes = Math.round((entry.blockedUntil - Date.now()) / 60_000);
+    // ⚠️ זו הנקודה שנשברה בפעם הראשונה: ההודעה ששמורה ב-reason הייתה
+    // ההודעה הידידותית בעברית ("מכסת הניתוח נגמרה… 429"), ולכן זמן
+    // האיפוס שה-CLI נקב בו נאבד והחסימה תמיד הייתה 30 דקות.
+    if (Math.abs(minutes - 90) > 1) throw new Error(`החסימה נקבעה ל-${minutes} דקות במקום 90 — זמן האיפוס מההודעה לא הגיע ל-blockModel`);
+    return `זמן האיפוס מההודעה נקרא: חסימה ל-${minutes} דקות (ולא 30)`;
+  } finally {
+    if (savedPath === undefined) delete process.env.MODEL_COOLDOWN_PATH; else process.env.MODEL_COOLDOWN_PATH = savedPath;
+    resetCooldownCache();
+  }
+});
+
+await test('AO: זמן החסימה עבר → Fable נקרא שוב, ההצלחה מוחקת את החסימה (חזרה לפאבל)', async () => {
+  await aoCleanState();
+  const savedPath = process.env.MODEL_COOLDOWN_PATH;
+  process.env.MODEL_COOLDOWN_PATH = AO_COOLDOWN_PATH;
+  resetCooldownCache();
+  try {
+    // חסימה שפגה לפני דקה — בדיוק המצב אחרי שהמכסה התחדשה
+    await writeFileAsync(AO_COOLDOWN_PATH, JSON.stringify({
+      models: { 'claude-fable-5-1': { blockedUntil: Date.now() - 60_000, reason: 'Fable limit', at: new Date().toISOString() } },
+    }));
+    resetCooldownCache();
+    const cli = await fakeCliPerModel({ 'claude-fable-5-1': { payload: okEnvelope([{ description: 'ניילון', quantity: 1, confidence: 0.9 }]) } });
+    const r = await withFakeCli(cli.file, () => analyzeExpenseDocument(Buffer.from('x'), 'application/pdf', []));
+    if (r.model !== 'claude-fable-5-1') throw new Error(`אחרי שהחסימה פגה הניתוח אמור לחזור ל-Fable, התקבל ${r.model}`);
+    if (r.modelFallback !== false) throw new Error('חזרה לראשי אמורה לדווח modelFallback=false');
+    const called = await cli.called();
+    if (called[0] !== 'claude-fable-5-1') throw new Error(`Fable לא נקרא: ${JSON.stringify(called)}`);
+    const state = await aoReadState();
+    if (state.models['claude-fable-5-1']) throw new Error(`החסימה לא נמחקה אחרי הצלחה: ${JSON.stringify(state)}`);
+    return 'Fable נקרא שוב, הצליח, והחסימה נמחקה מהקובץ';
+  } finally {
+    if (savedPath === undefined) delete process.env.MODEL_COOLDOWN_PATH; else process.env.MODEL_COOLDOWN_PATH = savedPath;
+    resetCooldownCache();
+  }
+});
+
+await test('AO: Fable מחזיר JSON לא תקין → ניסיון בגיבוי, **בלי** לחסום את Fable', async () => {
+  await aoCleanState();
+  const cli = await fakeCliPerModel({
+    'claude-fable-5-1': { payload: 'זו בכלל לא מעטפת JSON' },
+    'claude-opus-5-5': { payload: okEnvelope([{ description: 'כובע', quantity: 3, confidence: 0.9 }]) },
+  });
+  const r = await withAoEnv(cli.file, () => analyzeExpenseDocument(Buffer.from('x'), 'application/pdf', []));
+  if (r.model !== 'claude-opus-5-5') throw new Error(`צפוי מעבר לגיבוי, התקבל ${r.model}`);
+  const called = await cli.called();
+  if (called.join(',') !== 'claude-fable-5-1,claude-opus-5-5') throw new Error(`סדר שגוי: ${JSON.stringify(called)}`);
+  if (existsSyncNode(AO_COOLDOWN_PATH)) {
+    const state = await aoReadState();
+    if (state.models['claude-fable-5-1']) throw new Error('כשל פרסינג חסם את Fable — אסור, זו לא בעיית מכסה');
+  }
+  return 'עבר לגיבוי, ו-Fable נשאר לא-חסום';
+});
+
+await test('AO: שני המודלים במכסה → AnalysisUnavailableError עם QUOTA_EXCEEDED (ה-retry ישלים)', async () => {
+  await aoCleanState();
+  const cli = await fakeCliPerModel({
+    'claude-fable-5-1': { payload: fableQuotaEnvelope, exit: 1 },
+    'claude-opus-5-5': { payload: JSON.stringify({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, result: 'Claude usage limit reached' }), exit: 1 },
+  });
+  const savedPath = process.env.MODEL_COOLDOWN_PATH;
+  process.env.MODEL_COOLDOWN_PATH = AO_COOLDOWN_PATH;
+  resetCooldownCache();
+  try {
+    let err = null;
+    try { await withFakeCli(cli.file, () => analyzeExpenseDocument(Buffer.from('x'), 'application/pdf', [])); }
+    catch (e) { err = e; }
+    if (!err) throw new Error('היה אמור לזרוק');
+    if (!err.analysisUnavailable) throw new Error(`צפוי AnalysisUnavailableError, התקבל ${err.name}: ${err.message}`);
+    if (err.code !== 'QUOTA_EXCEEDED') throw new Error(`צפוי QUOTA_EXCEEDED (אחרת ה-retry לא ינסה בלי הגבלה), התקבל ${err.code}`);
+    const state = await aoReadState();
+    if (!state.models['claude-fable-5-1'] || !state.models['claude-opus-5-5']) throw new Error(`שני המודלים אמורים להיחסם: ${JSON.stringify(state)}`);
+    // וכששניהם חסומים — הניתוח הבא נכשל **בלי אף קריאה** ל-CLI
+    const before = (await cli.called()).length;
+    let err2 = null;
+    try { await withFakeCli(cli.file, () => analyzeExpenseDocument(Buffer.from('y'), 'application/pdf', [])); }
+    catch (e) { err2 = e; }
+    if (err2?.code !== 'QUOTA_EXCEEDED') throw new Error(`צפוי QUOTA_EXCEEDED גם כששניהם חסומים, התקבל ${err2?.code}`);
+    if ((await cli.called()).length !== before) throw new Error('נקרא CLI למרות ששני המודלים חסומים — בזבוז ניסיון');
+    return 'שניהם במכסה → QUOTA_EXCEEDED, שניהם נחסמו, והניסיון הבא לא בוזבז על קריאה';
+  } finally {
+    if (savedPath === undefined) delete process.env.MODEL_COOLDOWN_PATH; else process.env.MODEL_COOLDOWN_PATH = savedPath;
+    resetCooldownCache();
+  }
+});
+
+await test('AO: כשל אימות ב-Fable → **לא** מנסים מודל אחר (אותו טוקן לכולם) ולא נחסם כלום', async () => {
+  await aoCleanState();
+  const cli = await fakeCliPerModel({
+    'claude-fable-5-1': { payload: JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in' }), exit: 1 },
+    'claude-opus-5-5': { payload: okEnvelope([]) },
+  });
+  let err = null;
+  try { await withAoEnv(cli.file, () => analyzeExpenseDocument(Buffer.from('x'), 'application/pdf', [])); }
+  catch (e) { err = e; }
+  if (err?.code !== 'AUTH_EXPIRED') throw new Error(`צפוי AUTH_EXPIRED, התקבל ${err?.code}: ${err?.message}`);
+  const called = await cli.called();
+  if (called.length !== 1) throw new Error(`כשל-אימות לא אמור לגרום לניסיון במודל אחר: ${JSON.stringify(called)}`);
+  return 'Fable בלבד נקרא, AUTH_EXPIRED הועבר כמו שהוא';
+});
+
 await test('V4: התאמת קטגוריה גם לפי רשימת-המלאי בפועל, לא רק 4 הכינויים הקבועים', () => {
   const items = [{ id: 'recS', 'קטגוריה': 'סולר', 'מלאי נוכחי': 52 }, { id: 'recR', 'קטגוריה': 'רשתות', 'מלאי נוכחי': 10 }];
   // לפני V4: "סולר"/"רשתות" לא היו במילון ולכן לא זוהו **לעולם**
@@ -5160,14 +5453,34 @@ await test('AM-2: הוצאות #173 ו-#174 — המצב השמור בבסיס (
 // (שניהם משקרים — ר' הבדיקה "txt בסיומת .jpg נדחה ב-400").
 // נבדק דרך ה-API האמיתי, בלי ליצור שום רשומה (כל הקבצים נדחים ב-400).
 // ============================================================
+// ⚠️⚠️ תוקן ב-AO (14.10.2026) — **תקרית אמיתית שהבדיקה הזו עצמה גרמה.**
+// הגרסה המקורית (13.10) סיימה בשליחת PDF **קטוע סינתטי** (73 בתים:
+// "%PDF-1.4\n" + 64 אפסים) כדי לוודא ש"PDF תקין לא נדחה", עם ההערה
+// "רשומה כן תיווצר אם זה יעבור, ולכן שולחים PDF *קטוע* שייפול בהמשך
+// המסלול". **זה לא נפל**: הרשומה נוצרה בטבלת "הוצאות" (מנוטרת ע"י
+// Make), webhook נשלח ל-Make בהצלחה, ניתוח-AI רץ על זבל — והרשומה
+// **לא נרשמה ל-cleanup** ולכן נשארה בייצור לנצח. נמצאו כך שלוש
+// הוצאות-רפאים: #177 ו-#178 (13.10) ו-#179 (14.10), כולן עם "ok.pdf"
+// של 73 בתים. זו בדיוק התקרית מ-3.9.2026 שה-CLAUDE.md אוסר (קובץ
+// סינתטי לטבלה מנוטרת), והיא גם שרפה קרדיטי-Make ומכסת-AI בכל הרצה.
+// לכן: בדיקת "PDF תקין לא נדחה" עברה לקובץ-האמת (REAL_FIXTURE_PATH),
+// מגודרת ב-RUN_UPLOAD_TESTS כמו כל שאר בדיקות-ההעלאה, והרשומה
+// שנוצרת נרשמת לניקוי ונמחקת מיד. בדיקות הדחייה עצמן (HEIC/WebP/…)
+// לא יוצרות שום רשומה — הן נדחות ב-400 לפני כל כתיבה — וממשיכות לרוץ
+// תמיד.
 await test('AM-3: הודעת-דחייה מזהה את הפורמט (HEIC/WebP/Word/GIF) ומסבירה מה לעשות', async () => {
   const send = async (buf, name, type) => {
     const fd = new FormData();
     fd.append('file', new Blob([buf], { type }), name);
     fd.append('table', 'הוצאות');
     fd.append('field', 'חשבונית');
-    try { await api('POST', 'upload-document', fd, true); return null; }
-    catch (e) { return String(e.message); }
+    try {
+      const j = await api('POST', 'upload-document', fd, true);
+      // רשת-ביטחון: אם *בכל זאת* נוצרה רשומה — נרשמת לניקוי מיד, כדי
+      // שלא תישאר בייצור בשקט (זה הכישלון שתוקן כאן).
+      if (j?.record?.id) cleanup.push({ table: 'הוצאות', id: j.record.id });
+      return null;
+    } catch (e) { return String(e.message); }
   };
   const pad = (b) => Buffer.concat([b, Buffer.alloc(64)]);
   // HEIC: ftyp + brand "heic" בבתים 8..11
@@ -5192,16 +5505,23 @@ await test('AM-3: הודעת-דחייה מזהה את הפורמט (HEIC/WebP/Wo
   // HEIC חייב לכלול הנחיה מעשית, לא רק את שם הפורמט
   const heicMsg = await send(heic, 'photo.heic', 'image/heic');
   if (!/JPG/.test(heicMsg || '')) bad.push('הודעת HEIC לא מציעה פתרון (JPG)');
-  // ו-PDF תקין **לא** נדחה (לא שברנו את המסלול התקין): שולחים כותרת
-  // PDF מינימלית ומוודאים שהשגיאה — אם יש — אינה שגיאת-פורמט.
-  // (רשומה כן תיווצר אם זה יעבור, ולכן שולחים PDF *קטוע* שייפול
-  // בהמשך המסלול ולא בבדיקת-הפורמט.)
-  const pdfMsg = await send(pad(Buffer.from('%PDF-1.4\n', 'latin1')), 'ok.pdf', 'application/pdf');
-  if (pdfMsg && /מתקבלים רק PDF|לא זוהה פורמט|ריק או קטוע/.test(pdfMsg)) {
-    bad.push(`PDF תקין נדחה כפורמט לא נתמך: ${pdfMsg.slice(0, 120)}`);
-  }
   if (bad.length) throw new Error(bad.join('; '));
   return 'HEIC (עם הצעת JPG) · WebP · Word/ZIP · GIF · קובץ לא מזוהה · קובץ קטוע — כולם 400 עם הסבר';
+}, 30000);
+
+// ההמשך של AM-3: "PDF תקין **לא** נדחה" — לא שברנו את המסלול התקין.
+// יוצרת רשומה אמיתית בטבלה מנוטרת ע"י Make, ולכן: קובץ-אמת שכבר נותח
+// בעבר, מגודר ב-RUN_UPLOAD_TESTS, ונמחק מיד בסוף הבדיקה (ור' ההערה
+// הארוכה למעלה — למה זה *לא* היה ככה עד AO).
+await test('AM-3: PDF אמיתי **לא** נדחה כפורמט לא נתמך (המסלול התקין לא נשבר)', async () => {
+  if (!RUN_UPLOAD_TESTS) return 'דולג — יוצר רשומה בטבלה מנוטרת ע"י Make; הרץ עם RUN_UPLOAD_TESTS=1 לכלול';
+  const rec = await createWithFile('הוצאות', 'חשבונית', {}, `${MARK}-${REAL_FIXTURE_NAME}`);
+  // createWithFile כבר רשם את הרשומה ל-cleanup; מוחקים כאן מיד, כדי
+  // שלא תשב בטבלה החיה לאורך כל הריצה.
+  const i = cleanup.findIndex((c) => c.table === 'הוצאות' && c.id === rec.id);
+  if (i >= 0) cleanup.splice(i, 1);
+  await del('הוצאות', rec.id);
+  return 'PDF אמיתי נקלט (נוצרה רשומה ונמחקה מיד)';
 }, 30000);
 
 // ============================================================

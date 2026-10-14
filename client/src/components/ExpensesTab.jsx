@@ -23,7 +23,7 @@ import PeriodSelect from './PeriodSelect.jsx';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, Legend } from 'recharts';
 import { CHART_MARGIN, GRID_PROPS, LEGEND_STYLE, TOOLTIP_STYLE, xAxisProps, yAxisProps } from '../utils/chart.js';
 import { authFetch } from '../utils/authFetch.js';
-import { readInventoryAiState, inventoryAiSummary, stripInventoryAiMarker, waitingText } from '../utils/inventoryAi.js';
+import { readInventoryAiState, inventoryAiSummary, stripInventoryAiMarker, waitingText, modelLabel } from '../utils/inventoryAi.js';
 
 const TABLE = 'הוצאות';
 
@@ -567,7 +567,16 @@ function InventoryAiSection({ expense, onChanged }) {
 
   return (
     <div className="card">
-      <div className="section-title" style={{ marginTop: 0 }}>📦 ניתוח מלאי אוטומטי</div>
+      <div className="section-title" style={{ marginTop: 0, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <span>📦 ניתוח מלאי אוטומטי</span>
+        {/* AO (14.10): כשהמכסה של Fable נגמרת הניתוח עובר ל-Opus לבד —
+            התג אומר במה המסמך הזה נותח בפועל (איכות החילוץ שונה). */}
+        {modelLabel(state) && (
+          <span className={`badge ${state.modelFallback ? 'badge-warn' : ''}`} style={{ fontSize: 11, fontWeight: 400 }}>
+            🤖 {modelLabel(state)}
+          </span>
+        )}
+      </div>
       {error && <div className="badge badge-error" style={{ width: '100%', marginBottom: 10 }}>⚠️ {error}</div>}
 
       {pendingCount >= 2 && (

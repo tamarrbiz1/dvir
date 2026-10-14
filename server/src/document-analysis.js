@@ -24,6 +24,8 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { modelsToTry, blockModel, clearModelBlock, blockedUntil, israelTime } from './model-cooldown.js';
+import { redactSecrets } from './cli-token.js';
 
 const PRIMARY_MODEL = 'claude-fable-5-1';
 const FALLBACK_MODEL = 'claude-opus-5-5';
@@ -47,9 +49,22 @@ const ANTHROPIC_VERSION = '2023-06-01';
 // ברירות-המחדל מצביעות לשם כדי שלא יידרש שינוי ב-.env.production
 // (שאסור לי לגעת בו), ועדיין אפשר לעקוף דרך משתני-סביבה.
 function cliPath() { return process.env.CLAUDE_CLI_PATH || '/opt/zite-tools/claude'; }
-// 8.10.2026: הוחלף ל-Fable לפי הוראת תמר (המכסה עודכנה) — Opus החזיר
-// חילוץ פחות טוב (למשל כמות 0 לשורות "משטח עץ").
-const CLI_MODEL = 'claude-fable-5-1';
+// ============================================================
+// משימה AO (14.10.2026) — Fable ראשי, Opus גיבוי אוטומטי
+// ------------------------------------------------------------
+// 8.10.2026: Fable נבחר כמודל הראשי לפי הוראת תמר — Opus החזיר חילוץ
+// פחות טוב (למשל כמות 0 לשורות "משטח עץ"). **זה עדיין נכון**, ולכן
+// Opus הוא **גיבוי בלבד** ולא בחירה שקולה.
+// 14.10.2026: נמדד בייצור שהמכסה של Fable נגמרה
+// ("You've reached your Fable limit…", 429, model_requires_usage_credits)
+// ואילו Opus עבד. עד AO הרשימה הייתה מודל אחד קבוע, ולכן כל ניתוח
+// נכשל וה-retry חזר לנסות **את אותו מודל** — הניתוח פשוט עמד.
+// מעתה: הסדר כאן הוא סדר העדיפות, וחסימה זמנית אחרי כשל-מכסה מנהלת
+// את המעבר והחזרה (ר' model-cooldown.js).
+// ============================================================
+const CLI_MODELS = ['claude-fable-5-1', 'claude-opus-5-5'];
+/** שם קצר לתצוגה/לוג: "claude-opus-5-5" → "opus-5-5" */
+export const shortModelName = (model) => String(model || '').replace(/^claude-/, '');
 function cliTimeoutMs() { return Number(process.env.DOC_ANALYSIS_TIMEOUT_MS) || 120_000; }
 const CLI_MAX_TURNS = '4'; // קריאת-קובץ אחת + תשובה; 4 מרווח-ביטחון לניסיון חוזר של הקריאה
 
@@ -111,6 +126,11 @@ function withFailureCode(err, text) {
     err.code = code;
     err.temporary = code !== FAIL_AUTH;
   }
+  // משימה AO: הטקסט **המקורי** של הכשל נשמר על השגיאה, כי ממנו (ולא
+  // מההודעה הידידותית בעברית) אפשר לחלץ זמן-איפוס לחסימת המודל.
+  // בלי זה blockModel היה מקבל "מכסת הניתוח נגמרה… 429" ו-
+  // parseQuotaResetAt לא היה מוצא בו דבר — כלומר תמיד 30 דקות.
+  err.failureText = String(text ?? '').slice(0, 400);
   return err;
 }
 
@@ -321,7 +341,10 @@ function parseCliEnvelope(stdout) {
     // אחר — ושם "נסו שוב" נעשה **לבד** ע"י analysis-retry.js. מסווגים
     // את כל מה שה-CLI אמר (result + api_error_status + subtype), כי
     // הודעת-המכסה מופיעה פעם ב-result ופעם רק בקוד ה-HTTP.
-    const text = `${envelope?.result ?? ''} ${envelope?.api_error_status ?? ''} ${envelope?.subtype ?? ''} ${envelope?.terminal_reason ?? ''}`;
+    // משימה AO: נוסף `api_error` — במכסת-Fable שנמדדה ב-14.10 הוא
+    // "model_requires_usage_credits", כלומר הוא מסווג נכון כ-QUOTA גם
+    // אם `api_error_status` (429) יחסר פעם אחת.
+    const text = `${envelope?.result ?? ''} ${envelope?.api_error_status ?? ''} ${envelope?.api_error ?? ''} ${envelope?.subtype ?? ''} ${envelope?.terminal_reason ?? ''}`;
     const code = classifyAnalysisFailure(text);
     if (code === FAIL_AUTH) {
       throw withFailureCode(new AnalysisUnavailableError('האימות של הניתוח האוטומטי פג — יש לחדש אותו'), text);
@@ -334,22 +357,76 @@ function parseCliEnvelope(stdout) {
   return parseJsonLoose(envelope.result); // לא-JSON → זורק (ולא "0 פריטים")
 }
 
+function cliArgs(fileName, model) {
+  return [
+    '-p', cliPrompt(fileName),
+    '--output-format', 'json',
+    '--model', model,
+    '--max-turns', CLI_MAX_TURNS,
+    '--allowed-tools', 'Read',
+    '--disallowed-tools', ...BLOCKED_TOOLS,
+    '--strict-mcp-config',
+    '--settings', cliSettings(),
+  ];
+}
+
+/**
+ * מריץ את הניתוח לפי סדר העדיפות של CLI_MODELS, עם מעבר אוטומטי
+ * לגיבוי (משימה AO). מחזיר `{ raw, model, fallback }` — `raw` הוא
+ * ה-JSON של המודל, `model` הוא המודל שבאמת הצליח.
+ *
+ * הכללים (הוראת תמר, 14.10.2026):
+ *  • כשל **מכסה** (QUOTA_EXCEEDED) → המודל נחסם עד זמן האיפוס (או 30
+ *    דקות), **ואותו מסמך** מנותח מיד בגיבוי. ניתוחים הבאים הולכים ישר
+ *    לגיבוי כל עוד החסימה בתוקף — בלי לבזבז עליו ניסיון.
+ *  • כשל **שאינו מכסה** (JSON לא תקין, timeout) → ניסיון אחד בגיבוי,
+ *    **בלי** לחסום את הראשי. זו לא בעיית-מכסה ואין סיבה להעביר את כל
+ *    העבודה לגיבוי בגללה.
+ *  • כשל **אימות** → לא מנסים מודל אחר בכלל. הטוקן משותף לכל המודלים,
+ *    ושום מודל לא יעבוד עד חידוש ידני (ר' RENEW-AUTH.md).
+ *  • כל המודלים חסומים → שגיאת-מכסה בלי אף קריאה, ו-analysis-retry.js
+ *    ישלים מאוחר יותר (בדיוק כמו היום).
+ *  • הצלחה במודל שהייתה לו חסימה שפגה → החסימה נמחקת ("Fable חזר").
+ */
 async function callClaudeCli(buffer, mimeType) {
   const dir = await mkdtemp(path.join(tmpdir(), 'zite-doc-'));
   const fileName = `doc.${extForMime(mimeType)}`;
   try {
     await writeFile(path.join(dir, fileName), buffer);
-    const args = [
-      '-p', cliPrompt(fileName),
-      '--output-format', 'json',
-      '--model', CLI_MODEL,
-      '--max-turns', CLI_MAX_TURNS,
-      '--allowed-tools', 'Read',
-      '--disallowed-tools', ...BLOCKED_TOOLS,
-      '--strict-mcp-config',
-      '--settings', cliSettings(),
-    ];
-    return parseCliEnvelope(await runCli(args, dir));
+    const order = modelsToTry(CLI_MODELS);
+    if (!order.length) {
+      const until = Math.max(...CLI_MODELS.map((m) => blockedUntil(m) || 0));
+      const detail = `כל מודלי הניתוח חסומים על מכסה עד ${israelTime(until)}`;
+      throw withFailureCode(new AnalysisUnavailableError('מכסת הניתוח נגמרה — יושלם אוטומטית כשהמכסה תתחדש', detail), 'usage limit');
+    }
+    let lastErr = null;
+    for (let i = 0; i < order.length; i++) {
+      const model = order[i];
+      const isLast = i === order.length - 1;
+      try {
+        const raw = parseCliEnvelope(await runCli(cliArgs(fileName, model), dir));
+        // הצלחה: אם למודל הזה הייתה חסימה שפגה — מוחקים אותה ומדווחים
+        if (clearModelBlock(model)) {
+          console.log(`[doc-analysis] ${shortModelName(model)} חזר — המכסה התחדשה, הניתוח חוזר אליו`);
+        }
+        return { raw, model, fallback: model !== CLI_MODELS[0] };
+      } catch (e) {
+        lastErr = e;
+        // אימות — אותו טוקן לכל המודלים, אין טעם לנסות עוד אחד
+        if (e?.code === FAIL_AUTH) throw e;
+        const quota = e?.code === FAIL_QUOTA;
+        if (quota) {
+          // `failureText` הוא הטקסט שה-CLI החזיר (באנגלית) — רק בו יכול
+          // להופיע זמן איפוס. ההודעה בעברית לא מועילה כאן.
+          const until = blockModel(model, { reason: e.failureText || `${e.message} ${e.detail || ''}` });
+          console.warn(`[doc-analysis] ${shortModelName(model)} נחסם עד ${israelTime(until)} שעון ישראל (מכסה)${isLast ? '' : ` → ${shortModelName(order[i + 1])}`}`);
+        } else if (!isLast) {
+          console.warn(redactSecrets(`[doc-analysis] ${shortModelName(model)} נכשל (${e.message}) → ניסיון ב-${shortModelName(order[i + 1])}, בלי לחסום אותו`));
+        }
+        if (isLast) throw lastErr;
+      }
+    }
+    throw lastErr; // לא נגיש (הלופ זורק), נשאר כרשת ביטחון
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -458,7 +535,10 @@ export async function analyzeExpenseDocument(buffer, mimeType, inventoryItems) {
   if (provider === 'cli') {
     // סעיף V: ניתוח דרך ה-CLI המחובר למנוי. כשל כאן הוא **כשל-ניתוח**
     // (AnalysisUnavailableError) ולא "נותח ואין פריטים" — ר' סעיף V2.
-    return normalizeResult(await enqueueCli(() => callClaudeCli(buffer, mimeType)));
+    // משימה AO: `model`/`modelFallback` נשמרים במצב-הניתוח של ההוצאה,
+    // כדי שתמר תראה במה המסמך נותח (ותדע מתי זה היה הגיבוי).
+    const { raw, model, fallback } = await enqueueCli(() => callClaudeCli(buffer, mimeType));
+    return { ...normalizeResult(raw), model, modelFallback: fallback };
   }
   try {
     return normalizeResult(await callAnthropic(PRIMARY_MODEL, buffer, mimeType));

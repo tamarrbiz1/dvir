@@ -369,9 +369,14 @@ export async function analyzeExpenseInventory(expenseId, { force = false } = {})
 
   const { status: finalStatus, results, notes } = await deductMatchedLines(
     expenseId, currentNotes, matched,
-    { supplier: analysis.supplier, date: analysis.date, total: analysis.total, expenseNum, supplierLabel, dateLabel }
+    {
+      supplier: analysis.supplier, date: analysis.date, total: analysis.total, expenseNum, supplierLabel, dateLabel,
+      // משימה AO (14.10.2026): באיזה מודל המסמך נותח בפועל, ואם זה היה
+      // הגיבוי. נשמר בתגית [מלאי-AI] כדי שתמר תראה את זה בכרטיס.
+      model: analysis.model || null, modelFallback: !!analysis.modelFallback,
+    }
   );
-  return { status: finalStatus, analyzedAt: new Date().toISOString(), supplier: analysis.supplier, date: analysis.date, total: analysis.total, results, notes, unmatched };
+  return { status: finalStatus, analyzedAt: new Date().toISOString(), supplier: analysis.supplier, date: analysis.date, total: analysis.total, results, notes, unmatched, model: analysis.model || null, modelFallback: !!analysis.modelFallback };
 }
 
 /** מזהה-הרשומה הראשון בשדה-קישור (מערך של ids, או של {id} אחרי העשרה) */
@@ -469,6 +474,8 @@ async function deductMatchedLines(expenseId, startNotes, matched, meta) {
       notesCursor = await saveState(expenseId, notesCursor, {
         status, analyzedAt: new Date().toISOString(),
         supplier: meta.supplier, date: meta.date, total: meta.total,
+        // AO: רק כשיש מודל (הנתיב הידני ו-stub לא מעבירים אותו)
+        ...(meta.model ? { model: meta.model, modelFallback: !!meta.modelFallback } : {}),
         results,
       });
     } catch (e) {
